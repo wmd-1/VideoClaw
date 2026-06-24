@@ -1,66 +1,73 @@
 import type { NextConfig } from "next";
 
+// Address of the backend the Next.js server-side rewrite proxy forwards to.
+// - Local dev: leave unset -> falls back to http://127.0.0.1:8000 (unchanged behaviour)
+// - Docker / remote: set BACKEND_INTERNAL_URL, e.g. http://backend:8000 (compose service name)
+const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000";
+
 const nextConfig: NextConfig = {
+  // Produce a self-contained server under .next/standalone for slimmer production images.
+  output: "standalone",
   async rewrites() {
     return [
       {
-        source: '/code/:path*',
-        destination: 'http://127.0.0.1:8000/code/:path*',
+        source: "/code/:path*",
+        destination: `${BACKEND_URL}/code/:path*`,
       },
       {
-        source: '/api/sessions',
-        destination: 'http://127.0.0.1:8000/api/sessions',
+        source: "/api/sessions",
+        destination: `${BACKEND_URL}/api/sessions`,
       },
       {
-        source: '/api/sessions/:path*',
-        destination: 'http://127.0.0.1:8000/api/sessions/:path*',
+        source: "/api/sessions/:path*",
+        destination: `${BACKEND_URL}/api/sessions/:path*`,
       },
       // 工作流 API
       {
-        source: '/api/project/:path*',
-        destination: 'http://127.0.0.1:8000/api/project/:path*',
+        source: "/api/project/:path*",
+        destination: `${BACKEND_URL}/api/project/:path*`,
       },
       {
-        source: '/api/stages',
-        destination: 'http://127.0.0.1:8000/api/stages',
+        source: "/api/stages",
+        destination: `${BACKEND_URL}/api/stages`,
       },
       {
-        source: '/api/upload_media',
-        destination: 'http://127.0.0.1:8000/api/upload_media',
+        source: "/api/upload_media",
+        destination: `${BACKEND_URL}/api/upload_media`,
       },
       {
-        source: '/api/models',
-        destination: 'http://127.0.0.1:8000/api/models',
+        source: "/api/models",
+        destination: `${BACKEND_URL}/api/models`,
       },
       {
-        source: '/api/config',
-        destination: 'http://127.0.0.1:8000/api/config',
+        source: "/api/config",
+        destination: `${BACKEND_URL}/api/config`,
       },
       {
-        source: '/api/cache/:path*',
-        destination: 'http://127.0.0.1:8000/api/cache/:path*',
+        source: "/api/cache/:path*",
+        destination: `${BACKEND_URL}/api/cache/:path*`,
       },
       // 一键 pipeline API
       {
-        source: '/api/pipelines',
-        destination: 'http://127.0.0.1:8000/api/pipelines',
+        source: "/api/pipelines",
+        destination: `${BACKEND_URL}/api/pipelines`,
       },
       {
-        source: '/api/pipelines/:path*',
-        destination: 'http://127.0.0.1:8000/api/pipelines/:path*',
+        source: "/api/pipelines/:path*",
+        destination: `${BACKEND_URL}/api/pipelines/:path*`,
       },
       {
-        source: '/api/tasks',
-        destination: 'http://127.0.0.1:8000/api/tasks',
+        source: "/api/tasks",
+        destination: `${BACKEND_URL}/api/tasks`,
       },
       {
-        source: '/api/tasks/:path*',
-        destination: 'http://127.0.0.1:8000/api/tasks/:path*',
+        source: "/api/tasks/:path*",
+        destination: `${BACKEND_URL}/api/tasks/:path*`,
       },
       // 临时工作台 API
       {
-        source: '/api/sandbox/:path*',
-        destination: 'http://127.0.0.1:8000/api/sandbox/:path*',
+        source: "/api/sandbox/:path*",
+        destination: `${BACKEND_URL}/api/sandbox/:path*`,
       },
     ];
   },

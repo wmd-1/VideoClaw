@@ -1,0 +1,60 @@
+# Video-Claw — Docker Compose
+#
+#   docker compose up -d --build
+#
+# Frontend:  http://localhost:${FRONTEND_PORT:-3000}
+# Backend:    http://localhost:${BACKEND_PORT:-8000}/api/health
+#
+# Persistent state lives in ./data (copy that folder when migrating hosts):
+#   ./data/config/config.yaml   <- API keys / models (created on first run, edit it freely)
+#   ./data/code/                 <- generated images, videos, session & task state
+#
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: video-claw-backend
+    container_name: video-claw-backend
+    restart: unless-stopped
+    environment:
+      # The entrypoint rewrites these into config.yaml so the server binds
+      # on all interfaces (reachable from the frontend container).
+      BACKEND_HOST: "0.0.0.0"
+      BACKEND_PORT: "8000"
+    volumes:
+      # Persistent, host-editable configuration (API keys, models, ...).
+      - ./data/config:/app/data
+      # Persistent generated artifacts + session/task state.
+      - ./data/code:/app/code
+    expose:
+      - "8000"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: video-claw-frontend
+    container_name: video-claw-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the backend is reachable at http://backend:8000.
+      # The Next.js server-side rewrite proxy forwards /api/* and /code/* here.
+      BACKEND_INTERNAL_URL: "http://backend:8000"
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"

@@ -1,3 +1,6 @@
 # Ignore MacOS system files
 .DS_Store
 dev/
+
+# Docker runtime data (host-editable config + generated artifacts)
+/data/

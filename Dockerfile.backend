@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1
+#
+# Video-Claw backend image.
+# Python 3.12 + uv + ffmpeg + headless Chromium (for the pipeline feature).
+#
+# Build context is the repository root (/root/projects/VideoClaw/), so source
+# paths are prefixed with video-claw/video-claw/backend/.
+#
+FROM python:3.12-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    # Playwright stores the browser under this dir; keep it in the image layer.
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# --- System dependencies -----------------------------------------------------
+#   ffmpeg  -> audio/video concatenation & post-processing
+#   *libs   -> runtime libraries required by headless Chromium (playwright)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg \
+      curl \
+      ca-certificates \
+      fonts-liberation \
+      libnss3 \
+      libnspr4 \
+      libatk1.0-0 \
+      libatk-bridge2.0-0 \
+      libcups2 \
+      libdrm2 \
+      libxkbcommon0 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxfixes3 \
+      libxrandr2 \
+      libgbm1 \
+      libpango-1.0-0 \
+      libcairo2 \
+      libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- uv (fast Python package manager) ---------------------------------------
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# --- Install Python dependencies (cached, deterministic via uv.lock) ---------
+COPY video-claw/video-claw/backend/pyproject.toml video-claw/video-claw/backend/uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
+
+# --- Pre-install Chromium so the pipeline feature works offline --------------
+RUN . /app/.venv/bin/activate && playwright install chromium
+
+# --- Application code --------------------------------------------------------
+COPY video-claw/video-claw/backend/ ./
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Bind address / port are (re)written into config.yaml by the entrypoint so the
+# service is reachable on the compose network. They can be overridden via env.
+ENV BACKEND_HOST=0.0.0.0 \
+    BACKEND_PORT=8000
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["uv", "run", "python", "api_server.py"]

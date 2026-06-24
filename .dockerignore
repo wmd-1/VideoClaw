@@ -1,0 +1,46 @@
+# Build context = repository root (/root/projects/VideoClaw/).
+# Keep the context lean: only video-claw/video-claw/{backend,frontend} source
+# and docker-entrypoint.sh need to reach the builder.
+
+# ---- Unrelated top-level repos / docs / pics in this monorepo ---------------
+# These must NOT be sent to the builder (keeps the context small & fast).
+.git
+.claude
+FilmAgent
+FilmAgent-pics
+video-claw-pics
+video-claw/references
+README.md
+README_EN.md
+LICENSE
+
+# ---- Docker runtime data (persisted via volumes, never baked in) ------------
+data/
+
+# ---- Python (backend) ------------------------------------------------------
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/venv
+**/.venv
+video-claw/video-claw/backend/code/
+video-claw/video-claw/backend/code.bak/
+video-claw/video-claw/backend/temp/
+video-claw/video-claw/backend/logs/
+video-claw/video-claw/backend/docs/
+# Local secrets/config — the persisted copy under ./data is used instead.
+video-claw/video-claw/backend/config.yaml
+video-claw/video-claw/backend/config.yaml.bak
+
+# ---- Node (frontend) -------------------------------------------------------
+**/node_modules
+**/.next
+**/out
+video-claw/video-claw/frontend/.env*
+!video-claw/video-claw/frontend/.env.example
+video-claw/video-claw/frontend/test/
+video-claw/video-claw/frontend/tests/
+
+# ---- Editor noise ----------------------------------------------------------
+**/.DS_Store
+**/*.md
