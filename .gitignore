@@ -4,3 +4,50 @@ dev/
 
 # Docker runtime data (host-editable config + generated artifacts)
 /data/
+
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+test-results/
+playwright-report/
+
+# Secrets / env
+.env
+!.env.example
+
+# Build artifacts / binaries
+*.mp4
+*.zip
+*.so
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.codebuddy/
+.qoder/
+.claude/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Docker volumes (local dev data)
+docker/chrome/chrome-headless-shell-linux64.zip
+data
+.env
+*.tar
+
+openspec/

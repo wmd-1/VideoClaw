@@ -1,585 +1,278 @@
-<p align="center">
-  <img src="video-claw-pics/banner.png" width="100%" />
-</p>
+<!-- 最后更新：2026-09-16 -->
 
-<h1 align="center">
-  VideoClaw: AI 创意视频生成员工
-</h1>
+# VideoClaw（AI 创意视频生成系统）
 
-<p align="center">
-  <b>简体中文</b> | <a href="./README_EN.md">English</a>
-</p>
+面向创意视频生产的 AI 导演系统：把一句想法 / 一段梗概拆解为可执行影视工作流，覆盖 **剧本策划 → 角色/场景设计 → 分镜规划 → 参考图生成 → 视频生成 → 后期剪辑** 六阶段，每个阶段都有停点确认、可干预修改、可智能续写；同时提供三类一次性 Pipeline（文艺短视频 / 动作迁移 / 数字人口播）与临时工作台（单点模型调用）。
 
-<h3 align="center">
-  <img src="https://img.shields.io/badge/Version-1.0.0-blue.svg" alt="Version">
-  <a href="https://github.com/HITsz-TMG/VideoClaw/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/HITsz-TMG/VideoClaw?style=flat-square" alt="License">
-  </a>
-  <a href="https://github.com/HITsz-TMG/VideoClaw/stargazers">
-    <img src="https://img.shields.io/github/stars/HITsz-TMG/VideoClaw?style=flat-square&logo=github" alt="Stars">
-  </a>
-  <a href="https://github.com/HITsz-TMG/VideoClaw/fork">
-    <img src="https://img.shields.io/github/forks/HITsz-TMG/VideoClaw?style=flat-square&logo=github" alt="Forks">
-  </a>
-  <img src="https://img.shields.io/badge/Python-3.9+-purple.svg" alt="Python">
-  <a href="#openclaw-integration">
-    <img src="https://img.shields.io/badge/OpenClaw-Compatible-ff4444?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==" alt="OpenClaw Compatible">
-  </a>
-</h3>
+单体仓库：应用代码位于 `video-claw/video-claw/`（FastAPI 后端 + Next.js 前端），`video-claw/` 同时是一套 OpenClaw Agent Skill（`SKILL.md` + `references/`）。
 
-<p align="center">
-  <b><i><font size="5">直接与 <a href="https://github.com/openclaw/openclaw">OpenClaw</a> 对话："生成 X 的视频" → 搞定。</font></i></b>
-</p>
+> 作品展示、演示视频与营销向介绍见 [docs/README.md](docs/README.md)。
 
-<div align="center">
+## 功能总览
 
-📺 [**Bilibili**](https://space.bilibili.com/2031891503?spm_id_from=333.1007.0.0)  ▶️ [**YouTube**](https://www.youtube.com/@imryanxu)  📖 [**集成指南**](#方式三openclaw-自动配置)   🦀 [**ClawHub**](https://clawhub.ai/hit-cxf/video-claw)
+| 能力域       | 前端入口                       | 后端入口                                 | 产物                                                  | 说明                                                |
+| ------------ | ------------------------------ | ---------------------------------------- | ----------------------------------------------------- | --------------------------------------------------- |
+| 六阶段主流程 | `/`                          | `/api/project/**`                      | 剧本 / 角色与场景图 / 分镜 / 参考图 / 视频片段 / 成片 | 阶段间停点确认，支持干预、修改重生成与剧情续写      |
+| 临时工作台   | `/sandbox`                   | `/api/sandbox/**`                      | 单次生成结果                                          | 单独调用 LLM / VLM / 文生图 / 图生图 / 视频生成     |
+| 文艺短视频   | `/pipelines/standard`        | `/api/pipelines/standard/tasks`        | 图文 / 动态短视频                                     | 文案切分 → 配图 + TTS → HTML 模板渲染 → 合成成片 |
+| 动作迁移     | `/pipelines/action-transfer` | `/api/pipelines/action_transfer/tasks` | 动作迁移视频                                          | 参考图 + 动作视频 + 提示词                          |
+| 数字人口播   | `/pipelines/digital-human`   | `/api/pipelines/digital_human/tasks`   | 数字人视频                                            | 人物图 + 口播文案，多片段尾帧衔接                   |
+| 全局设置     | `/settings`                  | `GET/PUT /api/config`                  | 写回`config.yaml`                                   | 密钥 / 模型 / 生成参数可视化配置                    |
+| 多端协作     | —                             | —                                       | —                                                    | OpenClaw Skill、微信 / 飞书消息通道                 |
 
-<a href="https://trendshift.io/repositories/24295" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24295" alt="HITsz-TMG%2FVideo-Claw | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+主流程视频生成支持三种方式（首页 / 顶栏 / 设置页可选择，分别配置模型）：`first_frame` 首帧生视频（默认，最稳定）、`start_end` 首尾帧生视频、`reference` 参考图生视频。
 
-</div>
+## 技术架构
 
-# 💥 News
-
-- `2026/3/27`: 🎬 VideoClaw 正式发布，支持从想法到视频生成全流程自动化，用户可随时介入调整。
-- `2026/4/9`: ♾️ VideoClaw 针对短剧进行优化，新增无限续写，剧情可自定义。
-- `2026/4/29`: 🧩 新增解说类短视频、动作迁移、数字人口播三个功能。
-- `2026/5/8`: ⚙️ 支持通过 WebUI 配置 API 与默认模型，支持一键安装。
-- `2026/5/13`: 🎞️ 解说类短视频接入 Pixelle-Video 的 HTML 模版。
-- `2026/6/11`: 🎥 主流程视频生成阶段支持选择视频生成方式，可在首帧生视频、首尾帧生视频、参考图生视频之间切换，并为不同方式分别配置模型。
-
-# 📖 项目介绍
-
-<p align="center">
-  <img src="video-claw-pics/workflow_zh.png" width="100%" />
-</p>
-
-VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要给出一句想法、一个故事梗概，甚至一个模糊概念，系统就会把它拆解为可执行的影视工作流，持续产出可查看、可确认、可修改、可交付的中间资产，最终生成完整成片**。
-
-它不是单点式的文生视频工具，而是一条覆盖 **剧本策划 → 角色/场景设计 → 分镜规划 → 参考图生成 → 视频生成 → 后期剪辑** 的全流程生产线。相比只给你一个黑盒结果的闭源视频生成框架，VideoClaw是一个真正可协作的 AI 导演团队：前一阶段决定后一阶段，所有关键节点都能可视化、可编辑、可继续生成。
-
-# 📺 创作展示
-
-## 🎬 VideoClaw
-
-<details>
-<summary><b>点击查看WebUI界面设计</b></summary>
-
-| 阶段          | 示意图                                                               | 说明                                                                                                                                                     |
-| ------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 首页          | <img src="video-claw-pics/workflow_demo/homepage.png" width="800" /> | 展示系统概览，支持查看历史项目、创建新项目以及全局配置（API Key 和默认模型设置），是创作流程的起点。                                                     |
-| 剧本策划      | <img src="video-claw-pics/workflow_demo/stage-1.png" width="800" />  | 输入创意标题与项目梗概，系统自动生成结构化的多场次剧本（包含旁白与对话），并支持对后续剧情的智能续写。                                                   |
-| 角色/场景设计 | <img src="video-claw-pics/workflow_demo/stage-2.png" width="800" />  | 基于剧本自动提取角色与场景的核心特征，生成风格统一的参考原画，作为后续分镜生成的视觉基础。                                                               |
-| 分镜规划      | <img src="video-claw-pics/workflow_demo/stage-3.png" width="800" />  | 将每一场剧本拆解为连续的视觉分镜，详细制定镜头视角、动作描述及参考内容，确保叙事连贯性。                                                         |
-| 参考图生成    | <img src="video-claw-pics/workflow_demo/stage-4.png" width="800" />  | 为每个分镜场次生成高质量、高精度的参考底图，控制光影细节与画面构图，作为视频生成的关键视觉基准。                                                     |
-| 视频生成      | <img src="video-claw-pics/workflow_demo/stage-5.png" width="800" />  | 调用主流高性能视频生成模型（如 Wan、Kling 等）将分镜图转化为动态片段，支持首帧生视频、首尾帧生视频、参考图生视频三种方式。                                                   |
-| 后期剪辑      | <img src="video-claw-pics/workflow_demo/stage-6.png" width="800" />  | 聚合所有生成的视频片段，最终一键导出可供发布的成片视频。                                                      |
-
-</details>
-
-### 📱 系列一：程序员被裁后利用 OpenClaw 收购原公司 (写实 短剧)
-
-> 共 8 集，跌宕起伏的逆袭之路（首次生成 6 集 + 续写 2 集）
-
-<table>
-  <tr>
-    <td align="center" valign="top" width="25%">
-      <a href="https://github.com/user-attachments/assets/1d095b82-3a72-4acc-9ca1-3ff4a6189232">
-        <img src="https://github.com/user-attachments/assets/47b1621e-5c5a-4cb1-9c51-dcf723ac5fda" width="100%" alt="点击播放 第 1 集">
-      </a>
-      <br><b>▶️ 第 1 集</b><br>被优化
-    </td>
-    <td align="center" valign="top" width="25%">
-      <a href="https://github.com/user-attachments/assets/489c5343-6345-4bce-81dc-bf6012b9c1cf">
-        <img src="https://github.com/user-attachments/assets/b0dd3781-b767-45c2-9fe2-3dc7421fbf80" width="100%" alt="点击播放 第 2 集">
-      </a>
-      <br><b>▶️ 第 2 集</b><br>深夜启程 首单突破
-    </td>
-    <td align="center" valign="top" width="25%">
-      <a href="https://github.com/user-attachments/assets/359809cf-678b-429c-bafa-55ff50fd3277">
-        <img src="https://github.com/user-attachments/assets/fcfd191c-61f9-484f-a036-ce717620c827" width="100%" alt="点击播放 第 3 集">
-      </a>
-      <br><b>▶️ 第 3 集</b><br>AI获投 旧主危机
-    </td>
-    <td align="center" valign="top" width="25%">
-      <a href="https://github.com/user-attachments/assets/5561a04a-5ab3-4099-bc63-2fdbcc48f8e9">
-        <img src="https://github.com/user-attachments/assets/14a535da-b0eb-4b4b-8039-517bac692696" width="100%" alt="点击播放 第 4 集">
-      </a>
-      <br><b>▶️ 第 4 集</b><br>收购星耀
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/ae4c3618-1990-4ff5-ad85-e09f23b08f7d">
-        <img src="https://github.com/user-attachments/assets/e2d7fbae-d945-461f-be2f-5eb781337cac" width="100%" alt="点击播放 第 5 集">
-      </a>
-      <br><b>▶️ 第 5 集</b><br>收购清算 新生
-    </td>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/4ddbb725-34d8-478b-97bc-5d7143f73101">
-        <img src="https://github.com/user-attachments/assets/02a8f7d4-04c9-460e-9ba1-07d594ffcd24" width="100%" alt="点击播放 第 6 集">
-      </a>
-      <br><b>▶️ 第 6 集</b><br>新生 回望
-    </td>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/1c1e5970-aaea-44ba-b041-5d551905bfde">
-        <img src="https://github.com/user-attachments/assets/053be420-20e8-423e-8379-f1d1554546c5" width="100%" alt="点击播放 第 7 集">
-      </a>
-      <br><b>▶️ 第 7 集</b><br>技术反噬
-    </td>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/e56e6784-6e49-4891-b0bc-a32308dd2145">
-        <img src="https://github.com/user-attachments/assets/19a50fcd-0a5a-4649-bb63-c7867e945d46" width="100%" alt="点击播放 第 8 集">
-      </a>
-      <br><b>▶️ 第 8 集</b><br>坚守伦理 共渡难关
-    </td>
-  </tr>
-</table>
-
-<br>
-
-### 🖥️ 系列二：乡村教师 (科幻 漫剧)
-
-> 共 5 集，致敬伟大的文明传承
-
-<table>
-  <tr>
-    <td align="center" valign="top" width="50%">
-      <a href="https://github.com/user-attachments/assets/1ffe7b06-73e9-44cd-ad3f-afced5239f97">
-        <img src="https://github.com/user-attachments/assets/e1328cf7-23fe-48d8-9ae6-a7beeae6dda9" width="100%" alt="点击播放 第 1 集">
-      </a>
-      <br><b>▶️ 第 1 集</b><br>最后一课
-    </td>
-    <td align="center" valign="top" width="50%">
-      <a href="https://github.com/user-attachments/assets/7547e5d3-872c-4344-8727-ee2be109797d">
-        <img src="https://github.com/user-attachments/assets/65bc3866-6405-4033-97b2-54de42a61402" width="100%" alt="点击播放 第 2 集">
-      </a>
-      <br><b>▶️ 第 2 集</b><br>清扫计划
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/affed408-4df7-4ce7-9681-8f4ed45a6fcf">
-        <img src="https://github.com/user-attachments/assets/81acd075-e4f1-4621-b2dc-b2d87ed83b81" width="100%" alt="点击播放 第 3 集">
-      </a>
-      <br><b>▶️ 第 3 集</b><br>临终托付
-    </td>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/dc7a85a8-6912-4443-a995-3d8f3ca30bc8">
-        <img src="https://github.com/user-attachments/assets/738c539e-8f90-47f5-9983-f3ac35d3d385" width="100%" alt="点击播放 第 4 集">
-      </a>
-      <br><b>▶️ 第 4 集</b><br>生死问答
-    </td>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <a href="https://github.com/user-attachments/assets/1fb889c5-0e2b-40fa-a438-7399322ada47">
-        <img src="https://github.com/user-attachments/assets/ce4a1ac4-7308-43ba-a803-fc77b9b9561e" width="100%" alt="点击播放 第 5 集">
-      </a>
-      <br><b>▶️ 第 5 集</b><br>文明之光
-    </td>
-    <td align="center" valign="top">
-      <!-- 留空，保持表格边框完整对齐 -->
-    </td>
-  </tr>
-</table>
-
-<br>
-
-### 🎞️ 更多演示
-
-<details>
-<summary><b>独立微短剧片段</b></summary>
-
-<table>
-  <tr>
-    <td align="center" valign="top" width="33%">
-      <video src="https://github.com/user-attachments/assets/63c2f33c-da50-44f0-8c26-a65611479d6a" controls width="100%" preload="none"></video>
-      <br><b>伦敦疑云</b>
-    </td>
-    <td align="center" valign="top" width="33%">
-      <video src="https://github.com/user-attachments/assets/d7c65cad-05b9-46c8-ab0e-96e39909f978" controls width="100%" preload="none"></video>
-      <br><b>一条狗的使命</b>
-    </td>
-    <td align="center" valign="top" width="33%">
-      <video src="https://github.com/user-attachments/assets/ec67546e-2d3d-4b34-b1ad-7d860a9bc1aa" controls width="100%" preload="none"></video>
-      <br><b>无人机系荔枝来</b>
-    </td>
-  </tr>
-</table>
-
-</details>
-
-<br>
-
-<details>
-<summary><b>微信交互</b></summary>
-<div align="center">
-
-|                                                      |                                                      |                                                      |                                                      |
-| :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: |
-| ![WeChat 1](video-claw-pics/wechat_demo/wechat_1.jpg) | ![WeChat 2](video-claw-pics/wechat_demo/wechat_2.jpg) | ![WeChat 3](video-claw-pics/wechat_demo/wechat_3.jpg) | ![WeChat 4](video-claw-pics/wechat_demo/wechat_4.jpg) |
-
-</div>
-</details>
-
-
-
-<br>
-
-<details>
-<summary><b>飞书交互</b></summary>
-<div align="center">
-
-|                                                      |                                                      |                                                      |                                                      |
-| :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: |
-| ![Feishu 1](video-claw-pics/feishu_demo/feishu_1.jpg) | ![Feishu 2](video-claw-pics/feishu_demo/feishu_2.jpg) | ![Feishu 3](video-claw-pics/feishu_demo/feishu_3.jpg) | ![Feishu 4](video-claw-pics/feishu_demo/feishu_4.jpg) |
-
-</div>
-</details>
-
-<!-- 
-## 🧩 快速创作
-
-<details>
-<summary><b>点击查看WebUI界面设计</b></summary>
-
-| Pipeline   | 示意图                                                                            | 前端入口             | 说明                                                                                                                                                                                                   |
-| ---------- | --------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 文艺短视频 | <img src="video-claw-pics/pipeline_demo/standard.png" width="600" />        | 侧边栏「文艺短视频」 | 支持「图片拼接 / 动态视频」和「创作灵感 / 完整文案」两组模式。系统按句号切分旁白，为每个片段生成配图与语音；图片拼接模式合成图文短视频，动态视频模式继续调用图生视频模型生成片段；可选添加标题和字幕。 |
-| 动作迁移   | <img src="video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | 侧边栏「动作迁移」   | 输入参考图片、动作视频和提示词，调用支持动作迁移能力的视频模型生成结果视频。                                                                                                                           |
-| 数字人口播 | <img src="video-claw-pics/pipeline_demo/digital_human.png" width="600" />   | 侧边栏「数字人口播」 | 输入人物图和口播文案，生成分句语音与数字人视频片段；多片段生成时会使用上一段尾帧衔接下一段，并用生成语音替换最终视频音轨。                                                                             |
-
-</details>
-
-### 文艺短视频
-
-<div align="center">
-<table align="center" border="0" cellspacing="0" cellpadding="0" style="border:none; border-collapse:collapse; margin:0 auto;">
-  <tr>
-    <td align="center" valign="top" width="25%" style="border:none;"></td>
-    <td align="center" valign="top" width="25%" style="border:none;">
-      <video src="https://github.com/user-attachments/assets/7a674bb7-6ee9-4b83-bfd3-0d880127b632" controls width="100%" preload="none"></video>
-      <br><b>▶️ 山河入梦</b>
-    </td>
-    <td align="center" valign="top" width="25%" style="border:none;">
-      <video src="https://github.com/user-attachments/assets/a62c8184-322d-4c06-b16f-19660766e816" controls width="100%" preload="none"></video>
-      <br><b>▶️ 人生海海</b>
-    </td>
-    <td align="center" valign="top" width="25%" style="border:none;"></td>
-  </tr>
-</table>
-</div>
-
-<br>
- -->
-
-# ✨ 功能特性
-
-| 能力                                     | 说明                                                                                                            |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 🎬**从创意到成片的全流程生成**     | 一条链路打通剧本、角色、分镜、参考图、视频片段与后期剪辑，把零散生成能力升级为完整视频生产工作流。              |
-| 🖼️**分镜驱动的可控创作**         | 通过结构化剧本、分镜规划与参考图生成，让角色一致性、镜头表达和画面风格更稳定、更可控。                          |
-| ✍️**可修改、可续写、可继续生成** | 支持剧情 / 分镜智能续写，也支持角色、参考图、视频阶段修改后重新生成，避免每次都从头开始。                       |
-| 🧩**轻量 Pipeline 任务**           | 支持解说短视频、动作迁移、数字人口播三类一次性任务，适合批量生成图文/动态短视频、动作迁移视频和口播视频。       |
-| 📲**本地部署、多端协作、产物留存** | 支持 Web 界面、微信 / 飞书协作、OpenClaw Skill 集成，并对剧本、图片、视频片段和最终成片进行全链路留存。         |
-
-### 🎥 视频生成方式
-
-VideoClaw 主流程第五阶段支持三种视频生成方式，可在首页生成配置、顶栏生成配置或设置页中选择：
-
-- **首帧生视频**：使用第四阶段生成的首帧参考图作为起点，结合分镜提示词生成单个视频片段。推荐优先使用该方式，已经完成过多次测试，表现最稳定。
-- **首尾帧生视频**：使用当前片段参考图作为首帧，并尽量使用下一个片段参考图作为尾帧，适合追求片段之间画面衔接更强的场景。
-- **参考图生视频**：直接读取第二阶段已选人物图和场景图作为参考素材，根据第三阶段片段中的人物与地点信息匹配输入图片，适合强调角色、场景参考一致性的生成。
-
----
-
-# 🚀 快速开始
-
-## 方式一：一键安装（推荐）
-
-**Linux / MacOS 安装**：
-
-```bash
-# 1. 克隆项目
-git clone https://github.com/HITsz-TMG/VideoClaw.git
-cd VideoClaw
-
-# 2. 进入应用目录并执行安装脚本
-cd video-claw/video-claw
-chmod +x install.sh
-./install.sh
-
-# 3. 返回项目根目录
-cd ../..
+```
+浏览器 ── http://localhost:3000 ──▶ frontend（Next.js standalone, :3000）
+        │   server 端 rewrite 同源代理：/api/* 与 /code/* → backend
+        ▼
+        backend（FastAPI + uvicorn, :8000, 单进程）
+        │   ├── /api/project/**    六阶段工作流（start / execute / artifact / intervene / continue / stop）
+        │   ├── /api/sandbox/**    临时工作台（llm / vlm / t2i / i2i / video 单次调用）
+        │   ├── /api/pipelines/**  一次性 Pipeline（standard / action_transfer / digital_human）
+        │   ├── /api/tasks/**      任务查询 + SSE 事件流（进度 / 产物 / 完成）
+        │   └── /api/config · /api/models · /api/sessions · /api/health · /code（静态产物）
+        ▼
+   外部模型 API：DashScope / OpenAI / Gemini / DeepSeek / 火山方舟 ARK / Kling
+        ▼
+   backend/code/   产物：result/{script,image,video,task}；元数据：data/{sessions,tasks}
 ```
 
-**Windows 安装**：
+- **工作流引擎**：`core/orchestrator.py` 管理六阶段状态机与产物累积（`artifacts[stage]`），每阶段执行后返回 `requires_intervention`，前端展示产物并等待用户 `continue` 或 `intervene`（修改后重生成）。
+- **Agent 体系**：每个阶段一个 Agent，统一实现 `process(input_data, intervention) -> {"payload", "requires_intervention", "completed"}` 接口（`core/agents/base_agent.py`）。
+- **模型接入层**：所有模型在 `models/config_model.py` 的 `MODEL_CONFIG` 注册表统一登记（provider / 能力标签 / 并发 / 价格），前端与 Pipeline 通过 `/api/models?media_type=&ability=` 按能力标签筛选可用模型。
+- **Pipeline 引擎**：任务创建即返回 `task_id`，后台 asyncio 执行，进度与产物经进程内事件总线 + SSE（`/api/tasks/{id}/events`）实时推送；SSE 订阅保存在进程内存，**服务须单进程运行**。
+- **配置单源**：`config.yaml` 是唯一配置来源——可直接编辑文件，也可由 WebUI 设置页经 `PUT /api/config` 写回；Docker 下该文件持久化在宿主 `./data/config/`。
 
-```bat
-# 1. 克隆项目
-git clone https://github.com/HITsz-TMG/VideoClaw.git
-cd VideoClaw
+### 技术栈
 
-# 2. 进入应用目录并执行安装脚本
-cd video-claw\video-claw
-install.bat
+| 层   | 技术                                                                                                      |
+| ---- | --------------------------------------------------------------------------------------------------------- |
+| 后端 | Python 3.9+ / FastAPI / uvicorn（单进程）；uv 管理依赖；Playwright（HTML 模板渲染）+ ffmpeg（音视频处理） |
+| 前端 | Next.js 16（App Router，`output: "standalone"`）/ React 19 / Tailwind CSS 4；npm                        |
+| 模型 | LLM / VLM / 文生图 / 图生图 / 视频生成多 provider 适配（见「模型接入层」）                                |
+| 部署 | Docker 多阶段构建 + Docker Compose；运行时数据落在宿主`./data/`                                         |
 
-# 3. 返回项目根目录
-cd ../..
+## 仓库结构
+
+```
+VideoClaw/
+├── docker-compose.yml          # 编排 backend + frontend（只运行本地镜像，不构建）
+├── Dockerfile.backend          # 后端镜像（uv + ffmpeg + headless Chromium）
+├── Dockerfile.frontend         # 前端镜像（多阶段 → standalone runner）
+├── docker-entrypoint.sh        # 后端启动前：生成 config、强制 0.0.0.0、软链持久化配置
+├── .env.example                # 可选：覆盖宿主机端口（FRONTEND_PORT / BACKEND_PORT）
+├── docs/                       # 展示向 README（README.md / README_EN.md：作品集与演示）
+├── video-claw-pics/  FilmAgent-pics/   # 展示图与论文配图
+├── FilmAgent/                  # 系列工作（SIGGRAPH Asia 2024 论文代码）
+└── video-claw/                 # OpenClaw Agent Skill 根目录
+    ├── SKILL.md                # skill 正文：停点表与工作流规则（共 7 个停点）
+    ├── references/             # OpenClaw 集成参考文档（workflow / sandbox / pipelines / run_project / send_message）
+    └── video-claw/
+        ├── backend/            # FastAPI 后端（:8000）
+        │   ├── api_server.py   # 入口：uvicorn.run
+        │   ├── config.py       # 配置加载与目录常量（CODE_DIR / RESULT_DIR / ...）
+        │   ├── session.py      # 会话 JSON 持久化（SessionManager）
+        │   ├── api/            # 路由 / Schema / 服务（app.py 组装 FastAPI 实例）
+        │   │   └── routers/    # workflow · sandbox · pipelines · configuration · files · sessions · stages · health
+        │   ├── core/           # orchestrator.py（工作流引擎）+ agents/（各阶段 Agent）
+        │   ├── models/         # 模型注册表 + LLM/VLM/图像/视频调用客户端
+        │   ├── pipelines/      # 一次性 Pipeline（standard / action_transfer / digital_human + runner/storage/events）
+        │   ├── prompts/        # 提示词模板（按阶段分类）+ loader.py
+        │   ├── templates/      # 解说短视频 HTML 模板（1080x1920 / 1920x1080 / 1080x1080）
+        │   ├── docs/           # api.md（接口文档）+ session_format.md（会话格式）
+        │   └── code/           # 数据与产物（result/ + data/）
+        └── frontend/           # Next.js 前端（:3000）
+            ├── app/            # 路由页：/ · /sandbox · /settings · /pipelines/*
+            ├── components/     # stages/（六阶段 UI）· Sandbox/ · pipelines/ · 布局组件
+            ├── lib/            # workflowApi.ts（REST 客户端）· modelRegistry.ts
+            ├── config/         # models.ts · examples.ts
+            └── next.config.ts  # server 端 rewrite 代理 + standalone 输出
 ```
 
-安装脚本会检查 Python、Node.js、npm 和 ffmpeg，安装后端与前端依赖，复制 `backend/config.yaml.example` 为 `backend/config.yaml`，并执行前端构建。安装完成后，先在 `backend/config.yaml` 中填入模型服务 API Key，并确认 `models` 中的主流程默认模型；也可以启动前端后通过侧边栏底部「设置」页面修改这些配置。配置完成后启动服务：
+## 核心模块详解
+
+### 后端 · 六阶段工作流引擎
+
+`core/orchestrator.py` 定义阶段枚举与顺序：
+
+| 阶段（phase）            | Agent                   | 实现文件                            | 职责                                       |
+| ------------------------ | ----------------------- | ----------------------------------- | ------------------------------------------ |
+| `script_generation`    | ScriptWriterAgent       | `core/agents/script_agent.py`     | 剧本 / 分集生成、续写判断                  |
+| `character_design`     | CharacterDesignerAgent  | `core/agents/character_agent.py`  | 角色与场景特征提取、参考原画生成与优选     |
+| `storyboard`           | StoryboardAgent         | `core/agents/storyboard_agent.py` | 分镜拆解（镜头视角 / 动作描述 / 参考内容） |
+| `reference_generation` | ReferenceGeneratorAgent | `core/agents/reference_agent.py`  | 分镜参考图生成、评估与优选                 |
+| `video_generation`     | VideoDirectorAgent      | `core/agents/video_agent.py`      | 分镜图 → 视频片段（三种生成方式）         |
+| `post_production`      | VideoEditorAgent        | `core/agents/editor_agent.py`     | 片段拼接、字幕与成片导出                   |
+| （辅助）                 | DoctorAgent             | `core/agents/doctor_agent.py`     | 提示词诊断与改写                           |
+
+- 会话状态持久化到 `code/data/sessions/{session_id}.json`（Session ID 为毫秒级时间戳），格式见 `backend/docs/session_format.md`。
+- OpenClaw 侧的停点约束（每个阶段必须展示产物并等待确认）定义在 `video-claw/SKILL.md`。
+
+### 后端 · 模型接入层
+
+`models/` 下每个 provider 一个适配客户端，公共基类统一重试与响应解析：
+
+| 能力 | 客户端                                                                                         | 支持 provider                                        |
+| ---- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| LLM  | `llm_client.py` + `llm_{dashscope,deepseek,gpt,gemini}.py`                                 | DashScope / DeepSeek / OpenAI / Gemini               |
+| VLM  | `vlm_client.py` + `vlm_{dashscope,gpt,gemini}.py`                                          | DashScope / OpenAI / Gemini                          |
+| 图像 | `image_client.py` + `image_{dashscope,gpt,seedream}.py`（+ `image_processor.py` 后处理） | DashScope（通义万相）/ OpenAI / 火山方舟（Seedream） |
+| 视频 | `video_client.py` + `video_{dashscope,kling,seedance}.py`                                  | DashScope（Wan）/ Kling / 火山方舟（Seedance）       |
+
+- 注册表 `models/config_model.py::MODEL_CONFIG` 登记每个模型的 `provider / type（能力标签）/ concurrency / price`，是模型清单的权威来源。
+- `/api/models` 支持按 `media_type`（image/video）与 `ability`（text_to_image、image_to_video、reference_image、action_transfer、digital_human 等）筛选，前端与 Agent 均以此选择模型。
+
+### 后端 · Pipeline 引擎
+
+| 模块       | 文件                                                     | 职责                                                                                                                         |
+| ---------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 注册与调度 | `pipelines/runner.py`                                  | `PIPELINE_REGISTRY`（standard / quick_create / action_transfer / digital_human）→ 后台执行、标记 running/completed/failed |
+| 文艺短视频 | `pipelines/standard.py`                                | 文案切分 → 配图 + TTS → HTML 模板渲染（Playwright）→ 图片拼接 / 动态视频合成                                              |
+| 动作迁移   | `pipelines/action_transfer.py`                         | 参考图 + 动作视频 + 提示词 → 动作迁移模型调用                                                                               |
+| 数字人口播 | `pipelines/digital_human.py`                           | 人物图 + 口播文案 → 分句语音 + 多片段视频（尾帧衔接）+ 音轨替换                                                             |
+| 任务存储   | `pipelines/storage.py`                                 | 任务元数据`code/data/tasks/{task_id}.json`（status / progress / input / output / artifacts）与产物目录维护                 |
+| 事件推送   | `pipelines/events.py`                                  | 进程内发布订阅 → SSE（snapshot / progress / artifact / completed / failed，含心跳）                                         |
+| 公共工具   | `pipelines/utils.py` · `api_media.py` · `tts.py` | 模板渲染、媒体封装、语音合成等                                                                                               |
+
+### 后端 · 提示词与模板
+
+- `prompts/` 按用途分类：`script` / `character` / `setting` / `storyboard` / `reference` / `video` / `style` / `doctor` / `pipelines`，配合 `prompts/loader.py`（支持 `_zh` / `_en` 语言回退）加载。
+- `templates/` 为解说类短视频的 HTML 模板（按画幅 1080x1920 / 1920x1080 / 1080x1080 与风格区分），`/api/pipelines/standard/templates` 提供列表与预览接口。
+
+### 后端 · API 层
+
+`api/app.py` 组装 FastAPI 实例：CORS 全开、`/code` 静态挂载产物目录，并注册 8 个路由：
+
+| 路由器        | 文件                         | 主要端点                                                                                                                                           | 职责                            |
+| ------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| workflow      | `routers/workflow.py`      | `POST /api/project/start`；`execute/{stage}`；`status`；`artifact/{stage}`（+`upload_image`）；`intervene`；`continue`；`stop`     | 六阶段工作流                    |
+| sandbox       | `routers/sandbox.py`       | `POST /api/sandbox/{llm,vlm,t2i,i2i,video}`；`GET /api/sandbox/history`                                                                        | 临时工作台                      |
+| pipelines     | `routers/pipelines.py`     | `POST /api/pipelines/{standard,action_transfer,digital_human}/tasks`；`GET /api/tasks`；`GET /api/tasks/{id}/events`（SSE）；模板列表 / 预览 | Pipeline 与任务                 |
+| configuration | `routers/configuration.py` | `GET/PUT /api/config`                                                                                                                            | 配置读写（写回`config.yaml`） |
+| files         | `routers/files.py`         | `POST /api/upload_file` · `/api/upload_media`；`DELETE /api/cache/temp`                                                                     | 文件上传与缓存清理              |
+| sessions      | `routers/sessions.py`      | `GET/DELETE /api/sessions`                                                                                                                       | 会话管理                        |
+| stages        | `routers/stages.py`        | `GET /api/stages`                                                                                                                                | 阶段元数据                      |
+| health        | `routers/health.py`        | `GET /api/health`                                                                                                                                | 健康检查                        |
+
+完整接口文档见 `backend/docs/api.md` 与 `video-claw/references/`。
+
+### 前端
+
+- 路由（App Router）：`/` 主流程（首页项目列表 / 新建 / 生成配置）、`/sandbox` 临时工作台、`/settings` 设置页、`/pipelines/{standard,action-transfer,digital-human}` 三类 Pipeline。
+- 组件：`components/stages/` 对应六阶段的交互 UI（ScriptStage / CharacterStage / StoryboardStage / ReferenceStage / VideoStage / PostProductionStage，及 StageProgress / StageActions / ImageLightbox / RewriteResultBadge）；`components/Sandbox/`、`components/pipelines/PipelinePage.tsx`。
+- 数据层：`lib/workflowApi.ts` 封装工作流 REST 调用；`lib/modelRegistry.ts` + `config/models.ts` 维护模型清单与能力标签展示。
+- 代理：`next.config.ts` 通过 server 端 rewrites 把 `/api/*`、`/code/*` 同源转发到 `BACKEND_INTERNAL_URL`（默认 `http://127.0.0.1:8000`；Docker 内为 `http://backend:8000`）。
+
+### 多端集成
+
+- **OpenClaw Skill**：`video-claw/SKILL.md` 定义 7 个停点（停点 0-6：项目规划 → 模型配置 → 剧本 → 角色/场景 → 分镜 → 参考图 → 视频；后期剪辑无需确认），规则要求每个阶段展示产物并等待用户确认；`references/` 提供 init / workflow / sandbox / pipelines / send_message 各类调用文档。
+- **微信 / 飞书**：消息交互说明见 `video-claw/references/send_message/{wechat,feishu}.md`。
+
+## 快速开始（Docker，推荐）
+
+宿主机只需 Docker（含 Compose v2）+ Node 22+（仅用于构建前端运行产物）。后端镜像已内置 Python / ffmpeg / headless Chromium。
 
 ```bash
-# 启动后端
-cd video-claw/video-claw/backend
-uv run python api_server.py
+cd <仓库根>
 
-# 新终端启动前端
+# 1) 构建镜像（首次；compose 只运行镜像、不构建镜像）
+docker build -f Dockerfile.backend  -t video-claw-backend:latest  .
+docker build -f Dockerfile.frontend -t video-claw-frontend:latest .
+
+# 2) 构建前端运行产物并组装（首次必须执行；改前端代码后重复此步）
 cd video-claw/video-claw/frontend
-npm start
+npm ci                                    # npm 12+ 报 EALLOWREMOTE 时改用 npm ci --allow-remote=all
+BACKEND_INTERNAL_URL=http://backend:8000 npm run build
+rm -rf .next-runtime && mkdir .next-runtime
+cp -a .next/standalone/. .next-runtime/
+mkdir -p .next-runtime/.next/static && cp -a .next/static/. .next-runtime/.next/static/
+cp -a public .next-runtime/public
+
+# 3) 启动
+cd <仓库根>
+docker compose up -d
+docker compose logs -f backend            # 等健康检查通过
 ```
 
-后端默认运行在 `http://localhost:8000`，前端默认运行在 `http://localhost:3000`。
+- 前端：[http://localhost:3000](http://localhost:3000)；后端健康检查：[http://localhost:8000/api/health](http://localhost:8000/api/health)
+- 首次启动自动在宿主生成 `./data/config/config.yaml`，填入 API Key 后 `docker compose restart backend`（也可在 WebUI「设置」页填写）。
 
-如果只想安装依赖、暂时跳过前端构建，可以执行：
-
-```bash
-AIGC_DIRECTOR_SKIP_FRONTEND_BUILD=1 ./install.sh
-```
-
-## 方式二：手动安装
+## 本地开发（不构建镜像）
 
 ```bash
-# 1. 克隆项目
-git clone https://github.com/HITsz-TMG/Video-Claw.git
-cd Video-Claw
-
-# 2. 配置并启动后端
+# 后端（:8000）
 cd video-claw/video-claw/backend
-
-# 安装后端依赖
-uv sync
-
-# 配置后端 YAML
-cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入 API Key，并确认主流程默认模型
-# 也可以启动前端后在「设置」页面修改
-
-# 启动后端
+uv sync                       # 或 python -m venv venv + pip install -r requirements.txt
+cp config.yaml.example config.yaml     # 填入 API Key
 uv run python api_server.py
-# 服务运行在 http://localhost:8000
-```
 
-```bash
-# 3. 配置并启动前端（新终端）
+# 前端（:3000，新终端；代理默认回退 http://127.0.0.1:8000）
 cd video-claw/video-claw/frontend
 npm install
-npm run build
-npm start
-# 访问 http://localhost:3000
+npm run dev                   # 开发模式；生产模式为 npm run build && npm start
 ```
 
-如果没有安装 `uv`，也可以使用 `python -m venv venv` 与 `pip install -r requirements.txt` 安装后端依赖。
+也可使用一键安装脚本：`cd video-claw/video-claw && ./install.sh`（Windows 为 `install.bat`）。
 
-## 方式三：OpenClaw 自动配置
+## 构建与代码更新（Docker）
 
-向 OpenClaw 发送消息：
+- **镜像构建的唯一入口**是 `docker build -f Dockerfile.backend / Dockerfile.frontend`（compose 服务只有 `image:` + `pull_policy: never`，`docker compose up -d` 不构建、不拉取）；迁移机器可用 `docker save` / `docker load`。
+- **改后端代码免重建**：`docker-compose.yml` 将后端源码逐项只读（`:ro`）挂载进容器 `/app`（不能整目录挂载，会遮蔽镜像内的 `.venv`、`docker-entrypoint.sh`、`config.yaml` 软链等）。改完执行 `docker compose restart backend` 生效；依赖文件（`pyproject.toml` / `uv.lock`）不挂载，改依赖需重建镜像。
+- **改前端代码免重建**：前端是 standalone 编译产物，按「快速开始」步骤 2 重新构建并组装 `.next-runtime/` 后 `docker compose restart frontend` 生效。compose 以 `create_host_path: false` 只读挂载该目录——未构建时 `up` 会直接报错而不是静默建空目录。
+- **注意**：standalone 产物在**构建时**固化 rewrites 代理地址，运行时环境变量不生效，因此宿主机构建必须带 `BACKEND_INTERNAL_URL=http://backend:8000`（`Dockerfile.frontend` 中已内置该变量）。
 
-```
-帮我克隆git仓库：https://github.com/HITsz-TMG/Video-Claw.git
-然后把Video-Claw中的video-claw文件夹递归复制到.openclaw/workspace/skills目录下，用作AIGC相关的skill
-```
+## 配置说明
 
-使用时建议指明 "使用 video-claw"：
+配置单源为 `config.yaml`（Docker 下位于宿主 `./data/config/config.yaml`，容器内经软链映射为 `/app/config.yaml`），也可在 WebUI「设置」页修改后自动写回：
 
-```
-用video-claw来生成一个视频，内容是"一条狗的使命"
-```
+| 段落              | 关键字段                                                                                                               | 说明                                                                                             |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `server`        | `host` / `port` / `log_level` / `access_log`                                                                   | 服务绑定与日志；启动参数改动需重启后端生效（Docker 下`host` 由 entrypoint 强制为 `0.0.0.0`） |
+| `api_providers` | `common.proxy`；各 provider 的 `api_key` / `base_url` / `enable_proxy`                                         | 平台密钥与代理；`enable_proxy` 控制该 provider 是否走公共代理                                  |
+| `models`        | `llm` / `vlm` / `image_t2i` / `image_it2i` / `video_first_frame` / `video_start_end` / `video_reference` | 主流程默认模型；Pipeline 在各自页面单独选模型，不读该默认值                                      |
+| `generation`    | `style` / `video_ratio` / `video_resolution` / `video_generation_mode`                                         | 主流程默认生成参数（`video_generation_mode` 默认 `first_frame`）                             |
 
-## 方式四：通过 ClawHub 安装
+相关环境变量：
 
-请确保本地安装了clawhub-cli
+| 变量                                 | 使用方                                   | 说明                                                                           |
+| ------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `BACKEND_HOST` / `BACKEND_PORT`  | backend 容器（entrypoint）               | 覆盖写入`server.host` / `server.port`，默认 `0.0.0.0:8000`               |
+| `FRONTEND_PORT` / `BACKEND_PORT` | 宿主`.env`（`cp .env.example .env`） | compose 发布到宿主机的端口，默认 3000 / 8000                                   |
+| `BACKEND_INTERNAL_URL`             | 前端（构建期 + 运行期）                  | 代理目标；本地默认`http://127.0.0.1:8000`，Docker 内 `http://backend:8000` |
 
-打开终端，输入命令，所有询问均选择yes
+## 服务拓扑与端口
 
-```bash
-clawhub install video-claw
-```
+| 服务         | 端口                          | 说明                                                                            |
+| ------------ | ----------------------------- | ------------------------------------------------------------------------------- |
+| frontend     | 3000:3000                     | Next.js standalone server；server 端 rewrite 代理`/api/*`、`/code/*`        |
+| backend      | 8000:8000（容器内不额外发布） | FastAPI + uvicorn，单进程；`/code` 静态托管产物                               |
+| 外部模型 API | 443                           | DashScope / OpenAI / Gemini / DeepSeek / 火山方舟 ARK / Kling（按所选模型访问） |
 
-安装完成后，ClawHub 会将 `video-claw` 复制到 `workspace/skills`（或指定的 skills 目录）。
+## 数据与产物
 
-之后可以参考方式一一键安装或方式二手动安装自行构建项目并运行，也可以使用OpenClaw完成后续项目构建。
+Docker 下所有运行时状态落在宿主 `./data/`（迁移机器时整体拷贝即可）；本地开发直接落在 `backend/code/`：
 
-在第一次使用 `video-claw` 时，如果没有手动构建项目，OpenClaw会自动构建前后端并运行，无需手动初始化（构建项目需要配置环境和编译，请耐心等待）。
+| 宿主路径                       | 容器路径                    | 内容                                                               |
+| ------------------------------ | --------------------------- | ------------------------------------------------------------------ |
+| `./data/config/config.yaml`  | `/app/config.yaml`        | 配置（API Key、模型、生成参数）                                    |
+| `./data/code/result/`        | `/app/code/result`        | 生成产物：`script/`、`image/`、`video/`、`task/<task_id>/` |
+| `./data/code/data/sessions/` | `/app/code/data/sessions` | 主流程会话元数据`<session_id>.json`                              |
+| `./data/code/data/tasks/`    | `/app/code/data/tasks`    | Pipeline 任务元数据`<task_id>.json`                              |
 
----
+- **Session ID**：毫秒级时间戳；**Task ID**：`YYYYMMDD_HHMMSS_随机Hash`。
+- Pipeline 产物按任务隔离在 `result/task/<task_id>/`（分段音频 / 视频、故事板 JSON、`final.mp4` 等）；上传的媒体文件经 `/api/upload_media` 落到任务目录后被引用。
 
-# 🔧 配置说明
+## 测试与校验
 
-<details>
-<summary><b>点击展开完整环境要求和变量</b></summary>
+- 后端：无独立单测套件；以 `GET /api/health` + `GET /api/models` 做启动冒烟，实际功能冒烟走 `/sandbox` 或 Pipeline 页面。
+- 前端：`npm run lint`（eslint）；`npm run build`（含 TypeScript 检查，同时产出 standalone 产物用于部署）。
 
-## 环境要求
+## 说明
 
-- **Python**: 3.9+
-- **Node.js**: 18+
-- **npm**: 9+
-
-## 后端配置
-
-后端配置统一保存在 `video-claw/backend/config.yaml`，采用小写、层级化 YAML 结构。可直接编辑该文件，也可以在前端侧边栏底部进入「设置」页面修改。
-
-- `api_providers` 保存各模型服务平台的密钥、接口地址和代理开关。
-- `models` 保存**主流程**首页使用的默认模型。前端创建项目时会先读取这些默认值，再把具体模型参数传给后端；后端不会再为主流程自动兜底选择模型，缺少模型参数会直接报错。
-- Pipeline（文艺短视频、动作迁移、数字人口播）不使用这里的主流程默认模型，需要在对应 Pipeline 页面单独选择模型。
-
-## 前端设置页面
-
-启动前后端后，可以在 Web 前端左侧边栏底部进入「设置」页面，无需手动编辑 YAML，也可以完成常用配置：
-
-- 填写或更新 OpenAI、Gemini、DeepSeek、DashScope、火山方舟 ARK、Kling 等平台的 API Key / Access Key / Secret Key。
-- 修改各 provider 的 `base_url`、`enable_proxy`，以及公共代理地址 `api_providers.common.proxy`。
-- 选择主流程默认模型，包括 `llm`、`vlm`、`image_t2i`、`image_it2i`，以及首帧生视频、首尾帧生视频、参考图生视频三类视频模型。
-- 在「视频生成配置」中设置主流程默认风格、视频长宽比、视频分辨率和视频生成方式；推荐默认使用 `first_frame`（首帧生视频），完成过多次测试，最稳定。
-- 保存后会写回 `backend/config.yaml`。API Key、代理和默认模型会被后续新建项目读取；`server.host`、`server.port` 等服务启动参数需要重启后端后完全生效。
-
-```yaml
-project_name: Video-Claw
-
-server:
-  host: 127.0.0.1
-  port: 8000
-  log_level: INFO
-  access_log: false
-
-api_providers:
-  common:
-    print_model_input: false
-    proxy: ''
-  openai:
-    api_key: your_openai_key
-    base_url: https://api.openai.com/v1
-    enable_proxy: false
-  gemini:
-    api_key: your_gemini_key
-    base_url: https://generativelanguage.googleapis.com/v1beta
-    enable_proxy: false
-  deepseek:
-    api_key: your_deepseek_key
-    base_url: https://api.deepseek.com/v1
-    enable_proxy: false
-  dashscope:
-    api_key: your_dashscope_key
-    base_url: https://dashscope.aliyuncs.com/api/v1
-    enable_proxy: false
-  ark:
-    api_key: your_ark_key
-    base_url: https://ark.cn-beijing.volces.com/api/v3
-    enable_proxy: false
-  kling:
-    access_key: your_kling_access_key
-    secret_key: your_kling_secret_key
-    enable_proxy: false
-
-models:
-  llm: qwen3.5-plus
-  vlm: qwen3.5-plus
-  image_t2i: doubao-seedream-5-0-260128
-  image_it2i: doubao-seedream-5-0-260128
-  video: wan2.7-i2v
-  video_first_frame: wan2.7-i2v
-  video_start_end: wan2.7-i2v
-  video_reference: wan2.7-r2v
-
-generation:
-  style: realistic
-  video_ratio: '16:9'
-  video_resolution: 720P
-  video_generation_mode: first_frame
-```
-
-<!-- `api_providers.common.proxy` 是唯一的代理地址。每个 provider 通过 `enable_proxy` 决定是否启用该代理，默认关闭，避免同一进程内不同模型调用互相污染。`server.host` / `server.port` 等服务启动参数保存后需要重启后端才会完全生效；API Key、代理配置和 `models` 中的主流程默认模型会被新的项目创建和模型调用读取。 -->
-
-## 密钥与模型对应关系
-
-|          平台          | 配置字段                                                           | 常用用途                             |
-| :--------------------: | :----------------------------------------------------------------- | :----------------------------------- |
-|    **OpenAI**    | `api_providers.openai.api_key` / `base_url`                    | GPT 文本、视觉模型和 OpenAI 图像模型 |
-|    **Gemini**    | `api_providers.gemini.api_key` / `base_url`                    | Gemini 文本、视觉模型                |
-|   **DeepSeek**   | `api_providers.deepseek.api_key` / `base_url`                  | DeepSeek 文本模型                    |
-|  **DashScope**  | `api_providers.dashscope.api_key` / `base_url`                 | 通义千问、通义万相、Wan 图像/视频等  |
-| **火山方舟 ARK** | `api_providers.ark.api_key` / `base_url`                       | Seedream 图像、Seedance 视频等       |
-|    **Kling**    | `api_providers.kling.access_key` / `secret_key` / `base_url` | 可灵视频生成                         |
-
-只需要填写你实际选择模型所需的平台密钥。例如主流程默认图像模型是 `doubao-seedream-*` 时，需要配置 `ark.api_key`；默认视频模型是 `wan*` 时，需要配置 `dashscope.api_key`。如果在 Pipeline 页面选择了不同模型，也要确保对应平台的密钥已经填写。
-
-## 可用模型
-
-|        类型        | 模型                                                                                                                                                                        |
-| :----------------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|   **LLM**   | qwen3.6-max-preview, qwen3-max, deepseek-chat, deepseek-reasoner, deepseek-v4-flash, deepseek-v4-pro, gpt-4o, gpt-5, gpt-5.4, gemini-2.5-flash, gemini-2.0-flash, kimi-k2.6 |
-|   **VLM**   | qwen3.6-plus, qwen3.6-flash, kimi-k2.6, gpt-5.4, gemini-2.5-flash-image, gemini-2.0-flash                                                                                   |
-|  **文生图**  | wan2.7-image, wan2.7-image-pro, wan2.6-t2i, doubao-seedream-5.0/4.5/4.0, gpt-image-2                                                                                        |
-|  **图生图**  | wan2.7-image, wan2.7-image-pro, doubao-seedream-5.0/4.5/4.0, gpt-image-2                                                                                                    |
-| **视频生成** | 首帧生视频：wan2.7-i2v, wan2.6-i2v-flash, doubao-seedance-2.0 (Normal/Fast), kling-v3/v2.6/v2.5；首尾帧生视频：wan2.7-i2v 等支持首尾帧输入的模型；参考图生视频：wan2.7-r2v 等支持参考图输入的模型。 |
-
-模型信息以 `video-claw/video-claw/backend/models/config_model.py` 为准。前端和 Pipeline API 会根据模型能力标签筛选模型，例如文本生成、图像生成、图生视频、动作迁移、TTS 等。
-
-</details>
-
-# 产物说明
-
-Video-Claw 的所有任务元数据与生成产物均保存在 `video-claw/video-claw/backend/code/` 目录下。
-
-<details>
-<summary><b>点击展开存储结构与标识说明</b></summary>
-
-## 📁 存储结构
-
-```text
-video-claw/video-claw/backend/code/
-├── data/
-│   ├── tasks/                  # Pipeline 任务元数据 (JSON)
-│   └── sessions/               # AIGC-Claw 会话元数据 (JSON)
-└── result/
-    ├── task/                   # Pipeline 生成产物 (按 Task ID 分类)
-    │   └── <task_id>/          # e.g., 20260514_204946_961f95d9
-    │       ├── audio_xx.mp3    # 分段音频
-    │       ├── video_xx.mp4    # 分段视频
-    │       ├── storyboard.json # 故事板数据
-    │       └── final.mp4       # 最终合成视频
-    ├── image/                  # AIGC-Claw 生成的图片
-    │   └── <session_id>/       # 按会话 ID 分类
-    │       ├── Assets/         # 角色与场景素材
-    │       │   ├── characters/ # 角色参考图
-    │       │   └── settings/   # 场景参考图
-    │       └── Scenes/         # 生成的分镜参考图
-    ├── video/                  # AIGC-Claw 生成的视频
-    │   └── <session_id>/       # 按会话 ID 分类
-    └── script/                 # AIGC-Claw 生成的剧本/分镜数据
-```
-
-## 🆔 标识说明
-
-- **Task ID**: 格式为 `YYYYMMDD_HHMMSS_随机Hash` (例如 `20260514_204946_961f95d9`)，用于唯一标识一次 Pipeline 任务。
-- **Session ID**: 毫秒级时间戳 (如 `1778810088325`)，用于关联主流程交互中的上下文数据与生成图片。
-
-</details>
-
-# 🙏 致谢
-
-Video-Claw 的想法和设计受到了 [Pixelle-Video](https://github.com/AIDC-AI/Pixelle-Video)、[AutoResearchClaw](https://github.com/aiming-lab/AutoResearchClaw)、[huobao-drama](https://github.com/chatfire-AI/huobao-drama)、[Flova](https://www.flova.ai) 与 [libtv-skills](https://github.com/libtv-labs/libtv-skills) 的启发。
-
-
-# 📚 系列工作
-
-| 框架图 | 论文信息 |
-| :---: | :--- |
-| <img src="./FilmAgent-pics/framework.png" width="420" alt="FilmAgent framework"/> | **[SIGGRAPH Asia 2024] FilmAgent: Automating Virtual Film Production Through a Multi-Agent Collaborative Framework**<br>*Zhenran Xu, Jifang Wang, Longyue Wang, Zhouyi Li, Senbao Shi, Baotian Hu, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3681758.3698014)] [[GitHub](https://github.com/HITsz-TMG/Video-Claw/blob/main/FilmAgent.md)] |
-| <img src="https://github.com/HITsz-TMG/Anim-Director/blob/main/Anim-Director/assets/visualeg.png" width="420" alt="Anim-Director result"/> | **[SIGGRAPH Asia 2024] Anim-Director: A Large Multimodal Model Powered Agent for Controllable Animation Video Generation**<br>*Yunxin Li, Haoyuan Shi, Baotian Hu, Longyue Wang, Jiashun Zhu, Jinyi Xu, Zhen Zhao, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3680528.3687688)] [[GitHub](https://github.com/HITsz-TMG/Anim-Director/tree/main/Anim-Director)] |
-
-<p align="center">
-  <sub>Built with 🦞 by the Lychee Agent team</sub>
-</p>
+- **单进程约束**：SSE 订阅（`pipelines/events.py`）与运行中任务状态保存在进程内存，后端必须单进程运行；不要以多 worker 方式启动。
+- **对话与产物留存**：会话与任务均为 JSON 元数据 + 磁盘产物，服务重启不丢；`DELETE /api/tasks/{id}` 会同步删除元数据与产物目录。
+- **Docker 设计**：compose 只运行本地镜像（`pull_policy: never`，缺失即报错）；`/app` 内源码只读挂载与镜像运行时文件（`.venv` 等）共存，依赖环境始终来自镜像。
+- 展示向 README（作品集 / 演示视频）见 [docs/README.md](docs/README.md)；工程文档入口：`backend/docs/api.md`、`video-claw/SKILL.md`、`video-claw/references/`。

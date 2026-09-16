@@ -1,6 +1,10 @@
 # Video-Claw — Docker Compose
 #
-#   docker compose up -d --build
+# This file only *runs* images; building is done with plain docker build (see ReadMe.md):
+#
+#   docker build -f Dockerfile.backend  -t video-claw-backend:latest  .
+#   docker build -f Dockerfile.frontend -t video-claw-frontend:latest .
+#   docker compose up -d
 #
 # Frontend:  http://localhost:${FRONTEND_PORT:-3000}
 # Backend:    http://localhost:${BACKEND_PORT:-8000}/api/health
@@ -9,12 +13,14 @@
 #   ./data/config/config.yaml   <- API keys / models (created on first run, edit it freely)
 #   ./data/code/                 <- generated images, videos, session & task state
 #
+# Source code is bind-mounted read-only: edit it on the host, then apply with
+# `docker compose restart backend` (backend) or the .next-runtime flow (frontend).
+#
 services:
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    image: video-claw-backend
+    image: video-claw-backend:latest
+    # Reuse the local image only; fail fast instead of trying to pull.
+    pull_policy: never
     container_name: video-claw-backend
     restart: unless-stopped
     environment:
@@ -27,6 +33,24 @@ services:
       - ./data/config:/app/data
       # Persistent generated artifacts + session/task state.
       - ./data/code:/app/code
+      # --- Source code (read-only) ---------------------------------------
+      # Edit on the host, then `docker compose restart backend` to apply —
+      # no image rebuild needed. Mounted entry by entry on purpose: /app also
+      # holds image-only runtime files (.venv, docker-entrypoint.sh, the
+      # config.yaml symlink, ...), so the whole backend dir must not shadow it.
+      # pyproject.toml / uv.lock stay from the image: dependency changes still
+      # require rebuilding the image.
+      - ./video-claw/video-claw/backend/api_server.py:/app/api_server.py:ro
+      - ./video-claw/video-claw/backend/config.py:/app/config.py:ro
+      - ./video-claw/video-claw/backend/session.py:/app/session.py:ro
+      - ./video-claw/video-claw/backend/__init__.py:/app/__init__.py:ro
+      - ./video-claw/video-claw/backend/config.yaml.example:/app/config.yaml.example:ro
+      - ./video-claw/video-claw/backend/api:/app/api:ro
+      - ./video-claw/video-claw/backend/core:/app/core:ro
+      - ./video-claw/video-claw/backend/models:/app/models:ro
+      - ./video-claw/video-claw/backend/pipelines:/app/pipelines:ro
+      - ./video-claw/video-claw/backend/prompts:/app/prompts:ro
+      - ./video-claw/video-claw/backend/templates:/app/templates:ro
     expose:
       - "8000"
     ports:
@@ -43,18 +67,32 @@ services:
       start_period: 30s
 
   frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    image: video-claw-frontend
+    image: video-claw-frontend:latest
+    # Reuse the local image only; fail fast instead of trying to pull.
+    pull_policy: never
     container_name: video-claw-frontend
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     environment:
-      # Inside the compose network the backend is reachable at http://backend:8000.
-      # The Next.js server-side rewrite proxy forwards /api/* and /code/* here.
+      # Next.js standalone bakes the rewrite (proxy) targets into the build
+      # output, so what counts is the value present at *build* time — set by the
+      # host build step (ReadMe.md) and by Dockerfile.frontend. This runtime
+      # value is kept only for parity / host-run scenarios.
       BACKEND_INTERNAL_URL: "http://backend:8000"
+    volumes:
+      # Read-only mount of the host-built standalone runtime (see ReadMe.md):
+      #   cd video-claw/video-claw/frontend && npm ci && npm run build
+      #   assemble .next-runtime, then `docker compose restart frontend`.
+      # create_host_path: false -> `up` fails with a clear error when the
+      # runtime has not been assembled yet, instead of silently creating an
+      # empty host dir and leaving the container unable to start.
+      - type: bind
+        source: ./video-claw/video-claw/frontend/.next-runtime
+        target: /app
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
