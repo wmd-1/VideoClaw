@@ -23,6 +23,11 @@ services:
     pull_policy: never
     container_name: video-claw-backend
     restart: unless-stopped
+    # 注入仓库根 .env 中的后端配置覆盖（VC_PROVIDER_* / VC_MODEL_* / VC_CUSTOM_MODEL_* 等；
+    # 优先级：进程环境 > .env > config.yaml）。required:false 兼容尚未创建 .env 的环境。
+    env_file:
+      - path: .env
+        required: false
     environment:
       # The entrypoint rewrites these into config.yaml so the server binds
       # on all interfaces (reachable from the frontend container).

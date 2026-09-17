@@ -11,7 +11,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 export function groupModelOptions(
-  models: Array<{ id: string; label?: string; provider?: string }>,
+  models: Array<{ id: string; label?: string; provider?: string; provider_label?: string }>,
 ): ProviderGroup[] {
   const groups = new Map<string, ProviderGroup>();
   for (const model of models) {
@@ -19,7 +19,8 @@ export function groupModelOptions(
     if (!groups.has(provider)) {
       groups.set(provider, {
         provider,
-        label: PROVIDER_LABELS[provider] || provider,
+        // 自定义供应商使用后端下发的 provider_label（显示名或键），内置供应商沿用静态标签映射
+        label: model.provider_label || PROVIDER_LABELS[provider] || provider,
         models: [],
       });
     }

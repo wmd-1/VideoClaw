@@ -16,8 +16,11 @@ import {
   updateModels,
   deleteSession,
   saveSelections,
+  ModelUnavailableError,
+  type ModelUnavailableDetail,
 } from '@/lib/workflowApi';
 import TopBar, { STAGES, type ModelConfig } from './TopBar';
+import ModelFallbackDialog from './ModelFallbackDialog';
 import HomePage, { type ProjectParams } from './HomePage';
 import {
   ScriptStage,
@@ -132,6 +135,8 @@ export default function WorkflowPanel() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [projectParams, setProjectParams] = useState<ProjectParams | null>(null);
   const [autoMode, setAutoMode] = useState(false);
+  // 模型不可用（预检 409 / 运行期失败）兜底弹窗状态
+  const [modelFallback, setModelFallback] = useState<{ detail: ModelUnavailableDetail; stage: string } | null>(null);
   // 用于顶栏流程图状态判断
   const [currentStageFromSession, setCurrentStageFromSession] = useState<string | null>(null);
   const [completedStagesFromSession, setCompletedStagesFromSession] = useState<string[]>([]);
@@ -361,6 +366,47 @@ export default function WorkflowPanel() {
     }
   };
 
+  // ─ 模型不可用兜底：刷新阶段产物（拿到种子化条目）并弹出引导弹窗 ──
+  const refreshStageArtifact = async (sid: string, stageId: string) => {
+    try {
+      const artResult = await getArtifact(sid, stageId);
+      if (artResult?.artifact) {
+        updateStageState(stageId, { artifact: artResult.artifact });
+      }
+    } catch {
+      /* 阶段尚无产物，忽略 */
+    }
+  };
+
+  const showModelUnavailable = (sid: string, stageId: string, detail: ModelUnavailableDetail) => {
+    setModelFallback(prev => prev ?? { stage: stageId, detail });
+    void refreshStageArtifact(sid, stageId);
+  };
+
+  // 阶段结束后扫描失败条目：存在 model_unavailable 时同样给出引导（每次运行最多弹一次）
+  const maybeShowFallbackFromArtifact = (stageId: string, artifact: any) => {
+    if (!artifact || typeof artifact !== 'object') return;
+    const groups = [artifact.characters, artifact.settings, artifact.scenes];
+    for (const group of groups) {
+      if (!Array.isArray(group)) continue;
+      const failed = group.find((item: any) => item && item.error_type === 'model_unavailable');
+      if (failed) {
+        setModelFallback(prev => prev ?? {
+          stage: stageId,
+          detail: {
+            code: 'model_unavailable',
+            stage: stageId,
+            field: '',
+            model: '',
+            reason: failed.error || '存在因模型不可用而失败的条目，可上传图片继续该步骤',
+            error_code: 'runtime_failed',
+          },
+        });
+        return;
+      }
+    }
+  };
+
   // ── 执行单个阶段 ──
   const runStage = async (sid: string, stageId: string, inputData: Record<string, any>) => {
     if (stoppedRef.current) throw new Error('Stopped');
@@ -470,6 +516,7 @@ export default function WorkflowPanel() {
             progressMessage: newStatus === 'waiting' ? '等待确认' : '已完成',
             artifact,
           });
+          if (artifact) maybeShowFallbackFromArtifact(stageId, artifact);
         } else if (event.type === 'error') {
           // 取消/停止类错误：尝试获取部分结果而不是直接报错
           const isCancelError = /cancel|取消|停止/i.test(event.content || '');
@@ -502,6 +549,10 @@ export default function WorkflowPanel() {
       }
     } catch (error: any) {
       if (error.name !== 'AbortError') {
+        if (error instanceof ModelUnavailableError) {
+          // 预检失败：刷新阶段产物（种子化条目）并弹出上传兜底引导
+          showModelUnavailable(sid, stageId, error.detail);
+        }
         updateStageState(stageId, {
           status: 'error',
           error: error.message,
@@ -877,6 +928,9 @@ export default function WorkflowPanel() {
       }
     } catch (error: any) {
       console.error('Intervention error:', error);
+      if (error instanceof ModelUnavailableError) {
+        showModelUnavailable(sessionId as string, stageId, error.detail);
+      }
     } finally {
       if (!isBackgroundItemRegeneration) {
         setIsRunning(false);
@@ -1364,6 +1418,7 @@ export default function WorkflowPanel() {
       : undefined;
 
     return (
+      <div id="stage-artifact-area" className="h-full">
       <Component
         state={state}
         sessionId={sessionId || ''}
@@ -1383,6 +1438,7 @@ export default function WorkflowPanel() {
           return acc;
         }, {})}
       />
+      </div>
     );
   };
 
@@ -1417,6 +1473,31 @@ export default function WorkflowPanel() {
           renderStageContent()
         )}
       </main>
+
+      {modelFallback && (
+        <ModelFallbackDialog
+          detail={modelFallback.detail}
+          stage={modelFallback.stage}
+          onClose={() => setModelFallback(null)}
+          onUpload={() => {
+            const target = modelFallback.stage;
+            setModelFallback(null);
+            setActiveStage(target);
+            setTimeout(() => {
+              document.getElementById('stage-artifact-area')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 60);
+          }}
+          onChangeModel={() => {
+            setModelFallback(null);
+            window.dispatchEvent(new CustomEvent('open-model-selector'));
+          }}
+          onRetry={() => {
+            const target = modelFallback.stage;
+            setModelFallback(null);
+            if (sessionId) runStage(sessionId, target, {}).catch(() => {});
+          }}
+        />
+      )}
     </div>
   );
 }

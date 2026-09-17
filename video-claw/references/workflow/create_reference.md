@@ -86,3 +86,22 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/continue"
 | 图片下载失败 | URL 路径错误 | 确认 path 格式为 `code/result/...` |
 | SSE 连接断开 | 网络超时 | 使用轮询 `/api/project/{session_id}/status` 继续 |
 | 用户不确认 | 用户想修改参考图 | 调用 modify_reference 重新生成 |
+
+---
+
+## 模型不可用（model_unavailable）的上传兜底
+
+当 `execute/reference_generation` 返回 **409** 且 `detail.code == "model_unavailable"`（文生图/图生图模型未注册、供应商缺失或不完整、内置缺 API Key）时：
+
+1. 预检失败不会触发任何生成；阶段条目（scenes）由分镜阶段同步产生，可逐条上传；
+2. 提示用户上传自有图片完成本步骤：
+
+```bash
+curl -X POST "http://localhost:8000/api/project/{session_id}/artifact/reference_generation/upload_image" \
+  -F "item_type=scenes" \
+  -F "item_id=seg_01_01" \
+  -F "file=@/path/to/local/image.png"
+```
+
+3. 上传后条目 `selected` 指向该图片、阶段状态自动重算（全部 `selected` 即 `completed`），可确认进入视频生成阶段；该图会作为第 5 阶段生成的首帧输入；
+4. 也可在 WebUI 弹窗中点「更换模型」后重试。

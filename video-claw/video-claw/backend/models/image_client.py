@@ -24,6 +24,9 @@ except ImportError:
     from .image_gpt import ImageGPT
     from .image_processor import ImageProcessor
 
+from models.config_model import resolve_model_entry
+from models.custom_common import ModelNotRegisteredError
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,6 +188,29 @@ class ImageClient:
             else:
                 save_dir = self.base_save_dir
         os.makedirs(save_dir, exist_ok=True)
+
+        # 自定义模型：注册表优先走协议适配层（generations / edits）
+        entry_kind, entry_meta = resolve_model_entry(model)
+        if entry_kind == "custom":
+            from models.custom_image import CustomImageClient
+
+            custom_client = CustomImageClient(entry_meta)
+            try:
+                paths = custom_client.generate_image(
+                    prompt=prompt,
+                    image_paths=image_paths,
+                    save_dir=save_dir,
+                    session_id=session_id,
+                    video_ratio=video_ratio,
+                    resolution=resolution,
+                )
+            finally:
+                custom_client.close()
+            if not paths:
+                raise RuntimeError(f"Image generation failed: custom model {model} returned no images")
+            return paths
+        if entry_kind == "unknown":
+            raise ModelNotRegisteredError(model)
         
         generated_local_paths = []
         provider_errors = []

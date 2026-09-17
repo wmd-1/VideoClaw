@@ -278,6 +278,9 @@ class WorkflowEngine:
                 if value is not None and (key not in input_data or not input_data[key]):
                     input_data[key] = value
             self._inject_user_selections(copy.deepcopy(state.artifacts), stage, input_data)
+            if stage == WorkflowStage.CHARACTER_DESIGN.value and self._seed_stage_items_from_script(state):
+                # 种入条目后立即落盘：预检失败触发上传兜底时条目必须已可见
+                self.save_session_to_disk(session_id)
             return state, input_data
 
     def prepare_intervention_execution(
@@ -299,6 +302,8 @@ class WorkflowEngine:
                 if value is not None and key not in input_data:
                     input_data[key] = value
             self._inject_user_selections(copy.deepcopy(state.artifacts), stage, input_data)
+            if stage == WorkflowStage.CHARACTER_DESIGN.value and self._seed_stage_items_from_script(state):
+                self.save_session_to_disk(session_id)
             input_data.update(modifications or {})
             return state, input_data
 
@@ -335,6 +340,80 @@ class WorkflowEngine:
                 }
                 if selected_clips:
                     data['selected_clips'] = selected_clips
+
+    def _seed_stage_items_from_script(self, state: WorkflowState) -> bool:
+        """第 2 阶段无产物条目时，从剧本产物种子化角色/场景条目（pending、空版本）。
+
+        刻意不调用 _recalculate_all_statuses：避免阶段在执行前就从 pending 变 waiting；
+        返回是否有变更（需要落盘）。
+        """
+        stage_key = WorkflowStage.CHARACTER_DESIGN.value
+        artifact = state.artifacts.get(stage_key)
+        if isinstance(artifact, dict) and (artifact.get("characters") or artifact.get("settings")):
+            return False
+
+        script_art = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
+        if not isinstance(script_art, dict):
+            return False
+        characters = script_art.get("characters") or []
+        settings = script_art.get("settings") or []
+        if not characters and not settings:
+            return False
+
+        seeded = artifact if isinstance(artifact, dict) else {"characters": [], "settings": [], "version": 1}
+        seeded.setdefault("characters", [])
+        seeded.setdefault("settings", [])
+        changed = False
+
+        existing_char_ids = {
+            item.get("id") for item in seeded["characters"] if isinstance(item, dict)
+        }
+        for char in characters:
+            if not isinstance(char, dict):
+                continue
+            char_id = char.get("character_id") or char.get("id")
+            if not char_id or char_id in existing_char_ids:
+                continue
+            seeded["characters"].append({
+                "id": char_id,
+                "name": char.get("name", ""),
+                "description": char.get("description", ""),
+                "species": char.get("species", ""),
+                "selected": "",
+                "versions": [],
+                "status": "pending",
+            })
+            existing_char_ids.add(char_id)
+            changed = True
+
+        existing_set_ids = {
+            item.get("id") for item in seeded["settings"] if isinstance(item, dict)
+        }
+        for setting in settings:
+            if not isinstance(setting, dict):
+                continue
+            setting_id = setting.get("setting_id") or setting.get("id")
+            if not setting_id or setting_id in existing_set_ids:
+                continue
+            seeded["settings"].append({
+                "id": setting_id,
+                "name": setting.get("name", ""),
+                "description": setting.get("description", ""),
+                "selected": "",
+                "versions": [],
+                "status": "pending",
+            })
+            existing_set_ids.add(setting_id)
+            changed = True
+
+        if changed:
+            state.artifacts[stage_key] = seeded
+            logger.info(
+                "[seed] character_design seeded from script: chars=%d settings=%d",
+                len(seeded["characters"]),
+                len(seeded["settings"]),
+            )
+        return changed
 
     def persist_session_snapshot(self, session_id: str) -> Dict[str, Any]:
         """Persist the latest engine-owned state and return a status snapshot."""
@@ -645,6 +724,38 @@ class WorkflowEngine:
                 state.status[s_val] = "completed"
 
     @staticmethod
+    def _preserve_item_error_fields(previous_artifact: Dict[str, Any], payload: Dict[str, Any], stage: WorkflowStage) -> None:
+        """阶段完成时保留失败条目的 error_type/error（payload 未携带时从上一版产物覆盖）。"""
+        item_keys_by_stage = {
+            WorkflowStage.CHARACTER_DESIGN: ("characters", "settings"),
+            WorkflowStage.REFERENCE_GENERATION: ("scenes",),
+            WorkflowStage.VIDEO_GENERATION: ("clips",),
+        }
+        keys = item_keys_by_stage.get(stage, ())
+        if not keys or not isinstance(previous_artifact, dict) or not isinstance(payload, dict):
+            return
+        for key in keys:
+            prev_items = previous_artifact.get(key)
+            new_items = payload.get(key)
+            if not isinstance(prev_items, list) or not isinstance(new_items, list):
+                continue
+            prev_by_id = {
+                item.get("id"): item
+                for item in prev_items
+                if isinstance(item, dict) and item.get("id")
+            }
+            for item in new_items:
+                if not isinstance(item, dict):
+                    continue
+                prev = prev_by_id.get(item.get("id"))
+                if not prev or item.get("status") != "failed":
+                    continue
+                if prev.get("error_type") and not item.get("error_type"):
+                    item["error_type"] = prev["error_type"]
+                if prev.get("error") and not item.get("error"):
+                    item["error"] = prev["error"]
+
+    @staticmethod
     def _is_background_item_regeneration(stage: WorkflowStage, intervention: Optional[Dict]) -> bool:
         if not isinstance(intervention, dict):
             return False
@@ -854,6 +965,10 @@ class WorkflowEngine:
                         )
                     if "rewrite_result" in asset_update:
                         item["rewrite_result"] = copy.deepcopy(asset_update["rewrite_result"])
+                    if "error_type" in asset_update:
+                        item["error_type"] = asset_update["error_type"]
+                    if "error" in asset_update:
+                        item["error"] = asset_update["error"]
                     return
 
             new_item = {
@@ -864,6 +979,10 @@ class WorkflowEngine:
             }
             if "rewrite_result" in asset_update:
                 new_item["rewrite_result"] = copy.deepcopy(asset_update["rewrite_result"])
+            if "error_type" in asset_update:
+                new_item["error_type"] = asset_update["error_type"]
+            if "error" in asset_update:
+                new_item["error"] = asset_update["error"]
             items.append(new_item)
 
         def wrapped_progress_callback(phase: str, step: str, percent: float, data: dict = None):
@@ -951,6 +1070,8 @@ class WorkflowEngine:
                         target_ids = self._background_regeneration_targets(stage, intervention)
                         payload = self._merge_item_regeneration_payload(state.artifacts.get(stage.value, {}), payload, keys, target_ids)
                     self._sync_artifacts_cross_stages(state, stage, payload)
+                    # 阶段完成时保留失败条目的 error_type/error（payload 未携带时从上一版产物覆盖）
+                    self._preserve_item_error_fields(state.artifacts.get(stage.value), payload, stage)
                     state.artifacts[stage.value] = payload
 
                 # 调试日志

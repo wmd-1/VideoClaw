@@ -40,6 +40,7 @@ Thumbs.db
 .codebuddy/
 .qoder/
 .claude/
+.agents/
 
 # TypeScript incremental build info
 *.tsbuildinfo
@@ -51,3 +52,12 @@ data
 *.tar
 
 openspec/
+tmp_verify/*.json
+tmp_verify/*.png
+tmp_verify/*.txt
+
+tmp_verify/*.snapshot
+tmp_verify/*.backup
+tmp_verify/probe_*.py
+tmp_verify/debug_*.py
+tmp_verify/preclean_*.sh

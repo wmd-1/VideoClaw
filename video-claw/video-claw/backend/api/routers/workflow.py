@@ -52,6 +52,37 @@ def _require_model_fields(values: dict) -> None:
         )
 
 
+# 需要图像模型可用性预检的阶段（模型字段，按阶段）
+PREFLIGHT_STAGE_MODEL_FIELDS = {
+    "character_design": ("image_t2i_model",),
+    "reference_generation": ("image_t2i_model", "image_it2i_model"),
+}
+
+
+def _preflight_stage_models(stage: str, values: dict) -> None:
+    """第 2/4 阶段执行前的模型可用性预检；不可用时返回 409 结构化错误（不启动生成）。"""
+    fields = PREFLIGHT_STAGE_MODEL_FIELDS.get(stage)
+    if not fields:
+        return
+    from models.config_model import model_availability
+
+    for field in fields:
+        model = values.get(field) or ""
+        availability = model_availability(model)
+        if not availability["available"]:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "model_unavailable",
+                    "stage": stage,
+                    "field": field,
+                    "model": model,
+                    "reason": availability["reason"],
+                    "error_code": availability["code"],
+                },
+            )
+
+
 @router.post("/api/project/start")
 async def start_project(req: ProjectStartRequest):
     final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
@@ -114,6 +145,7 @@ async def execute_stage(session_id: str, stage: str, request: Request):
 
     state, input_data = workflow_engine.prepare_stage_execution(session_id, stage, body)
     _require_model_fields(input_data)
+    _preflight_stage_models(stage, input_data)
 
     cancellation_check, on_disconnect = make_cancellation(workflow_engine, session_id)
     progress_events, event_trigger, progress_callback = make_progress_channel()
@@ -241,6 +273,7 @@ async def intervene(session_id: str, req: InterventionRequest, request: Request)
         )
     except KeyError:
         raise HTTPException(404, "Session not found")
+    _preflight_stage_models(req.stage, input_data)
 
     cancellation_check, on_disconnect = make_cancellation(workflow_engine, session_id)
     progress_events, event_trigger, progress_callback = make_progress_channel()

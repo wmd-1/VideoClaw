@@ -26,6 +26,9 @@ except ImportError:
     from video_kling import KlingVideoClient
     from video_seedance import SeedanceVideoClient
 
+from models.config_model import resolve_model_entry
+from models.custom_common import ModelNotRegisteredError
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,6 +171,44 @@ class VideoClient:
                 "-" * 30,
             ])
             logger.info("\n%s", "\n".join(lines))
+
+        # 自定义模型：注册表优先走协议适配层（异步任务创建/轮询/下载）
+        entry_kind, entry_meta = resolve_model_entry(model)
+        if entry_kind == "custom":
+            from models.custom_video import CustomVideoClient
+
+            custom_client = CustomVideoClient(entry_meta)
+            try:
+                return custom_client.generate_video(
+                    prompt=prompt,
+                    image_path=image_path,
+                    save_path=save_path,
+                    model=model,
+                    duration=duration,
+                    shot_type=shot_type,
+                    sound=sound,
+                    video_ratio=video_ratio,
+                    resolution=resolution,
+                    last_image_path=last_image_path,
+                    first_clip_path=first_clip_path,
+                    reference_image_path=reference_image_path,
+                    reference_image_paths=reference_image_paths,
+                    reference_video_paths=reference_video_paths,
+                    reference_audio_path=reference_audio_path,
+                    audio_path=audio_path,
+                    negative_prompt=negative_prompt,
+                    prompt_extend=prompt_extend,
+                    watermark=watermark,
+                    seed=seed,
+                    mode=mode,
+                    cfg_scale=cfg_scale,
+                    generate_audio=generate_audio,
+                    audio=audio,
+                )
+            finally:
+                custom_client.close()
+        if entry_kind == "unknown":
+            raise ModelNotRegisteredError(model)
 
         model_lower = model.lower()
 

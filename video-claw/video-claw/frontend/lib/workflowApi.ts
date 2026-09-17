@@ -84,6 +84,7 @@ export interface ApiModelOption {
   id: string;
   label: string;
   provider: string;
+  provider_label?: string;
   family?: string;
   media_type?: 'image' | 'video';
   model_type?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
@@ -185,6 +186,41 @@ export async function deletePipelineTask(taskId: string): Promise<void> {
   if (!resp.ok) throw new Error('删除任务失败');
 }
 
+/** 模型不可用（第 2/4 阶段预检失败）结构化错误 */
+export interface ModelUnavailableDetail {
+  code: string;
+  stage?: string;
+  field?: string;
+  model?: string;
+  reason?: string;
+  error_code?: string;
+}
+
+export class ModelUnavailableError extends Error {
+  detail: ModelUnavailableDetail;
+
+  constructor(detail: ModelUnavailableDetail) {
+    super(detail.reason || `模型不可用：${detail.model || ''}`);
+    this.name = 'ModelUnavailableError';
+    this.detail = detail;
+  }
+}
+
+async function throwResponseError(resp: Response, fallback: string): Promise<never> {
+  let detail: any = null;
+  try {
+    const body = await resp.json();
+    detail = body?.detail ?? null;
+  } catch {
+    /* 非 JSON 响应 */
+  }
+  if (detail && typeof detail === 'object' && detail.code === 'model_unavailable') {
+    throw new ModelUnavailableError(detail as ModelUnavailableDetail);
+  }
+  const message = typeof detail === 'string' ? detail : detail?.reason || detail?.message || fallback;
+  throw new Error(message || fallback);
+}
+
 export async function fetchApiModels(params: {
   mediaType?: 'image' | 'video';
   modelType?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
@@ -200,6 +236,32 @@ export async function fetchApiModels(params: {
   if (!resp.ok) throw new Error('获取模型列表失败');
   const data = await resp.json();
   return data.models || [];
+}
+
+export interface ModelTestResult {
+  success: boolean;
+  model_type: string;
+  elapsed_ms: number;
+  reason: string;
+  detail?: string;
+}
+
+/** 自定义模型连通性测试（模型/供应商草稿或已保存条目均支持；媒体类会发起一次真实生成） */
+export async function testCustomModel(payload: {
+  model: Record<string, any>;
+  provider: Record<string, any> | string;
+  model_type: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
+}): Promise<ModelTestResult> {
+  const resp = await fetch('/api/models/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: '测试请求失败' }));
+    throw new Error(typeof err.detail === 'string' ? err.detail : '测试请求失败');
+  }
+  return resp.json();
 }
 
 export async function fetchStandardTemplates(): Promise<StandardTemplateOption[]> {
@@ -334,12 +396,14 @@ export async function executeStage(
   inputData: Record<string, any> = {},
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${STREAM_API_BASE}/api/project/${sessionId}/execute/${stage}`, {
+  const resp = await fetch(`${STREAM_API_BASE}/api/project/${sessionId}/execute/${stage}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inputData),
     signal,
   });
+  if (!resp.ok) await throwResponseError(resp, '阶段执行失败');
+  return resp;
 }
 
 export async function intervene(
@@ -348,11 +412,13 @@ export async function intervene(
   modifications: Record<string, any>,
 ): Promise<Response> {
   // Use STREAM_API_BASE to bypass Next.js proxy (SSE endpoint)
-  return fetch(`${STREAM_API_BASE}/api/project/${sessionId}/intervene`, {
+  const resp = await fetch(`${STREAM_API_BASE}/api/project/${sessionId}/intervene`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ stage, modifications }),
   });
+  if (!resp.ok) await throwResponseError(resp, '修改请求失败');
+  return resp;
 }
 
 export async function stopProject(sessionId: string): Promise<{ status: string }> {

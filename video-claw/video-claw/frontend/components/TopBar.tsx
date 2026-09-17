@@ -116,6 +116,13 @@ function ModelSelector({
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
+  // 供模型不可用兜底弹窗「更换模型」按钮唤起本面板
+  useEffect(() => {
+    const openHandler = () => setOpen(true);
+    window.addEventListener('open-model-selector', openHandler);
+    return () => window.removeEventListener('open-model-selector', openHandler);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     fetchModelGroupsByType('llm')

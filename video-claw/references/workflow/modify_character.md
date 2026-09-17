@@ -42,3 +42,13 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/character_d
 | `404 Not Found` | session_id 错误 | 确认 session_id 正确 |
 | PATCH 成功但无变化 | 需要重新执行阶段 | 调用 execute/character_design 重新生成 |
 | 角色 ID 不存在 | ID 错误 | 从 artifact 中获取正确的角色 ID |
+
+---
+
+## 模型不可用（model_unavailable）时的处理
+
+本流程的重新生成（`execute` / `intervene`）会先做模型可用性预检；若返回 **409** 且 `detail.code == "model_unavailable"`：
+
+1. 预检失败不会触发任何生成，先向用户说明原因（模型未注册 / 供应商缺失或不完整 / 内置缺 Key）；
+2. 可改为上传自有图片完成条目：`POST /api/project/{session_id}/artifact/character_design/upload_image`（`item_type=characters|settings`，`item_id` 为条目 id）；
+3. 或先更换模型再重试（会话级 `PATCH /api/project/{session_id}/models` 或设置页修复配置）。

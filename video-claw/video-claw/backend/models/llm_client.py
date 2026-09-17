@@ -22,6 +22,8 @@ except ImportError:
     from vlm_dashscope import QwenVLClient
 
 from config import Config
+from models.config_model import resolve_model_entry
+from models.custom_common import ModelNotRegisteredError
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,24 @@ class LLM:
             ])
             logger.info("\n%s", "\n".join(lines))
             
+        # 自定义模型：注册表优先走协议适配层（chat/completions）
+        entry_kind, entry_meta = resolve_model_entry(model)
+        if entry_kind == "custom":
+            from models.custom_llm import CustomChatClient
+
+            custom_client = CustomChatClient(entry_meta)
+            try:
+                result = custom_client.query(
+                    prompt, image_urls=image_urls, model=model, web_search=web_search
+                )
+            finally:
+                custom_client.close()
+            if safe_content:
+                result = self.full_to_half(result)
+            return '\n'.join([line for line in result.split('\n') if line.strip() != ''])
+        if entry_kind == "unknown":
+            raise ModelNotRegisteredError(model)
+
         result = ""
         model_lower = model.lower()
         if model_lower.startswith("gemini"):

@@ -40,6 +40,10 @@ const nextConfig: NextConfig = {
         destination: `${BACKEND_URL}/api/models`,
       },
       {
+        source: "/api/models/:path*",
+        destination: `${BACKEND_URL}/api/models/:path*`,
+      },
+      {
         source: "/api/config",
         destination: `${BACKEND_URL}/api/config`,
       },

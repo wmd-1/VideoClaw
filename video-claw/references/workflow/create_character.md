@@ -103,3 +103,24 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/continue"
 | 图片下载失败 | URL 路径错误 | 确认 path 格式为 `code/result/...` |
 | SSE 连接断开 | 网络超时 | 使用轮询 `/api/project/{session_id}/status` 继续 |
 | 用户不确认 | 用户想修改角色 | 调用 modify_character 重新生成 |
+
+---
+
+## 模型不可用（model_unavailable）的上传兜底
+
+当 `execute/character_design` 返回 **409** 且 `detail.code == "model_unavailable"`（模型未注册 / 自定义模型引用的供应商缺失或不完整 / 内置模型缺 API Key）时：
+
+1. 服务端已先把剧本中的角色/场景种子化为待生成条目（`pending`、可逐条上传），且**未触发任何生成请求**；
+2. 提示用户上传自有图片完成本步骤（不依赖模型生成），对每个条目调用：
+
+```bash
+curl -X POST "http://localhost:8000/api/project/{session_id}/artifact/character_design/upload_image" \
+  -F "item_type=characters" \
+  -F "item_id=char_id_1" \
+  -F "file=@/path/to/local/portrait.png"
+```
+
+（场景条目用 `item_type=settings`；条目 id 从 `GET /api/project/{session_id}/artifact/character_design` 获取）
+
+3. 上传后条目 `selected` 指向该图片、阶段状态自动重算（全部条目完成即 `completed`），可直接确认进入下一阶段；上传图会作为后续视频生成阶段的输入图；
+4. 也可引导用户先在 WebUI 弹窗中点击「更换模型」后重试（会话级 `PATCH /api/project/{session_id}/models`，或在设置页修复供应商配置）。

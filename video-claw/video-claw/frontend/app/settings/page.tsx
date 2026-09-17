@@ -5,6 +5,11 @@ import { CheckCircle, Loader2, Save, Settings, XCircle } from 'lucide-react';
 import BrandHeader from '@/components/BrandHeader';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 import {
+  CustomModelsSection,
+  CustomProvidersSection,
+  type EnvOverrides,
+} from '@/components/settings/CustomModelsSection';
+import {
   VIDEO_RATIOS,
   VIDEO_RESOLUTIONS,
   VIDEO_GENERATION_MODES,
@@ -32,6 +37,8 @@ const EMPTY_MODEL_SELECTS: Record<ModelSelectKey, ProviderGroup[]> = {
   video_start_end: [],
   video_reference: [],
 };
+
+const EMPTY_ENV_OVERRIDES: EnvOverrides = { fields: [], providers: [], models: [] };
 
 const LOG_LEVEL_OPTIONS = [
   { id: 'DEBUG', label: 'DEBUG - 最详细' },
@@ -186,6 +193,7 @@ export default function SettingsPage() {
   const [error, setError] = useState('');
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
   const [modelSelects, setModelSelects] = useState<Record<ModelSelectKey, ProviderGroup[]>>(EMPTY_MODEL_SELECTS);
+  const [envOverrides, setEnvOverrides] = useState<EnvOverrides>(EMPTY_ENV_OVERRIDES);
 
   useEffect(() => {
     const load = async () => {
@@ -198,6 +206,7 @@ export default function SettingsPage() {
         setConfig(data.config || {});
         setPath(data.path || '');
         setSecretDrafts({});
+        setEnvOverrides(data.env_overrides || EMPTY_ENV_OVERRIDES);
       } catch (e: any) {
         setError(e.message || '读取配置失败');
       } finally {
@@ -207,8 +216,7 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const refreshModelSelects = () => {
     Promise.all([
       fetchModelGroupsByType('llm'),
       fetchModelGroupsByType('vlm'),
@@ -219,7 +227,6 @@ export default function SettingsPage() {
       fetchVideoModelGroupsByAbility('reference_to_video'),
     ])
       .then(([llm, vlm, imageIt2i, imageT2i, firstFrameVideo, startEndVideo, referenceVideo]) => {
-        if (cancelled) return;
         setModelSelects({
           llm,
           vlm,
@@ -231,7 +238,10 @@ export default function SettingsPage() {
         });
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+  };
+
+  useEffect(() => {
+    refreshModelSelects();
   }, []);
 
   const groups = GROUPS.map(group => {
@@ -271,6 +281,8 @@ export default function SettingsPage() {
       setConfig(data.config || {});
       setPath(data.path || '');
       setSecretDrafts({});
+      setEnvOverrides(data.env_overrides || EMPTY_ENV_OVERRIDES);
+      refreshModelSelects();
       setMessage('配置已保存');
     } catch (e: any) {
       setError(e.message || '保存配置失败');
@@ -369,6 +381,9 @@ export default function SettingsPage() {
                 </div>
               </section>
             ))}
+
+            <CustomProvidersSection config={config} setConfig={setConfig} envOverrides={envOverrides} />
+            <CustomModelsSection config={config} setConfig={setConfig} envOverrides={envOverrides} />
 
             <div className="sticky bottom-4 flex items-center gap-3 rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-lg backdrop-blur">
               {message && (

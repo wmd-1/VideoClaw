@@ -123,6 +123,8 @@ VideoClaw/
 | 视频 | `video_client.py` + `video_{dashscope,kling,seedance}.py`                                  | DashScope（Wan）/ Kling / 火山方舟（Seedance）       |
 
 - 注册表 `models/config_model.py::MODEL_CONFIG` 登记每个模型的 `provider / type（能力标签）/ concurrency / price`，是模型清单的权威来源。
+- 支持**自定义供应商与模型**：`api_providers` 下新增供应商（`protocol` = `openai` / `vllm-omni` / `sglang`），并在 `custom_models` 中通过 `provider` 引用注册模型（LLM/VLM/文生图/图生图/视频）；注册表查询时合并自定义条目，客户端路由「注册表优先」（未注册模型直接报错而非落入默认供应商）。适配层见 `models/custom_{common,llm,image,video}.py`：图像支持 `b64_json`/URL/二进制三种响应，视频为异步任务（创建→轮询→下载，multipart 主形态、零鉴权兼容、超时上限与尽力取消）。
+- 连通性测试：`POST /api/models/test`（接受未保存草稿，不持久化配置，媒体类会发起一次真实生成）；设置页「自定义供应商/自定义模型」提供逐类型测试按钮。
 - `/api/models` 支持按 `media_type`（image/video）与 `ability`（text_to_image、image_to_video、reference_image、action_transfer、digital_human 等）筛选，前端与 Agent 均以此选择模型。
 
 ### 后端 · Pipeline 引擎
@@ -233,7 +235,16 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 | `server`        | `host` / `port` / `log_level` / `access_log`                                                                   | 服务绑定与日志；启动参数改动需重启后端生效（Docker 下`host` 由 entrypoint 强制为 `0.0.0.0`） |
 | `api_providers` | `common.proxy`；各 provider 的 `api_key` / `base_url` / `enable_proxy`                                         | 平台密钥与代理；`enable_proxy` 控制该 provider 是否走公共代理                                  |
 | `models`        | `llm` / `vlm` / `image_t2i` / `image_it2i` / `video_first_frame` / `video_start_end` / `video_reference` | 主流程默认模型；Pipeline 在各自页面单独选模型，不读该默认值                                      |
+| `custom_models` | `id` / `provider` / `model` / `types` / `abilities` / `concurrency` | 自定义模型注册列表（引用 `api_providers` 中的自定义供应商）；`concurrency` 缺省 1（本地单卡服务最保守） |
 | `generation`    | `style` / `video_ratio` / `video_resolution` / `video_generation_mode`                                         | 主流程默认生成参数（`video_generation_mode` 默认 `first_frame`）                             |
+
+配置来源优先级：**进程环境变量 > `.env` 文件 > `config.yaml` > 默认值**（字段级覆盖）。`.env`（`cp .env.example .env`）支持三类覆盖：
+
+- `VC_PROVIDER_<名称>__PROTOCOL|BASE_URL|API_KEY|ENABLE_PROXY`（内置/自定义供应商通用，供应商名大写、中划线转下划线）；
+- `VC_MODEL_LLM|VLM|IMAGE_T2I|IMAGE_IT2I|VIDEO_FIRST_FRAME|VIDEO_START_END|VIDEO_REFERENCE`；
+- `VC_CUSTOM_MODEL_<序号>__ID|PROVIDER|MODEL|NAME|TYPES|ABILITIES|CONCURRENCY`（列表字段逗号分隔；与 `config.yaml` 中同 `id` 条目逐字段合并，.env 优先）。
+
+被 `.env` 覆盖的字段在设置页**只读**并标注「来自 .env」，保存设置不会将其写回；修改 `.env` 后执行 `docker compose up -d backend`（重建容器）生效。
 
 相关环境变量：
 
@@ -242,6 +253,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 | `BACKEND_HOST` / `BACKEND_PORT`  | backend 容器（entrypoint）               | 覆盖写入`server.host` / `server.port`，默认 `0.0.0.0:8000`               |
 | `FRONTEND_PORT` / `BACKEND_PORT` | 宿主`.env`（`cp .env.example .env`） | compose 发布到宿主机的端口，默认 3000 / 8000                                   |
 | `BACKEND_INTERNAL_URL`             | 前端（构建期 + 运行期）                  | 代理目标；本地默认`http://127.0.0.1:8000`，Docker 内 `http://backend:8000` |
+| `VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*` | backend（compose `env_file` 注入；本地直跑读仓库根/backends 下 `.env`） | 后端配置覆盖层（供应商/默认模型/自定义模型），优先级高于 `config.yaml`，详见上方「配置说明」 |
 
 ## 服务拓扑与端口
 

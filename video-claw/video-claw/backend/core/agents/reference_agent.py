@@ -311,6 +311,7 @@ class ReferenceGeneratorAgent(AgentInterface):
         # 收集所有生成的版本
         all_versions = []
         all_eval_results = []
+        last_error = None
 
         for version in range(max_versions):
             self._check_cancel()
@@ -383,6 +384,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                     self._report_progress("参考图", f"重新生成中 ({version + 2}/{max_versions}): {segment_id}", 0)
 
             except Exception as e:
+                last_error = e
                 logger.error(f"Segment {segment_id} image generation failed: {e}")
 
         # 所有版本都没有达到硬性标准，使用 VLM 选择最好的
@@ -419,7 +421,16 @@ class ReferenceGeneratorAgent(AgentInterface):
         logger.warning(f"[{segment_id}] 没有成功生成任何图片")
         if all_eval_results and isinstance(all_eval_results[-1], dict):
             all_eval_results[-1]["final_visual_prompt"] = current_visual_prompt
-        return segment_id, None, None, None
+        # 失败标记：模型级错误（鉴权/模型不存在/连接失败等）→ error_type=model_unavailable，供前端弹窗与排障
+        failure_marker = None
+        if last_error is not None:
+            from models.custom_common import classify_model_unavailable
+
+            if classify_model_unavailable(last_error):
+                failure_marker = {"error_type": "model_unavailable", "error": str(last_error)[:300]}
+            else:
+                failure_marker = {"error": str(last_error)[:300]}
+        return segment_id, None, failure_marker, None
 
     def _select_best_with_vlm(self, image_paths: List[str], segment: dict, plot: str, visual_prompt: str,
                               character_description: str = "", setting_description: str = "",
@@ -794,6 +805,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                             futs[fut] = segment_id
                         for fut in as_completed(futs):
                             segment_id_done = futs[fut]
+                            eval_result = None
                             try:
                                 _, result_path, eval_result, ff_prompt, rewrite_result = fut.result()
                                 prompt_map[segment_id_done] = ff_prompt
@@ -829,6 +841,11 @@ class ReferenceGeneratorAgent(AgentInterface):
                                     "selected": fallback_path,
                                     "versions": versions,
                                 }
+                                if (not fallback_path) and isinstance(eval_result, dict):
+                                    if eval_result.get("error_type"):
+                                        asset_complete["error_type"] = eval_result["error_type"]
+                                    if eval_result.get("error"):
+                                        asset_complete["error"] = eval_result["error"]
                                 if rewrite_results_map.get(segment_id_done):
                                     asset_complete["rewrite_result"] = rewrite_results_map[segment_id_done]
                                 message = f"完成: {segment_id_done}" if fallback_path else f"失败: {segment_id_done}"
@@ -957,6 +974,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                 cancelled = False
                 for fut in as_completed(futs):
                     segment_id_done = futs[fut]
+                    eval_result = None
                     try:
                         _, result_path, eval_result, ff_prompt, rewrite_result = fut.result()
                         first_frame_prompts[segment_id_done] = ff_prompt
@@ -994,6 +1012,11 @@ class ReferenceGeneratorAgent(AgentInterface):
                             "selected": fallback_path,
                             "versions": versions,
                         }
+                        if (not fallback_path) and isinstance(eval_result, dict):
+                            if eval_result.get("error_type"):
+                                asset_complete["error_type"] = eval_result["error_type"]
+                            if eval_result.get("error"):
+                                asset_complete["error"] = eval_result["error"]
                         if rewrite_results_map.get(segment_id_done):
                             asset_complete["rewrite_result"] = rewrite_results_map[segment_id_done]
                         message = f"完成: {segment_id_done}" if fallback_path else f"失败: {segment_id_done}"

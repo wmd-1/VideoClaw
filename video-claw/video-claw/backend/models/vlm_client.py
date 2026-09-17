@@ -20,6 +20,9 @@ except ImportError:
     from vlm_gemini import GeminiVLClient
     from vlm_gpt import GPTVLClient
 
+from models.config_model import resolve_model_entry
+from models.custom_common import ModelNotRegisteredError
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,6 +98,19 @@ class VLM:
                 lines.append(f"Session ID: {session_id}")
             lines.append("-" * 30)
             logger.info("\n%s", "\n".join(lines))
+
+        # 自定义模型：注册表优先走协议适配层（chat/completions，图片以 data URL 传递）
+        entry_kind, entry_meta = resolve_model_entry(model)
+        if entry_kind == "custom":
+            from models.custom_llm import CustomChatClient
+
+            custom_client = CustomChatClient(entry_meta)
+            try:
+                return custom_client.query(prompt, image_urls=list(image_paths or []), model=model)
+            finally:
+                custom_client.close()
+        if entry_kind == "unknown":
+            raise ModelNotRegisteredError(model)
 
         # Determine backend provider
         model_lower = model.lower()

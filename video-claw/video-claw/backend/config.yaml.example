@@ -46,3 +46,20 @@ generation:
   video_ratio: '16:9'
   video_resolution: 720P
   video_generation_mode: first_frame
+# 自定义供应商（可选）：在 api_providers 下新增条目，protocol 取值 openai / vllm-omni / sglang；
+# 每台部署的推理服务器登记为一个条目（如 vllm 同时服务 LLM/VLM 只需一个条目）。例：
+#   local_llm:
+#     protocol: openai
+#     base_url: http://127.0.0.1:8000/v1
+#     api_key: ''
+#     enable_proxy: false
+# 自定义模型（可选）：通过 provider 引用上面的供应商；types 取值 llm/vlm/t2i/i2i/video；
+# concurrency 缺省 1（本地服务最保守），可显式调高。例：
+#   - id: qwen3-32b
+#     name: 本地 Qwen3-32B
+#     provider: local_llm
+#     model: Qwen3-32B
+#     types: [llm, vlm]
+#     abilities: [text_generation, vision_language]
+# 环境变量覆盖（可选）：见项目根目录 .env.example（VC_PROVIDER_* / VC_MODEL_* / VC_CUSTOM_MODEL_*，优先级高于本文件）
+custom_models: []

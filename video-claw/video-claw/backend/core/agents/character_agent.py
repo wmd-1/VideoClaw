@@ -218,6 +218,7 @@ class CharacterDesignerAgent(AgentInterface):
         video_ratio = "16:9"
         resolution = "2K"
         current_prompt = base_prompt
+        last_error = None
 
         for iteration in range(max_iterations):
             self._check_cancel()
@@ -279,6 +280,7 @@ class CharacterDesignerAgent(AgentInterface):
                     self._report_progress("角色设计", f"重新生成中 ({iteration + 2}/{max_iterations}): {name}", 0)
 
             except Exception as e:
+                last_error = e
                 logger.error(f"Asset gen failed for {asset_type} {name}({asset_id}): {e}")
 
         # 达到最大迭代次数，尝试使用 VLM 选择最佳图片
@@ -296,10 +298,19 @@ class CharacterDesignerAgent(AgentInterface):
                 return asset_id, best_path, best_eval, best_eval.get("rewrite_result") if isinstance(best_eval, dict) else None
 
         # 没有多个版本或 VLM 选择失败，返回最后一次结果
+        # 失败标记：模型级错误（鉴权/模型不存在/连接失败等）→ error_type=model_unavailable，供前端弹窗与排障
+        failure_marker = None
+        if last_error is not None:
+            from models.custom_common import classify_model_unavailable
+
+            if classify_model_unavailable(last_error):
+                failure_marker = {"error_type": "model_unavailable", "error": str(last_error)[:300]}
+            else:
+                failure_marker = {"error": str(last_error)[:300]}
         return (
             asset_id,
             save_path if os.path.exists(save_path) else None,
-            eval_result if 'eval_result' in locals() else None,
+            eval_result if 'eval_result' in locals() else failure_marker,
             rewrite_result if 'rewrite_result' in locals() else None,
         )
 
@@ -609,6 +620,11 @@ class CharacterDesignerAgent(AgentInterface):
                                     "type": atype, "id": aid, "status": "failed",
                                     "selected": "", "versions": [],
                                 }
+                                if isinstance(eval_result, dict):
+                                    if eval_result.get("error_type"):
+                                        asset_complete["error_type"] = eval_result["error_type"]
+                                    if eval_result.get("error"):
+                                        asset_complete["error"] = eval_result["error"]
                                 if rewrite_result:
                                     asset_complete["rewrite_result"] = rewrite_result
                                 self._report_progress("角色设计", f"失败: {fname}", pct, data={
@@ -686,7 +702,7 @@ class CharacterDesignerAgent(AgentInterface):
 
                 for fut in as_completed(futs):
                     atype, aid, fname = futs[fut]
-                    _, result_path, _, rewrite_result = fut.result()
+                    _, result_path, failure_info, rewrite_result = fut.result()
                     done += 1
                     pct = 10 + int(85 * done / max(total, 1))
                     if rewrite_result:
@@ -707,6 +723,11 @@ class CharacterDesignerAgent(AgentInterface):
                             "type": atype, "id": aid, "status": "failed",
                             "selected": "", "versions": self._list_versions(sid, atype, aid),
                         }
+                        if isinstance(failure_info, dict):
+                            if failure_info.get("error_type"):
+                                asset_complete["error_type"] = failure_info["error_type"]
+                            if failure_info.get("error"):
+                                asset_complete["error"] = failure_info["error"]
                         if rewrite_result:
                             asset_complete["rewrite_result"] = rewrite_result
                         self._report_progress("角色设计", f"失败: {fname}", pct, data={

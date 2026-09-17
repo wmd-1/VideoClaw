@@ -19,6 +19,8 @@ metadata:
 
 > **核心原则**：每个阶段的产物都必须展示给用户，必须停下来等待用户确认后才能继续下一阶段。
 
+> **模型兜底**：当第 2/4 阶段执行/修改接口返回 `model_unavailable`（模型未配置或调用失效）时，先向用户说明原因，并引导两条路径：① 上传自有图片完成条目（详见 `references/workflow/create_character.md` / `create_reference.md` 的「模型不可用（model_unavailable）的上传兜底」小节）；② 在设置页/会话模型面板更换为可用模型后重试。另：自定义模型可通过配置文件、设置页或 `.env`（`VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*`）注册。
+
 > **防止遗忘**：在整个流程中，Agent 可能会忘记之前的用户输入或之前阶段的产物内容。**每当进入一个新的阶段时，Agent 都必须重新加载这篇SKILL文档，确保不会忘记任何细节**。
 
 ---

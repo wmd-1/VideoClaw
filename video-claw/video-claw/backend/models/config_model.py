@@ -4,6 +4,7 @@ All backend model metadata is registered in this file, including provider,
 model type, concurrency, pricing, and API capability tags.
 """
 
+import logging
 import os
 import sys
 
@@ -14,6 +15,8 @@ if backend_dir not in sys.path:
 
 from copy import deepcopy
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek Chat',
                               'provider': 'deepseek',
@@ -588,13 +591,232 @@ MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek C
                                                    'api_contract_verified': False}}}}
 
 
+# 自定义模型并发缺省值：本地单卡服务最保守，可显式调高
+CUSTOM_MODEL_DEFAULT_CONCURRENCY = 1
+
+# 内置供应商 → 凭据字段映射（阶段预检使用）
+PROVIDER_CREDENTIAL_FIELDS = {
+    "dashscope": "DASHSCOPE_API_KEY",
+    "ark": "ARK_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "kling": "KLING_API_KEY",
+}
+
+
+def _builtin_models() -> dict[str, Any]:
+    return MODEL_CONFIG.get("models", {})
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[str, Any]:
+    """按 types/abilities 推导自定义模型能力标签，用户声明的 capabilities 可覆盖默认值。"""
+    ability_types: list[str] = []
+    input_modalities: list[str] = ["text"]
+    if "llm" in types:
+        ability_types.append("text_generation")
+    if "vlm" in types:
+        ability_types.extend(["vision_language", "image_understanding"])
+        input_modalities.append("image")
+    if "t2i" in types:
+        ability_types.append("text_to_image")
+    if "i2i" in types:
+        ability_types.extend(["image_to_image", "reference_image"])
+        input_modalities.append("image")
+    if "video" in types:
+        declared = [a for a in (item.get("abilities") or []) if a]
+        video_abilities = declared or ["text_to_video", "first_frame_i2v"]
+        ability_types.extend(video_abilities)
+        if any(a in ("first_frame_i2v", "image_to_video") for a in video_abilities):
+            input_modalities.append("image")
+
+    ability_types = list(dict.fromkeys(ability_types))
+    input_modalities = list(dict.fromkeys(input_modalities))
+
+    if "video" in types:
+        ability_type = "image_to_video" if "first_frame_i2v" in ability_types else "text_to_video"
+        capability: dict[str, Any] = {
+            "ability_type": ability_type,
+            "ability_types": ability_types,
+            "adapter_ability_types": ability_types,
+            "input_modalities": input_modalities,
+            "adapter_input_modalities": input_modalities,
+            "duration": {"min": 2, "max": 10, "integer": True, "verified": True},
+            "resolutions": ["720P", "1080P"],
+            "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+        }
+    elif any(t in types for t in ("t2i", "i2i")):
+        capability = {
+            "ability_type": "image_generation",
+            "ability_types": ability_types,
+            "adapter_ability_types": ability_types,
+            "input_modalities": input_modalities,
+            "adapter_input_modalities": input_modalities,
+            "resolutions": ["720P", "1080P"],
+            "ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+        }
+    elif "vlm" in types:
+        capability = {
+            "ability_type": "vision_language",
+            "ability_types": ability_types,
+            "adapter_ability_types": ability_types,
+            "input_modalities": input_modalities,
+            "adapter_input_modalities": input_modalities,
+        }
+    else:
+        capability = {
+            "ability_type": "text_generation",
+            "ability_types": ability_types,
+            "adapter_ability_types": ability_types,
+            "input_modalities": input_modalities,
+            "adapter_input_modalities": input_modalities,
+        }
+    # 自定义模型注册即声明可用；实际连通性由连通测试与运行期错误反馈
+    capability["api_contract_verified"] = True
+    user_caps = item.get("capabilities")
+    if isinstance(user_caps, dict):
+        capability = _deep_merge_dict(capability, user_caps)
+    return capability
+
+
+def _custom_model_entries() -> dict[str, dict[str, Any]]:
+    """由有效配置（文件 + env）中的 custom_models 派生注册表条目。"""
+    try:
+        from config import CUSTOM_MODEL_TYPES, Config
+    except Exception:  # pragma: no cover - 极端情况下注册表退化为仅内置模型
+        logger.warning("Config unavailable while building custom model registry", exc_info=True)
+        return {}
+    config_values = Config.CONFIG if isinstance(Config.CONFIG, dict) else {}
+    providers = config_values.get("api_providers", {}) or {}
+    entries: dict[str, dict[str, Any]] = {}
+    for item in config_values.get("custom_models", []) or []:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        provider_key = str(item.get("provider") or "").strip()
+        if not model_id or not provider_key:
+            continue
+        # 供应商缺失/不完整时仍派生条目：由 model_availability 给出精确不可用原因
+        provider_config = providers.get(provider_key)
+        if not isinstance(provider_config, dict):
+            provider_config = {}
+        types = [t for t in (item.get("types") or []) if t in CUSTOM_MODEL_TYPES]
+        if not types:
+            continue
+        try:
+            concurrency = max(1, int(item.get("concurrency") or CUSTOM_MODEL_DEFAULT_CONCURRENCY))
+        except (TypeError, ValueError):
+            concurrency = CUSTOM_MODEL_DEFAULT_CONCURRENCY
+        entries[model_id] = {
+            "name": item.get("name") or model_id,
+            "provider": provider_key,
+            "provider_label": provider_config.get("name") or provider_key,
+            "family": "custom",
+            "protocol": provider_config.get("protocol", ""),
+            "base_url": provider_config.get("base_url", ""),
+            "api_key": provider_config.get("api_key", ""),
+            "request_model": item.get("model") or model_id,
+            "type": list(types),
+            "concurrency": concurrency,
+            "custom": True,
+            "capabilities": _custom_model_capabilities(item, types),
+        }
+    return entries
+
+
+def merged_models() -> dict[str, dict[str, Any]]:
+    """内置模型 + 自定义模型的合并视图（自定义条目以精确 id 优先）。"""
+    merged = dict(_builtin_models())
+    merged.update(_custom_model_entries())
+    return merged
+
+
+def resolve_model_entry(model: str) -> tuple[str, dict[str, Any]]:
+    """解析模型归属：custom（走协议适配层）/ builtin（既有名称路由）/ unknown。"""
+    if not model:
+        return "unknown", {"name": model, "provider": "unknown", "type": []}
+    custom_entries = _custom_model_entries()
+    if model in custom_entries:
+        return "custom", custom_entries[model]
+    builtin = _builtin_models()
+    if model in builtin:
+        return "builtin", builtin[model]
+    model_lower = model.lower()
+    for key, value in builtin.items():
+        # 保留既有别名兼容：内置模型名模糊匹配
+        if key in model_lower or model_lower in key:
+            return "builtin", value
+    return "unknown", {"name": model, "provider": "unknown", "type": []}
+
+
+def model_availability(model: str) -> dict[str, Any]:
+    """阶段预检用：判断模型当前是否可用。
+
+    返回 {"available": bool, "code": str, "reason": str}，code 取值：
+    not_registered / provider_missing / provider_incomplete / missing_credentials / ""。
+    """
+    kind, metadata = resolve_model_entry(model)
+    if kind == "unknown":
+        return {
+            "available": False,
+            "code": "not_registered",
+            "reason": f"模型 {model} 未注册（可在设置页注册为自定义模型或检查名称）",
+        }
+    try:
+        from config import Config, CUSTOM_PROTOCOLS
+    except Exception:  # pragma: no cover
+        Config = None
+        CUSTOM_PROTOCOLS = ()
+    if kind == "custom":
+        provider_key = str(metadata.get("provider") or "")
+        config_values = Config.CONFIG if Config and isinstance(Config.CONFIG, dict) else {}
+        provider_config = (config_values.get("api_providers", {}) or {}).get(provider_key)
+        if not isinstance(provider_config, dict):
+            return {
+                "available": False,
+                "code": "provider_missing",
+                "reason": f"自定义模型 {model} 引用的供应商 {provider_key} 未定义",
+            }
+        base_url = str(provider_config.get("base_url") or "")
+        if provider_config.get("protocol") not in CUSTOM_PROTOCOLS or not base_url.startswith(("http://", "https://")):
+            return {
+                "available": False,
+                "code": "provider_incomplete",
+                "reason": f"供应商 {provider_key} 缺少 protocol 或 base_url",
+            }
+        return {"available": True, "code": "", "reason": ""}
+
+    provider = str(metadata.get("provider") or "")
+    credential_field = PROVIDER_CREDENTIAL_FIELDS.get(provider)
+    if credential_field:
+        value = getattr(Config, credential_field, "") if Config else ""
+        if not value:
+            return {
+                "available": False,
+                "code": "missing_credentials",
+                "reason": f"供应商 {provider} 的 API Key 未配置（{credential_field}）",
+            }
+    return {"available": True, "code": "", "reason": ""}
+
+
 def load_model_config() -> dict[str, Any]:
-    return MODEL_CONFIG
+    """返回合并后的模型注册表视图（内置 + 自定义）。"""
+    return {"models": merged_models()}
 
 
 def get_model_config(model: str) -> dict[str, Any]:
     """Get metadata for one model, with a loose fallback for provider aliases."""
-    models = MODEL_CONFIG.get("models", {})
+    models = merged_models()
     if model in models:
         return models[model]
 
@@ -619,7 +841,7 @@ def get_max_concurrency(model: str, enable_concurrency: bool = False) -> int:
 
 def get_models_by_type(model_type: str) -> list[dict[str, Any]]:
     result = []
-    for model_id, metadata in MODEL_CONFIG.get("models", {}).items():
+    for model_id, metadata in merged_models().items():
         if model_type in (metadata.get("type") or []):
             result.append({"id": model_id, **metadata})
     return result
@@ -653,7 +875,7 @@ def model_type_capabilities(model_type: str, metadata: Optional[dict[str, Any]] 
 
 def model_records(media_type: Optional[str] = None) -> list[dict[str, Any]]:
     records = []
-    for model_id, metadata in MODEL_CONFIG.get("models", {}).items():
+    for model_id, metadata in merged_models().items():
         resolved_media_type = _resolve_media_type(metadata.get("type") or [])
         if media_type and resolved_media_type != media_type:
             continue
@@ -682,14 +904,14 @@ def parse_api_model(model: str, media_type: str) -> tuple[str, str]:
         _, provider, model_id = model.split("/", 2)
         return provider, model_id
 
-    metadata = MODEL_CONFIG.get("models", {}).get(model)
+    metadata = merged_models().get(model)
     if metadata and _resolve_media_type(metadata.get("type") or []) == media_type:
         return metadata.get("provider", ""), model
     return "", model
 
 
 def media_capabilities(provider: str, model: str, media_type: str) -> dict[str, Any]:
-    metadata = MODEL_CONFIG.get("models", {}).get(model, {})
+    metadata = merged_models().get(model, {})
     capabilities = metadata.get("capabilities")
     if capabilities:
         return deepcopy(capabilities)
@@ -739,6 +961,7 @@ def _workflow_info(model_id: str, metadata: dict[str, Any], media_type: str) -> 
         "display_name": f"{metadata.get('name') or model_id} - API {provider.title()}",
         "source": "api",
         "provider": provider,
+        "provider_label": metadata.get("provider_label") or provider,
         "family": metadata.get("family"),
         "model": model_id,
         "media_type": media_type,
