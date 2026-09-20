@@ -24,6 +24,7 @@ from config import Config
 from models.custom_common import (
     RETRYABLE_STATUS_CODES,
     build_custom_client_kwargs,
+    connection_hint,
     guess_mime_type,
     image_size,
     make_http_client,
@@ -40,6 +41,7 @@ class CustomImageClient:
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
         self._protocol = str(meta.get("protocol") or "")
+        self._base_url = str(meta.get("base_url") or "")
         self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=timeout))
 
     def generate_image(
@@ -77,7 +79,10 @@ class CustomImageClient:
             response = self._client.post("/images/generations", json=payload)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"自定义文生图模型 {self._model} 调用失败: {exc}") from exc
+            raise RuntimeError(
+                f"自定义文生图模型 {self._model} 调用失败（目标 {self._base_url}/images/generations）: {exc}"
+                f"{connection_hint(exc, self._base_url)}"
+            ) from exc
         return self._extract_items(response)
 
     # ── 图生图 ──
@@ -99,7 +104,9 @@ class CustomImageClient:
                     response.raise_for_status()
             except httpx.HTTPError as exc:
                 last_error = str(exc)
-        raise RuntimeError(f"自定义图生图模型 {self._model} 调用失败: {last_error}")
+        raise RuntimeError(
+            f"自定义图生图模型 {self._model} 调用失败（目标 {self._base_url}/images/edits）: {last_error}"
+        )
 
     def _edit_field_variants(self) -> List[Tuple[str, str]]:
         if self._protocol == "openai":
@@ -206,7 +213,10 @@ class CustomImageClient:
             response = self._client.get(target)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"自定义图像模型 {self._model} 下载结果失败: {url} -> {exc}") from exc
+            raise RuntimeError(
+                f"自定义图像模型 {self._model} 下载结果失败（目标 {self._base_url}）: {url} -> {exc}"
+                f"{connection_hint(exc, self._base_url)}"
+            ) from exc
         content_type = response.headers.get("content-type", "")
         ext = ".png"
         if "jpeg" in content_type or "jpg" in content_type:

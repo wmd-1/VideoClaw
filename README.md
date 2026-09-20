@@ -187,7 +187,7 @@ docker build -f Dockerfile.frontend -t video-claw-frontend:latest .
 # 2) 构建前端运行产物并组装（首次必须执行；改前端代码后重复此步）
 cd video-claw/video-claw/frontend
 npm ci                                    # npm 12+ 报 EALLOWREMOTE 时改用 npm ci --allow-remote=all
-BACKEND_INTERNAL_URL=http://backend:8000 npm run build
+BACKEND_INTERNAL_URL=http://backend:8000 NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT:-8000} npm run build
 rm -rf .next-runtime && mkdir .next-runtime
 cp -a .next/standalone/. .next-runtime/
 mkdir -p .next-runtime/.next/static && cp -a .next/static/. .next-runtime/.next/static/
@@ -246,6 +246,9 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 被 `.env` 覆盖的字段在设置页**只读**并标注「来自 .env」，保存设置不会将其写回；修改 `.env` 后执行 `docker compose up -d backend`（重建容器）生效。
 
+> 前端浏览器直连（SSE）的后端端口在**构建期**由 `NEXT_PUBLIC_BACKEND_PORT` 固化，需与 `.env` 的 `BACKEND_PORT` 一致（构建命令已自动读取）；修改端口后需重新构建前端产物。
+> 设置页已不再展示 API Server / Common / 内置供应商密钥，统一通过上述 `.env` 变量或 `config.yaml` 配置。
+
 相关环境变量：
 
 | 变量                                 | 使用方                                   | 说明                                                                           |
@@ -254,6 +257,8 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 | `FRONTEND_PORT` / `BACKEND_PORT` | 宿主`.env`（`cp .env.example .env`） | compose 发布到宿主机的端口，默认 3000 / 8000                                   |
 | `BACKEND_INTERNAL_URL`             | 前端（构建期 + 运行期）                  | 代理目标；本地默认`http://127.0.0.1:8000`，Docker 内 `http://backend:8000` |
 | `VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*` | backend（compose `env_file` 注入；本地直跑读仓库根/backends 下 `.env`） | 后端配置覆盖层（供应商/默认模型/自定义模型），优先级高于 `config.yaml`，详见上方「配置说明」 |
+| `VC_SERVER__*` / `VC_COMMON__*` | backend（同上） | API Server（host/port/log_level/access_log）与 Common（proxy/print_model_input）配置；未配置时 `server.port` 自动对齐 `.env` 的 `BACKEND_PORT` |
+| `NEXT_PUBLIC_BACKEND_PORT` | 前端（构建期） | 浏览器直连后端的端口（SSE），需与 `.env` 的 `BACKEND_PORT` 一致；缺省 8000 |
 
 ## 服务拓扑与端口
 

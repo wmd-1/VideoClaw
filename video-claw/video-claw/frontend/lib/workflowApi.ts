@@ -6,8 +6,22 @@
  * Streaming endpoints must bypass the Next.js rewrite proxy because it buffers
  * the entire upstream response before forwarding, which breaks SSE real-time delivery.
  * Non-streaming endpoints can still go through the proxy (relative URL).
+ *
+ * 浏览器直连（SSE）的后端端口在构建期由 NEXT_PUBLIC_BACKEND_PORT 固化（缺省 8000），
+ * 需与应用 .env 的 BACKEND_PORT 保持一致；也可用 NEXT_PUBLIC_API_URL 整体覆盖。
+ * 主机名在运行时取当前访问地址，便于局域网访问。
  */
-export const DIRECT_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+function resolveDirectApiBase(): string {
+  const configured = process.env.NEXT_PUBLIC_API_URL;
+  if (configured) return configured;
+  const port = process.env.NEXT_PUBLIC_BACKEND_PORT || '8000';
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    return `${window.location.protocol}//${window.location.hostname}:${port}`;
+  }
+  return `http://127.0.0.1:${port}`;
+}
+
+export const DIRECT_API_BASE = resolveDirectApiBase();
 const STREAM_API_BASE = DIRECT_API_BASE;
 
 export interface StageInfo {

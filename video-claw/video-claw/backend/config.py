@@ -251,6 +251,20 @@ ENV_MODEL_KEYS = {
     "VC_MODEL_VIDEO_REFERENCE": "video_reference",
 }
 
+# API Server / Common 配置的 env 键：设置页不再展示，统一走 .env / config.yaml
+ENV_SERVER_KEYS = {
+    "VC_SERVER__HOST": "host",
+    "VC_SERVER__PORT": "port",
+    "VC_SERVER__LOG_LEVEL": "log_level",
+    "VC_SERVER__ACCESS_LOG": "access_log",
+}
+ENV_COMMON_KEYS = {
+    "VC_COMMON__PROXY": "proxy",
+    "VC_COMMON__PRINT_MODEL_INPUT": "print_model_input",
+}
+# 额外纳入收集的非 VC_ 前缀键：用于 server.host/port 与 .env 后端端口对齐
+_ENV_EXTRA_KEYS = ("BACKEND_HOST", "BACKEND_PORT")
+
 
 def _parse_env_file(path: Optional[Path]) -> Dict[str, str]:
     """轻量 .env 解析：KEY=VALUE、# 注释、可选 export 前缀、去成对引号（不支持多行值）。"""
@@ -291,14 +305,17 @@ def _repo_root_env_path() -> Optional[Path]:
 
 
 def _load_env_sources() -> Dict[str, str]:
-    """收集 VC_* 配置：仓库根 .env → backend/.env（后者覆盖前者）→ 进程环境（最高优先级）。"""
+    """收集配置来源：仓库根 .env → backend/.env（后者覆盖前者）→ 进程环境（最高优先级）。
+
+    包含 VC_* 键与 BACKEND_HOST/BACKEND_PORT（后者用于 server 端口对齐回退）。
+    """
     merged: Dict[str, str] = {}
     for path in (_repo_root_env_path(), BASE_DIR / ".env"):
         for key, value in _parse_env_file(path).items():
-            if key.startswith(ENV_VC_PREFIX):
+            if key.startswith(ENV_VC_PREFIX) or key in _ENV_EXTRA_KEYS:
                 merged[key] = value
     for key, value in os.environ.items():
-        if key.startswith(ENV_VC_PREFIX):
+        if key.startswith(ENV_VC_PREFIX) or key in _ENV_EXTRA_KEYS:
             merged[key] = value
     return merged
 
@@ -343,6 +360,8 @@ def _apply_env_overrides(
     provider_fields: Dict[str, Dict[str, str]] = {}
     model_fields: Dict[str, str] = {}
     custom_fields: Dict[str, Dict[str, str]] = {}
+    server_fields: Dict[str, Any] = {}
+    common_fields: Dict[str, Any] = {}
     for key, value in env.items():
         match = ENV_PROVIDER_PATTERN.match(key)
         if match:
@@ -355,7 +374,13 @@ def _apply_env_overrides(
         if match:
             custom_fields.setdefault(match.group(1), {})[match.group(2)] = value
             continue
-        if key.startswith(("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_")):
+        if key in ENV_SERVER_KEYS:
+            server_fields[ENV_SERVER_KEYS[key]] = value
+            continue
+        if key in ENV_COMMON_KEYS:
+            common_fields[ENV_COMMON_KEYS[key]] = value
+            continue
+        if key.startswith(("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_", "VC_SERVER_", "VC_COMMON_")):
             logger.warning("Unrecognized VC_* variable ignored: %s", key)
         # 其他 VC_* 变量不属于本次支持的覆盖范围，静默忽略
 
@@ -386,6 +411,40 @@ def _apply_env_overrides(
     for model_key, value in model_fields.items():
         models_section[model_key] = value
         env_fields.append(f"models.{model_key}")
+
+    # API Server / Common 配置：支持 VC_SERVER__* / VC_COMMON__* 覆盖；
+    # 未显式配置时，BACKEND_HOST/BACKEND_PORT（.env）作为回退，使本地直跑端口与 .env 对齐
+    server_section = effective.setdefault("server", {})
+    if "host" not in server_fields and env.get("BACKEND_HOST"):
+        server_fields["host"] = env["BACKEND_HOST"]
+    if "port" not in server_fields and env.get("BACKEND_PORT"):
+        server_fields["port"] = env["BACKEND_PORT"]
+    for field_name, raw in server_fields.items():
+        if field_name == "port":
+            try:
+                server_value: Any = int(str(raw).strip())
+            except (TypeError, ValueError):
+                logger.warning("Env server.port ignored: invalid value")
+                continue
+        elif field_name == "access_log":
+            server_value = _as_bool(raw)
+        elif field_name == "log_level":
+            server_value = _normalize_log_level(raw)
+        else:
+            server_value = "" if raw is None else str(raw)
+        server_section[field_name] = server_value
+        env_fields.append(f"server.{field_name}")
+    if common_fields:
+        common_section = providers.get("common")
+        if not isinstance(common_section, dict):
+            common_section = {}
+            providers["common"] = common_section
+        for field_name, raw in common_fields.items():
+            if field_name == "print_model_input":
+                common_section[field_name] = _as_bool(raw)
+            else:
+                common_section[field_name] = "" if raw is None else str(raw)
+            env_fields.append(f"api_providers.common.{field_name}")
 
     custom_list = effective.setdefault("custom_models", [])
     custom_by_id = {
@@ -489,6 +548,16 @@ def _strip_env_overridden(
                 models_section.pop(model_key, None)
             else:
                 models_section[model_key] = copy.deepcopy(file_value)
+        elif field_path.startswith("server."):
+            # API Server 配置：恢复文件原值，不写入 .env 覆盖值
+            field_name = field_path.split(".", 1)[1]
+            file_server = current_file.get("server", {}) if isinstance(current_file, dict) else {}
+            file_value = file_server.get(field_name) if isinstance(file_server, dict) else None
+            server_view = view.setdefault("server", {})
+            if file_value is None:
+                server_view.pop(field_name, None)
+            else:
+                server_view[field_name] = copy.deepcopy(file_value)
         else:
             match = custom_pattern.match(field_path)
             if not match:

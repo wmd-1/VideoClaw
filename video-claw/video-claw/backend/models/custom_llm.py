@@ -12,7 +12,7 @@ if backend_dir not in sys.path:
 
 import httpx
 
-from models.custom_common import build_custom_client_kwargs, make_http_client, to_data_url
+from models.custom_common import build_custom_client_kwargs, connection_hint, make_http_client, to_data_url
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class CustomChatClient:
     def __init__(self, meta: Dict[str, Any], timeout: float = 300.0):
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
+        self._base_url = str(meta.get("base_url") or "")
         self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=timeout))
 
     def query(
@@ -43,7 +44,10 @@ class CustomChatClient:
             response = self._client.post("/chat/completions", json=payload)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"自定义模型 {self._model} 对话失败: {exc}") from exc
+            raise RuntimeError(
+                f"自定义模型 {self._model} 对话失败（目标 {self._base_url}/chat/completions）: {exc}"
+                f"{connection_hint(exc, self._base_url)}"
+            ) from exc
 
         try:
             data = response.json()

@@ -27,6 +27,7 @@ from models.custom_common import (
     VIDEO_JOB_FAILURE_STATES,
     VIDEO_JOB_SUCCESS_STATES,
     build_custom_client_kwargs,
+    connection_hint,
     guess_mime_type,
     make_http_client,
     video_size,
@@ -48,6 +49,7 @@ class CustomVideoClient:
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
         self._protocol = str(meta.get("protocol") or "")
+        self._base_url = str(meta.get("base_url") or "")
         self._poll_interval = poll_interval
         self._poll_timeout = poll_timeout
         self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=timeout))
@@ -140,6 +142,7 @@ class CustomVideoClient:
         seed: Optional[int],
     ) -> Dict[str, Any]:
         last_error = ""
+        last_exc: Optional[Exception] = None
         for encoding in self._create_variants(bool(image_path)):
             try:
                 response = self._post_create(
@@ -162,7 +165,11 @@ class CustomVideoClient:
                     response.raise_for_status()
             except httpx.HTTPError as exc:
                 last_error = str(exc)
-        raise RuntimeError(f"自定义视频模型 {self._model} 创建任务失败: {last_error}")
+                last_exc = exc
+        raise RuntimeError(
+            f"自定义视频模型 {self._model} 创建任务失败（目标 {self._base_url}/videos）: {last_error}"
+            f"{connection_hint(last_exc or Exception(last_error), self._base_url)}"
+        )
 
     def _post_create(
         self,
@@ -299,7 +306,8 @@ class CustomVideoClient:
                 content = response.content
             except httpx.HTTPError as exc:
                 raise RuntimeError(
-                    f"自定义视频模型 {self._model} 下载结果失败: {remote_url} -> {exc}"
+                    f"自定义视频模型 {self._model} 下载结果失败（目标 {self._base_url}）: {remote_url} -> {exc}"
+                    f"{connection_hint(exc, self._base_url)}"
                 ) from exc
         if content is None:
             raise RuntimeError(f"自定义视频模型 {self._model} 无法下载任务 {job_id} 的内容")

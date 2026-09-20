@@ -63,10 +63,12 @@ function FieldLabel({ text, envLocked }: { text: string; envLocked?: boolean }) 
 /** 自定义供应商管理区：管理 api_providers 中的非内置条目 */
 export function CustomProvidersSection({
   config,
+  savedConfig,
   setConfig,
   envOverrides,
 }: {
   config: ConfigTree;
+  savedConfig: ConfigTree;
   setConfig: React.Dispatch<React.SetStateAction<ConfigTree>>;
   envOverrides: EnvOverrides;
 }) {
@@ -76,9 +78,13 @@ export function CustomProvidersSection({
   const providers: Array<[string, any]> = Object.entries(config.api_providers || {}).filter(
     ([key]) => !BUILTIN_PROVIDERS.includes(key),
   );
+  const savedProviders: Record<string, any> = (savedConfig.api_providers as Record<string, any>) || {};
 
   const isEnvField = (key: string, field: string) => envOverrides.fields.includes(`api_providers.${key}.${field}`);
   const isEnvOnly = (key: string) => envOverrides.providers.includes(key);
+  // 当前编辑值与已保存值不一致：工作流实际使用已保存配置
+  const isProviderDirty = (key: string) =>
+    JSON.stringify((config.api_providers || {})[key] ?? null) !== JSON.stringify(savedProviders[key] ?? null);
 
   const updateProvider = (key: string, field: string, value: any) => {
     setConfig(current => {
@@ -142,8 +148,8 @@ export function CustomProvidersSection({
       <div className="mb-4">
         <h2 className="text-sm font-semibold text-gray-800">自定义供应商</h2>
         <p className="mt-1 text-xs text-gray-500">
-          每台部署的推理服务器登记为一个供应商（protocol 区分 openai / vllm-omni / sglang）；被 .env
-          覆盖的字段只读展示，保存不会写回配置文件。
+          每台部署的推理服务器登记为一个供应商（protocol 区分 openai / vllm-omni / sglang）；建议按能力命名
+          （如 local_llm / local_vlm / local_image_t2i / local_image_it2i / local_video）。被 .env 覆盖的字段只读展示，保存不会写回配置文件。
         </p>
       </div>
 
@@ -157,6 +163,11 @@ export function CustomProvidersSection({
               <div className="mb-2 flex items-center gap-2">
                 <span className="font-mono text-xs font-semibold text-gray-700">{key}</span>
                 {envOnly && <EnvBadge />}
+                {!envOnly && isProviderDirty(key) && (
+                  <span className="inline-flex items-center rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-600">
+                    未保存
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => removeProvider(key)}
@@ -260,10 +271,12 @@ export function CustomProvidersSection({
 /** 自定义模型管理区：管理 custom_models 注册列表（引用供应商） */
 export function CustomModelsSection({
   config,
+  savedConfig,
   setConfig,
   envOverrides,
 }: {
   config: ConfigTree;
+  savedConfig: ConfigTree;
   setConfig: React.Dispatch<React.SetStateAction<ConfigTree>>;
   envOverrides: EnvOverrides;
 }) {
@@ -273,9 +286,16 @@ export function CustomModelsSection({
 
   const models: any[] = Array.isArray(config.custom_models) ? config.custom_models : [];
   const providerKeys = Object.keys(config.api_providers || {}).filter(key => !BUILTIN_PROVIDERS.includes(key));
+  const savedModelsById = new Map<string, any>(
+    (Array.isArray(savedConfig.custom_models) ? savedConfig.custom_models : [])
+      .filter((item: any) => item?.id)
+      .map((item: any) => [item.id, item]),
+  );
 
   const isEnvField = (id: string, field: string) => envOverrides.fields.includes(`custom_models[${id}].${field}`);
   const isEnvOnly = (id: string) => envOverrides.models.includes(id);
+  // 当前编辑值与已保存值不一致：工作流实际使用已保存配置
+  const isModelDirty = (entry: any) => JSON.stringify(entry ?? null) !== JSON.stringify(savedModelsById.get(entry?.id) ?? null);
 
   const updateModel = (index: number, field: string, value: any) => {
     setConfig(current => {
@@ -358,6 +378,7 @@ export function CustomModelsSection({
         <h2 className="text-sm font-semibold text-gray-800">自定义模型</h2>
         <p className="mt-1 text-xs text-gray-500">
           模型通过 provider 引用「自定义供应商」；concurrency 缺省 1（本地服务最保守，可显式调高）。媒体类连通测试会发起一次真实生成。
+          「测试连接」使用当前编辑值验证；<b>开始工作流使用已保存配置</b>，修改后请先点击底部「保存配置」。
         </p>
       </div>
 
@@ -496,6 +517,11 @@ export function CustomModelsSection({
                     </span>
                   );
                 })}
+                {!envOnly && isModelDirty(entry) && (
+                  <span className="inline-flex items-center rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-600">
+                    未保存
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => removeModel(index)}

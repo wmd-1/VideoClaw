@@ -192,6 +192,19 @@ def classify_model_unavailable(exc: Exception) -> bool:
     return any(marker in message for marker in _MODEL_UNAVAILABLE_MARKERS)
 
 
+def connection_hint(exc: Exception, base_url: str) -> str:
+    """连接类失败且目标为回环地址时，提示 Docker 容器网络的典型陷阱。"""
+    if not isinstance(
+        exc,
+        (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException, httpx.ProxyError),
+    ):
+        return ""
+    lowered = str(base_url or "").lower()
+    if any(host in lowered for host in ("127.0.0.1", "localhost", "::1")):
+        return "（提示：后端运行在 Docker 容器中时，容器内的 127.0.0.1/localhost 指向容器自身，请改用宿主机局域网 IP）"
+    return ""
+
+
 def build_custom_client_kwargs(meta: Dict[str, Any], timeout: float = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
     """根据注册表条目组装 httpx 客户端参数（含供应商代理）。"""
     provider_key = str(meta.get("provider") or "")

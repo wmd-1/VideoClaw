@@ -40,90 +40,14 @@ const EMPTY_MODEL_SELECTS: Record<ModelSelectKey, ProviderGroup[]> = {
 
 const EMPTY_ENV_OVERRIDES: EnvOverrides = { fields: [], providers: [], models: [] };
 
-const LOG_LEVEL_OPTIONS = [
-  { id: 'DEBUG', label: 'DEBUG - 最详细' },
-  { id: 'INFO', label: 'INFO - 常规' },
-  { id: 'WARNING', label: 'WARNING - 仅警告及错误' },
-  { id: 'ERROR', label: 'ERROR - 仅错误' },
-  { id: 'CRITICAL', label: 'CRITICAL - 严重错误' },
-];
-
+// 说明：API Server / Common 与内置供应商（OpenAI/Gemini/DashScope/ARK/Kling 等）
+// 的密钥配置已不再在设置页展示，统一通过 .env 或 config.yaml 配置（见项目 .env.example）。
+// 模型接入统一通过下方「自定义供应商 / 自定义模型」管理区完成（如 local_llm、local_vlm、
+// local_image_t2i、local_image_it2i 等）。
 const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
   {
-    title: 'API Server',
-    description: '服务启动与日志配置。host / port 保存后需要重启后端完全生效。',
-    fields: [
-      { path: 'server.host', label: 'host 主机地址' },
-      { path: 'server.port', label: 'port 端口', type: 'number' },
-      { path: 'server.log_level', label: 'log_level 日志层级', type: 'select', options: LOG_LEVEL_OPTIONS },
-      { path: 'server.access_log', label: 'access_log 请求访问日志', type: 'boolean' },
-    ],
-  },
-  {
-    title: 'Common Provider Settings',
-    description: '模型调用公共配置和代理设置。',
-    fields: [
-      { path: 'api_providers.common.print_model_input', label: 'print_model_input 打印模型输入', type: 'boolean' },
-      { path: 'api_providers.common.proxy', label: 'proxy 代理地址' },
-    ],
-  },
-  {
-    title: 'OpenAI',
-    description: 'OpenAI / 兼容 OpenAI 接口配置。',
-    fields: [
-      { path: 'api_providers.openai.api_key', label: 'api_key API 密钥', type: 'password' },
-      { path: 'api_providers.openai.base_url', label: 'base_url 接口地址' },
-      { path: 'api_providers.openai.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
-    ],
-  },
-  {
-    title: 'Gemini',
-    description: 'Gemini 及兼容接口配置。',
-    fields: [
-      { path: 'api_providers.gemini.api_key', label: 'api_key API 密钥', type: 'password' },
-      { path: 'api_providers.gemini.base_url', label: 'base_url 接口地址' },
-      { path: 'api_providers.gemini.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
-    ],
-  },
-  {
-    title: 'DeepSeek',
-    description: 'DeepSeek 接口配置。',
-    fields: [
-      { path: 'api_providers.deepseek.api_key', label: 'api_key API 密钥', type: 'password' },
-      { path: 'api_providers.deepseek.base_url', label: 'base_url 接口地址' },
-      { path: 'api_providers.deepseek.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
-    ],
-  },
-  {
-    title: 'DashScope',
-    description: '通义千问、通义万相等 DashScope 服务配置。',
-    fields: [
-      { path: 'api_providers.dashscope.api_key', label: 'api_key API 密钥', type: 'password' },
-      { path: 'api_providers.dashscope.base_url', label: 'base_url 接口地址' },
-      { path: 'api_providers.dashscope.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
-    ],
-  },
-  {
-    title: 'ARK',
-    description: 'Seedream / Seedance 使用的火山方舟配置。',
-    fields: [
-      { path: 'api_providers.ark.api_key', label: 'api_key API 密钥', type: 'password' },
-      { path: 'api_providers.ark.base_url', label: 'base_url 接口地址' },
-      { path: 'api_providers.ark.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
-    ],
-  },
-  {
-    title: 'Kling',
-    description: '可灵视频生成接口配置。',
-    fields: [
-      { path: 'api_providers.kling.base_url', label: 'base_url 接口地址' },
-      { path: 'api_providers.kling.api_key', label: 'api_key API 密钥', type: 'password' },
-      { path: 'api_providers.kling.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
-    ],
-  },
-  {
     title: 'Default Models',
-    description: '主流程和 Pipeline 使用的默认模型。',
+    description: '主流程和 Pipeline 使用的默认模型（下拉来自内置注册表与已保存的自定义模型）。',
     fields: [
       { path: 'models.llm', label: 'llm 文本模型', type: 'select', options: [] },
       { path: 'models.vlm', label: 'vlm 视觉语言模型', type: 'select', options: [] },
@@ -194,6 +118,8 @@ export default function SettingsPage() {
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
   const [modelSelects, setModelSelects] = useState<Record<ModelSelectKey, ProviderGroup[]>>(EMPTY_MODEL_SELECTS);
   const [envOverrides, setEnvOverrides] = useState<EnvOverrides>(EMPTY_ENV_OVERRIDES);
+  // 已保存配置基线：用于提示“当前编辑值未保存”（工作流实际使用已保存值）
+  const [savedConfig, setSavedConfig] = useState<ConfigTree>({});
 
   useEffect(() => {
     const load = async () => {
@@ -207,6 +133,7 @@ export default function SettingsPage() {
         setPath(data.path || '');
         setSecretDrafts({});
         setEnvOverrides(data.env_overrides || EMPTY_ENV_OVERRIDES);
+        setSavedConfig(data.config || {});
       } catch (e: any) {
         setError(e.message || '读取配置失败');
       } finally {
@@ -282,6 +209,7 @@ export default function SettingsPage() {
       setPath(data.path || '');
       setSecretDrafts({});
       setEnvOverrides(data.env_overrides || EMPTY_ENV_OVERRIDES);
+      setSavedConfig(data.config || {});
       refreshModelSelects();
       setMessage('配置已保存');
     } catch (e: any) {
@@ -307,6 +235,9 @@ export default function SettingsPage() {
           </div>
           <p className="text-sm text-gray-500">
             修改后端配置并保存到 <span className="font-mono">{formatConfigPath(path)}</span>
+          </p>
+          <p className="mt-1 text-xs text-gray-400">
+            API Server / Common 与内置供应商密钥已改为通过 <span className="font-mono">.env</span> 或 config.yaml 配置（参考项目 .env.example）；模型接入请使用下方「自定义供应商 / 自定义模型」。
           </p>
         </div>
 
@@ -382,8 +313,8 @@ export default function SettingsPage() {
               </section>
             ))}
 
-            <CustomProvidersSection config={config} setConfig={setConfig} envOverrides={envOverrides} />
-            <CustomModelsSection config={config} setConfig={setConfig} envOverrides={envOverrides} />
+            <CustomProvidersSection config={config} savedConfig={savedConfig} setConfig={setConfig} envOverrides={envOverrides} />
+            <CustomModelsSection config={config} savedConfig={savedConfig} setConfig={setConfig} envOverrides={envOverrides} />
 
             <div className="sticky bottom-4 flex items-center gap-3 rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-lg backdrop-blur">
               {message && (
