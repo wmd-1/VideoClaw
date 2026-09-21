@@ -1,9 +1,10 @@
 """自定义视频客户端：OpenAI Videos 风格异步任务（openai / vllm-omni / sglang）。
 
-三段式时序：POST 创建任务（multipart 为主形态，失败按协议回退其它编码）→ 轮询
+三段式时序：POST 创建任务（multipart 为主形态，多图字段按候选回退）→ 轮询
 `GET /v1/videos/{id}`（失败回退列表）→ `GET /v1/videos/{id}/content` 下载为 mp4。
-与内置 VideoClient 约定一致：内容写入 `save_path` 并返回远端标识；轮询有超时上限；
-失败时尽力取消任务。
+支持文生视频 / 首帧生视频（input_reference）/ 首尾帧（last_frame 等候选字段）/ 参考图
+（多图字段候选）；与内置 VideoClient 约定一致：内容写入 `save_path` 并返回远端标识；
+轮询有超时上限；失败时尽力取消任务。
 """
 
 import logging
@@ -89,6 +90,8 @@ class CustomVideoClient:
         job = self._create_job(
             prompt=prompt,
             image_path=image_path,
+            last_image_path=last_image_path,
+            reference_image_paths=reference_image_paths,
             size=size,
             duration=duration,
             negative_prompt=negative_prompt,
@@ -125,17 +128,69 @@ class CustomVideoClient:
             maximum = minimum
         return min(max(int(duration), minimum), maximum)
 
-    def _create_variants(self, has_image: bool) -> List[str]:
-        if self._protocol == "sglang":
-            # sglang：t2v 文档形态为 JSON；含文件（i2v）走 multipart
-            return ["multipart", "json"] if has_image else ["json", "multipart"]
-        # openai / vllm-omni：均以 multipart 为主形态（Sora 形态），失败回退 JSON
-        return ["multipart", "json"]
+    def _image_file_specs(
+        self,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        reference_image_paths: Optional[List[str]],
+    ) -> List[List[Tuple[str, str]]]:
+        """构造文件字段候选方案：每种方案为 [(字段名, 图片路径), ...] 列表。
+
+        不同推理服务（vllm-omni / sglang / OpenAI 兼容）的多图字段命名不一致，
+        按主形态优先、失败回退的顺序返回候选；单图（首帧）沿用 `input_reference`。
+        """
+        refs = [path for path in (reference_image_paths or []) if path]
+        if refs:
+            # 参考图生视频：多图字段候选（同名多文件 / 具名字段 / 表单数组）
+            return [
+                [("input_reference", path) for path in refs],
+                [("reference_images", path) for path in refs],
+                [("image[]", path) for path in refs],
+            ]
+        if image_path and last_image_path:
+            # 首尾帧生视频：首帧固定 input_reference，尾帧字段按常见命名回退
+            return [
+                [("input_reference", image_path), ("last_frame", last_image_path)],
+                [("input_reference", image_path), ("last_image", last_image_path)],
+                [("input_reference", image_path), ("tail_image", last_image_path)],
+                [("input_reference", image_path), ("input_reference", last_image_path)],
+            ]
+        if image_path:
+            return [[("input_reference", image_path)]]
+        return [[]]
+
+    def _create_variants(
+        self, image_specs: List[List[Tuple[str, str]]]
+    ) -> List[Tuple[str, List[Tuple[str, str]]]]:
+        """返回 (编码, 文件字段方案) 尝试序列。
+
+        - 含文件：仅 multipart（JSON 无法携带文件，避免退化成“无图生成”的静默错误）
+        - 纯文本：sglang 以 JSON 为主形态，其余以 multipart 为主形态（各自回退另一种）
+        """
+        variants: List[Tuple[str, List[Tuple[str, str]]]] = []
+        for field_spec in image_specs:
+            if field_spec:
+                variants.append(("multipart", field_spec))
+            elif self._protocol == "sglang":
+                variants.extend([("json", []), ("multipart", [])])
+            else:
+                variants.extend([("multipart", []), ("json", [])])
+        # 去重（多个候选方案可能与纯文本序列重复）
+        seen = set()
+        unique: List[Tuple[str, List[Tuple[str, str]]]] = []
+        for item in variants:
+            marker = (item[0], tuple(item[1]))
+            if marker not in seen:
+                seen.add(marker)
+                unique.append(item)
+        return unique
 
     def _create_job(
         self,
         prompt: str,
         image_path: Optional[str],
+        last_image_path: Optional[str],
+        reference_image_paths: Optional[List[str]],
         size: str,
         duration: int,
         negative_prompt: Optional[str],
@@ -143,10 +198,12 @@ class CustomVideoClient:
     ) -> Dict[str, Any]:
         last_error = ""
         last_exc: Optional[Exception] = None
-        for encoding in self._create_variants(bool(image_path)):
+        for encoding, field_spec in self._create_variants(
+            self._image_file_specs(image_path, last_image_path, reference_image_paths)
+        ):
             try:
                 response = self._post_create(
-                    encoding, prompt, image_path, size, duration, negative_prompt, seed
+                    encoding, prompt, field_spec, size, duration, negative_prompt, seed
                 )
                 if response.status_code < 400:
                     try:
@@ -175,7 +232,7 @@ class CustomVideoClient:
         self,
         encoding: str,
         prompt: str,
-        image_path: Optional[str],
+        field_spec: List[Tuple[str, str]],
         size: str,
         duration: int,
         negative_prompt: Optional[str],
@@ -198,15 +255,18 @@ class CustomVideoClient:
 
         data = dict(base_fields)
         data["seconds"] = str(duration)
-        if image_path:
-            handle = open(image_path, "rb")
+        if field_spec:
+            opened: List[Any] = []
             try:
-                files = {
-                    "input_reference": (os.path.basename(image_path), handle, guess_mime_type(image_path))
-                }
+                files = []
+                for field_name, path in field_spec:
+                    handle = open(path, "rb")
+                    opened.append(handle)
+                    files.append((field_name, (os.path.basename(path), handle, guess_mime_type(path))))
                 return self._client.post("/videos", data=data, files=files)
             finally:
-                handle.close()
+                for handle in opened:
+                    handle.close()
         # 无文件时也强制 multipart：以文本字段（filename=None）走 files 通道
         return self._client.post("/videos", files={key: (None, str(value)) for key, value in data.items()})
 

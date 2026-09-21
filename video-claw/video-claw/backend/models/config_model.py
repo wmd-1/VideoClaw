@@ -637,7 +637,10 @@ def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[s
         declared = [a for a in (item.get("abilities") or []) if a]
         video_abilities = declared or ["text_to_video", "first_frame_i2v"]
         ability_types.extend(video_abilities)
-        if any(a in ("first_frame_i2v", "image_to_video") for a in video_abilities):
+        if any(
+            a in ("first_frame_i2v", "start_end_frame_i2v", "reference_to_video", "image_to_video")
+            for a in video_abilities
+        ):
             input_modalities.append("image")
 
     ability_types = list(dict.fromkeys(ability_types))

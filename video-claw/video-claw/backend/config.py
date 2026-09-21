@@ -685,6 +685,33 @@ def _write_config_file(values: Dict[str, Any]) -> None:
         yaml.safe_dump(values, f, allow_unicode=True, sort_keys=False)
 
 
+def _load_raw_provider_keys() -> set:
+    """读取配置文件中显式声明的 api_providers 键（未经默认合并）。
+
+    用于「设置页保存不回写内置供应商」：文件里没有的内置键（如已注释/删除的
+    openai / dashscope / ...）保存后仍不写回，保持文件结构稳定。
+    """
+    if not CONFIG_PATH.exists():
+        return set()
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+        providers = loaded.get("api_providers", {})
+        return set(providers.keys()) if isinstance(providers, dict) else set()
+    except Exception:  # noqa: BLE001 - 读取失败时按无任何键处理
+        return set()
+
+
+def _prune_absent_builtin_providers(view: Dict[str, Any], raw_keys: set) -> None:
+    """剔除视图中「文件未显式声明」的内置供应商（保留 common），避免保存写回注释/删除过的内置配置。"""
+    providers_view = view.get("api_providers")
+    if not isinstance(providers_view, dict):
+        return
+    for key in BUILTIN_PROVIDERS:
+        if key not in raw_keys:
+            providers_view.pop(key, None)
+
+
 def save_config(values: Dict[str, Any]) -> Dict[str, Any]:
     """兼容入口：归一化后写入配置文件（不应用环境变量层）。"""
     clean = _coerce_config(values)
@@ -694,6 +721,8 @@ def save_config(values: Dict[str, Any]) -> Dict[str, Any]:
 
 # 文件视图（不含 env）作为保存时“恢复被覆盖字段原值”的来源；CONFIG 为最终有效配置（文件 + env）
 _FILE_CONFIG_VALUES: Dict[str, Any] = _sanitize_config(load_config())
+# 配置文件中显式声明的供应商键（用于保存时裁剪“被注释/删除”的内置供应商）
+_FILE_RAW_PROVIDER_KEYS: set = _load_raw_provider_keys()
 CONFIG_VALUES, CONFIG_ENV_INFO = _apply_env_overrides(_FILE_CONFIG_VALUES)
 
 
@@ -772,7 +801,7 @@ class Config:
 
     @classmethod
     def update_config(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        global _FILE_CONFIG_VALUES
+        global _FILE_CONFIG_VALUES, _FILE_RAW_PROVIDER_KEYS
 
         coerced = _coerce_config(values)
         effective, env_info = _apply_env_overrides(coerced, baseline=_FILE_CONFIG_VALUES)
@@ -780,8 +809,11 @@ class Config:
         _validate_effective_config(effective)
         # 文件视图：被 env 覆盖的字段恢复文件原值，env 引入的条目不写回文件
         file_view = _strip_env_overridden(coerced, env_info, _FILE_CONFIG_VALUES)
+        # 不回写文件未声明的内置供应商（保护配置文件里“已注释/删除”的结构）
+        _prune_absent_builtin_providers(file_view, _FILE_RAW_PROVIDER_KEYS)
         _write_config_file(file_view)
         _FILE_CONFIG_VALUES = file_view
+        _FILE_RAW_PROVIDER_KEYS = set((file_view.get("api_providers") or {}).keys())
         cls.CONFIG = effective
         cls.ENV_OVERRIDES = env_info
 

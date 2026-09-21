@@ -15,7 +15,7 @@ from api.schemas.pipelines import (
     StandardPipelineRequest,
 )
 from config import BASE_DIR
-from models.config_model import get_models_by_type, model_type_capabilities
+from models.config_model import get_models_by_type, model_availability, model_type_capabilities
 from pipelines.api_media import list_api_workflows
 from pipelines.events import task_event_stream
 from pipelines.runner import PIPELINE_REGISTRY, run_pipeline_task
@@ -157,6 +157,10 @@ async def get_api_models(
     if model_type:
         models = []
         for model in get_models_by_type(model_type):
+            # 仅返回当前环境可用的模型：未注册/供应商缺失或不完整/缺 Key（如已注释的内置供应商）
+            # 的模型不出现在可选列表；恢复注释或补齐凭据后自动回归。
+            if not model_availability(model["id"]).get("available"):
+                continue
             capabilities = model_type_capabilities(model_type, model)
             models.append({
                 "id": model["id"],
@@ -180,11 +184,16 @@ async def get_api_models(
         }
 
     required = [ability] if ability else None
-    workflows = list_api_workflows(
-        media_type=media_type,
-        required_adapter_abilities=required,
-        verified_only=verified_only,
-    )
+    workflows = [
+        workflow
+        for workflow in list_api_workflows(
+            media_type=media_type,
+            required_adapter_abilities=required,
+            verified_only=verified_only,
+        )
+        # 同上：仅返回当前环境可用的模型（未配置的内置模型会被过滤）
+        if model_availability(workflow["model"]).get("available")
+    ]
     return {
         "models": [
             {

@@ -38,6 +38,8 @@ services:
       - ./data/config:/app/data
       # Persistent generated artifacts + session/task state.
       - ./data/code:/app/code
+      # 入口脚本（只读挂载：调整启动行为无需重建镜像；容器重建后生效）
+      - ./docker-entrypoint.sh:/app/docker-entrypoint.sh:ro
       # --- Source code (read-only) ---------------------------------------
       # Edit on the host, then `docker compose restart backend` to apply —
       # no image rebuild needed. Mounted entry by entry on purpose: /app also

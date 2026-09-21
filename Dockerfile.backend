@@ -59,7 +59,8 @@ COPY video-claw/video-claw/backend/ ./
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Bind address / port are (re)written into config.yaml by the entrypoint so the
+# Bind address / port are aligned via env overrides in config.py (BACKEND_HOST/BACKEND_PORT,
+# or VC_SERVER__HOST/VC_SERVER__PORT), so config.yaml keeps its comments untouched.
 # service is reachable on the compose network. They can be overridden via env.
 ENV BACKEND_HOST=0.0.0.0 \
     BACKEND_PORT=8000

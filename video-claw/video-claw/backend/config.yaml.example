@@ -1,65 +1,128 @@
+# VideoClaw 后端配置模板（首次启动时复制为 data/config/config.yaml；backend/config.py 读取）
+#
+# 默认模型已切换为本地部署：local_* 供应商 + local-* 自定义模型。
+# 原内置供应商（OpenAI / Gemini / DeepSeek / DashScope / ARK / Kling）配置已注释保留，
+# 如需恢复：取消对应注释块（或用 .env 中的 VC_PROVIDER_<名称>__<字段> 覆盖，无需改本文件）。
+# 提示：设置页保存会重写本文件（不保留注释），结构性调整建议直接编辑本文件或 .env。
+
 project_name: Video-Claw
 server:
-  host: 127.0.0.1
-  port: 8000
+  host: 127.0.0.1          # 本地直跑监听地址；Docker 下由 BACKEND_HOST（compose 注入）覆盖
+  port: 8000               # 本地直跑端口；未显式 VC_SERVER__PORT 时自动对齐 .env 的 BACKEND_PORT
   log_level: INFO
   access_log: false
+
 api_providers:
   common:
     print_model_input: false
     proxy: ''
-  openai:
-    api_key: ''
-    base_url: https://api.openai.com/v1
-    enable_proxy: false
-  gemini:
-    api_key: ''
-    base_url: https://generativelanguage.googleapis.com/v1beta
-    enable_proxy: false
-  deepseek:
-    api_key: ''
-    base_url: https://api.deepseek.com/v1
-    enable_proxy: false
-  dashscope:
-    api_key: ''
-    base_url: https://dashscope.aliyuncs.com/api/v1
-    enable_proxy: false
-  ark:
-    api_key: ''
-    base_url: https://ark.cn-beijing.volces.com/api/v3
-    enable_proxy: false
-  kling:
-    base_url: https://api-beijing.klingai.com
+
+  # ── 本地推理服务（默认使用；按你的部署修改 IP / 端口 / 协议）──────────────
+  local_llm:               # vllm 部署（OpenAI 标准接口）
+    protocol: openai
+    base_url: http://192.168.1.10:8000/v1
     api_key: ''
     enable_proxy: false
+  local_vlm:               # vllm 或 vllm-omni 均可
+    protocol: openai
+    base_url: http://192.168.1.10:8000/v1
+    api_key: ''
+    enable_proxy: false
+  local_image_t2i:         # vllm-omni / sglang
+    protocol: vllm-omni
+    base_url: http://192.168.1.10:8091/v1
+    api_key: ''
+    enable_proxy: false
+  local_image_it2i:        # vllm-omni / sglang
+    protocol: vllm-omni
+    base_url: http://192.168.1.10:8091/v1
+    api_key: ''
+    enable_proxy: false
+  local_video:             # vllm-omni / sglang
+    protocol: sglang
+    base_url: http://192.168.1.10:30010/v1
+    api_key: ''
+    enable_proxy: false
+
+  # ── 原内置供应商（已注释保留；恢复时取消注释即可）───────────────────────
+  # openai:
+  #   api_key: ''
+  #   base_url: https://api.openai.com/v1
+  #   enable_proxy: false
+  # gemini:
+  #   api_key: ''
+  #   base_url: https://generativelanguage.googleapis.com/v1beta
+  #   enable_proxy: false
+  # deepseek:
+  #   api_key: ''
+  #   base_url: https://api.deepseek.com/v1
+  #   enable_proxy: false
+  # dashscope:
+  #   api_key: ''
+  #   base_url: https://dashscope.aliyuncs.com/api/v1
+  #   enable_proxy: false
+  # ark:
+  #   api_key: ''
+  #   base_url: https://ark.cn-beijing.volces.com/api/v3
+  #   enable_proxy: false
+  # kling:
+  #   base_url: https://api-beijing.klingai.com
+  #   api_key: ''
+  #   enable_proxy: false
+
 models:
-  llm: qwen3.5-plus
-  vlm: qwen3.5-plus
-  image_it2i: doubao-seedream-5-0-260128
-  image_t2i: doubao-seedream-5-0-260128
-  video: wan2.7-i2v
-  video_first_frame: wan2.7-i2v
-  video_start_end: wan2.7-i2v
-  video_reference: wan2.7-r2v
+  llm: local-llm
+  vlm: local-vlm
+  image_it2i: local-image-it2i
+  image_t2i: local-image-t2i
+  video: local-video
+  video_first_frame: local-video
+  video_start_end: local-video
+  video_reference: local-video   # 参考图生视频需模型支持 reference_to_video 能力
+
 generation:
   style: realistic
   video_ratio: '16:9'
   video_resolution: 720P
   video_generation_mode: first_frame
-# 自定义供应商（可选）：在 api_providers 下新增条目，protocol 取值 openai / vllm-omni / sglang；
-# 每台部署的推理服务器登记为一个条目（如 vllm 同时服务 LLM/VLM 只需一个条目）。例：
-#   local_llm:
-#     protocol: openai
-#     base_url: http://127.0.0.1:8000/v1
-#     api_key: ''
-#     enable_proxy: false
-# 自定义模型（可选）：通过 provider 引用上面的供应商；types 取值 llm/vlm/t2i/i2i/video；
-# concurrency 缺省 1（本地服务最保守），可显式调高。例：
-#   - id: qwen3-32b
-#     name: 本地 Qwen3-32B
-#     provider: local_llm
-#     model: Qwen3-32B
-#     types: [llm, vlm]
-#     abilities: [text_generation, vision_language]
-# 环境变量覆盖（可选）：见项目根目录 .env.example（VC_PROVIDER_* / VC_MODEL_* / VC_CUSTOM_MODEL_*，优先级高于本文件）
-custom_models: []
+
+# 自定义模型注册：通过 provider 引用上面的供应商；types 取值 llm/vlm/t2i/i2i/video；
+# concurrency 缺省 1（本地单卡服务最保守）；model 为实际请求的模型名，按部署修改。
+custom_models:
+  - id: local-llm
+    name: 本地 LLM
+    provider: local_llm
+    model: Qwen3-32B
+    types: [llm]
+    concurrency: 1
+  - id: local-vlm
+    name: 本地 VLM
+    provider: local_vlm
+    model: Qwen3-VL-32B
+    types: [vlm]
+    concurrency: 1
+  - id: local-image-t2i
+    name: 本地文生图
+    provider: local_image_t2i
+    model: Qwen-Image
+    types: [t2i]
+    concurrency: 1
+  - id: local-image-it2i
+    name: 本地图生图
+    provider: local_image_it2i
+    model: Qwen-Image-Edit
+    types: [i2i]
+    concurrency: 1
+  - id: local-video
+    name: 本地视频
+    provider: local_video
+    model: Wan2.2-T2V-A14B
+    types: [video]
+    abilities: [text_to_video, first_frame_i2v, start_end_frame_i2v, reference_to_video]
+    concurrency: 1
+
+# 补充说明：
+# - 供应商另可用 .env 注册/覆盖：VC_PROVIDER_<名称>__PROTOCOL / __BASE_URL / __API_KEY（见 .env.example）。
+# - 自定义模型另可用 .env 注册：VC_CUSTOM_MODEL_<n>__ID / __PROVIDER / __TYPES / __ABILITIES / __CONCURRENCY。
+# - 默认模型可用 .env 覆盖：VC_MODEL_LLM / VC_MODEL_VLM / VC_MODEL_IMAGE_T2I / VC_MODEL_IMAGE_IT2I / ...
+# - 后端容器内的 127.0.0.1/localhost 指向容器自身，本地推理服务请填宿主机局域网 IP。
