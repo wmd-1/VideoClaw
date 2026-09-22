@@ -108,6 +108,18 @@ function isProviderOptions(options: Field['options']): options is ProviderGroup[
   return Array.isArray(options) && options.some(option => 'models' in option);
 }
 
+/** 当前值不在可选列表时（如条目被改名/删除）注入「未注册」占位，避免下拉静默空白。 */
+function withMissingPlaceholder(options: ProviderGroup[], value: unknown): ProviderGroup[] {
+  const id = String(value ?? '');
+  if (!id) return options;
+  const exists = options.some(group => group.models.some(model => model.id === id));
+  if (exists) return options;
+  return [
+    { provider: '__missing__', label: '未注册', models: [{ id, label: `${id}（未注册）` }] },
+    ...options,
+  ];
+}
+
 export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigTree>({});
   const [path, setPath] = useState('');
@@ -176,13 +188,15 @@ export default function SettingsPage() {
     return {
       ...group,
       fields: group.fields.map(field => {
-        if (field.path === 'models.llm') return { ...field, options: modelSelects.llm };
-        if (field.path === 'models.vlm') return { ...field, options: modelSelects.vlm };
-        if (field.path === 'models.image_it2i') return { ...field, options: modelSelects.image_it2i };
-        if (field.path === 'models.image_t2i') return { ...field, options: modelSelects.image_t2i };
-        if (field.path === 'models.video_first_frame') return { ...field, options: modelSelects.video_first_frame };
-        if (field.path === 'models.video_start_end') return { ...field, options: modelSelects.video_start_end };
-        if (field.path === 'models.video_reference') return { ...field, options: modelSelects.video_reference };
+        // 当前值未注册（条目被改名/删除）时注入「未注册」占位，避免下拉静默空白
+        const currentValue = getValue(config, field.path);
+        if (field.path === 'models.llm') return { ...field, options: withMissingPlaceholder(modelSelects.llm, currentValue) };
+        if (field.path === 'models.vlm') return { ...field, options: withMissingPlaceholder(modelSelects.vlm, currentValue) };
+        if (field.path === 'models.image_it2i') return { ...field, options: withMissingPlaceholder(modelSelects.image_it2i, currentValue) };
+        if (field.path === 'models.image_t2i') return { ...field, options: withMissingPlaceholder(modelSelects.image_t2i, currentValue) };
+        if (field.path === 'models.video_first_frame') return { ...field, options: withMissingPlaceholder(modelSelects.video_first_frame, currentValue) };
+        if (field.path === 'models.video_start_end') return { ...field, options: withMissingPlaceholder(modelSelects.video_start_end, currentValue) };
+        if (field.path === 'models.video_reference') return { ...field, options: withMissingPlaceholder(modelSelects.video_reference, currentValue) };
         return field;
       }),
     };
@@ -203,7 +217,17 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ values: config }),
       });
-      if (!resp.ok) throw new Error('保存配置失败');
+      if (!resp.ok) {
+        // 透出后端硬校验的具体原因（400 detail，如 protocol/base_url/id 冲突等）
+        let reason = '';
+        try {
+          const body = await resp.json();
+          reason = typeof body?.detail === 'string' ? body.detail : '';
+        } catch {
+          /* 非 JSON 响应 */
+        }
+        throw new Error(reason || '保存配置失败');
+      }
       const data = await resp.json();
       setConfig(data.config || {});
       setPath(data.path || '');
@@ -279,6 +303,7 @@ export default function SettingsPage() {
                               field.options.map(group => (
                                 <optgroup key={group.provider} label={group.label}>
                                   {group.models.map(model => (
+                                    // 自定义模型的 label 即 id；内置模型保留友好显示名
                                     <option key={model.id} value={model.id}>{model.label}</option>
                                   ))}
                                 </optgroup>

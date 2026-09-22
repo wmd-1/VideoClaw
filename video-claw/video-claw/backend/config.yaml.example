@@ -8,7 +8,7 @@
 project_name: Video-Claw
 server:
   host: 127.0.0.1          # 本地直跑监听地址；Docker 下由 BACKEND_HOST（compose 注入）覆盖
-  port: 8000               # 本地直跑端口；未显式 VC_SERVER__PORT 时自动对齐 .env 的 BACKEND_PORT
+  port: 8000               # 未显式 VC_SERVER__PORT 时自动对齐 .env 的 BACKEND_PORT（Docker 下由 compose 注入，容器内外同端口）
   log_level: INFO
   access_log: false
 
@@ -38,9 +38,14 @@ api_providers:
     base_url: http://192.168.1.10:8091/v1
     api_key: ''
     enable_proxy: false
-  local_video:             # vllm-omni / sglang
+  local_video_sglang:      # sglang 部署（图像/视频/对话）
     protocol: sglang
     base_url: http://192.168.1.10:30010/v1
+    api_key: ''
+    enable_proxy: false
+  local_video_vllm:        # vllm-omni 部署（与 sglang 版本分别登记，按部署选择）
+    protocol: vllm-omni
+    base_url: http://192.168.1.10:8002/v1
     api_key: ''
     enable_proxy: false
 
@@ -90,32 +95,33 @@ generation:
 # concurrency 缺省 1（本地单卡服务最保守）；model 为实际请求的模型名，按部署修改。
 custom_models:
   - id: local-llm
-    name: 本地 LLM
     provider: local_llm
     model: Qwen3-32B
     types: [llm]
     concurrency: 1
   - id: local-vlm
-    name: 本地 VLM
     provider: local_vlm
     model: Qwen3-VL-32B
     types: [vlm]
     concurrency: 1
   - id: local-image-t2i
-    name: 本地文生图
     provider: local_image_t2i
     model: Qwen-Image
     types: [t2i]
     concurrency: 1
   - id: local-image-it2i
-    name: 本地图生图
     provider: local_image_it2i
     model: Qwen-Image-Edit
     types: [i2i]
     concurrency: 1
   - id: local-video
-    name: 本地视频
-    provider: local_video
+    provider: local_video_sglang
+    model: Wan2.2-T2V-A14B
+    types: [video]
+    abilities: [text_to_video, first_frame_i2v, start_end_frame_i2v, reference_to_video]
+    concurrency: 1
+  - id: local-video-vllm
+    provider: local_video_vllm
     model: Wan2.2-T2V-A14B
     types: [video]
     abilities: [text_to_video, first_frame_i2v, start_end_frame_i2v, reference_to_video]

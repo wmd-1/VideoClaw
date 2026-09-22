@@ -721,9 +721,10 @@ def _custom_model_entries() -> dict[str, dict[str, Any]]:
         except (TypeError, ValueError):
             concurrency = CUSTOM_MODEL_DEFAULT_CONCURRENCY
         entries[model_id] = {
-            "name": item.get("name") or model_id,
+            # 模型列表统一以 id 展示（不再使用单独的显示名）
+            "name": model_id,
             "provider": provider_key,
-            "provider_label": provider_config.get("name") or provider_key,
+            "provider_label": provider_key,
             "family": "custom",
             "protocol": provider_config.get("protocol", ""),
             "base_url": provider_config.get("base_url", ""),
@@ -961,7 +962,7 @@ def _workflow_info(model_id: str, metadata: dict[str, Any], media_type: str) -> 
     return {
         "key": f"api/{provider}/{model_id}",
         "name": model_id,
-        "display_name": f"{metadata.get('name') or model_id} - API {provider.title()}",
+        "display_name": metadata.get("name") or model_id,
         "source": "api",
         "provider": provider,
         "provider_label": metadata.get("provider_label") or provider,

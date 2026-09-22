@@ -213,7 +213,6 @@ def _normalize_custom_models(value: Any) -> List[Dict[str, Any]]:
             continue
         entry: Dict[str, Any] = {
             "id": model_id,
-            "name": str(item.get("name") or ""),
             "provider": str(item.get("provider") or ""),
             "model": str(item.get("model") or ""),
             "types": _str_list(item.get("types")),
@@ -460,7 +459,7 @@ def _apply_env_overrides(
         entry = custom_by_id.get(model_id)
         created_here = entry is None
         if created_here:
-            entry = {"id": model_id, "name": "", "provider": "", "model": "", "types": [], "abilities": []}
+            entry = {"id": model_id, "provider": "", "model": "", "types": [], "abilities": []}
             custom_list.append(entry)
             custom_by_id[model_id] = entry
             env_created_models.append(model_id)

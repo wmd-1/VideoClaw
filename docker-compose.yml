@@ -32,7 +32,8 @@ services:
       # The entrypoint rewrites these into config.yaml so the server binds
       # on all interfaces (reachable from the frontend container).
       BACKEND_HOST: "0.0.0.0"
-      BACKEND_PORT: "8000"
+      # 容器内端口与宿主发布端口一致（均为 .env 的 BACKEND_PORT），日志/健康检查所见即所得
+      BACKEND_PORT: "${BACKEND_PORT:-8000}"
     volumes:
       # Persistent, host-editable configuration (API keys, models, ...).
       - ./data/config:/app/data
@@ -59,15 +60,15 @@ services:
       - ./video-claw/video-claw/backend/prompts:/app/prompts:ro
       - ./video-claw/video-claw/backend/templates:/app/templates:ro
     expose:
-      - "8000"
+      - "${BACKEND_PORT:-8000}"
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_PORT:-8000}:${BACKEND_PORT:-8000}"
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status==200 else 1)"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:${BACKEND_PORT:-8000}/api/health', timeout=3).status==200 else 1)"
       interval: 15s
       timeout: 5s
       retries: 6
@@ -87,7 +88,7 @@ services:
       # output, so what counts is the value present at *build* time — set by the
       # host build step (ReadMe.md) and by Dockerfile.frontend. This runtime
       # value is kept only for parity / host-run scenarios.
-      BACKEND_INTERNAL_URL: "http://backend:8000"
+      BACKEND_INTERNAL_URL: "http://backend:${BACKEND_PORT:-8000}"
     volumes:
       # Read-only mount of the host-built standalone runtime (see ReadMe.md):
       #   cd video-claw/video-claw/frontend && npm ci && npm run build

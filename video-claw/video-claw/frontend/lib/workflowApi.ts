@@ -24,6 +24,21 @@ function resolveDirectApiBase(): string {
 export const DIRECT_API_BASE = resolveDirectApiBase();
 const STREAM_API_BASE = DIRECT_API_BASE;
 
+/**
+ * 浏览器直连（SSE）请求封装：失败时给出可操作提示。
+ * 跨域/防火墙/端口不一致时 fetch 只抛 "Failed to fetch"，难以定位。
+ */
+async function fetchStreamRequest(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    const reason = (err as Error)?.message || 'Failed to fetch';
+    throw new Error(
+      `无法直连后端 ${DIRECT_API_BASE}（${reason}）：请确认浏览器可直接访问该地址（防火墙/安全组已放行后端端口），且前端构建时的 NEXT_PUBLIC_BACKEND_PORT 与后端端口一致`,
+    );
+  }
+}
+
 export interface StageInfo {
   id: string;
   name: string;
@@ -410,7 +425,7 @@ export async function executeStage(
   inputData: Record<string, any> = {},
   signal?: AbortSignal,
 ): Promise<Response> {
-  const resp = await fetch(`${STREAM_API_BASE}/api/project/${sessionId}/execute/${stage}`, {
+  const resp = await fetchStreamRequest(`${STREAM_API_BASE}/api/project/${sessionId}/execute/${stage}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inputData),
@@ -426,7 +441,7 @@ export async function intervene(
   modifications: Record<string, any>,
 ): Promise<Response> {
   // Use STREAM_API_BASE to bypass Next.js proxy (SSE endpoint)
-  const resp = await fetch(`${STREAM_API_BASE}/api/project/${sessionId}/intervene`, {
+  const resp = await fetchStreamRequest(`${STREAM_API_BASE}/api/project/${sessionId}/intervene`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ stage, modifications }),

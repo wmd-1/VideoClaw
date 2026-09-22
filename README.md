@@ -25,10 +25,10 @@
 ## 技术架构
 
 ```
-浏览器 ── http://localhost:3000 ──▶ frontend（Next.js standalone, :3000）
+浏览器 ── http://localhost:3000（.env FRONTEND_PORT）──▶ frontend（Next.js standalone）
         │   server 端 rewrite 同源代理：/api/* 与 /code/* → backend
         ▼
-        backend（FastAPI + uvicorn, :8000, 单进程）
+        backend（FastAPI + uvicorn，.env BACKEND_PORT，单进程；容器内外同端口）
         │   ├── /api/project/**    六阶段工作流（start / execute / artifact / intervene / continue / stop）
         │   ├── /api/sandbox/**    临时工作台（llm / vlm / t2i / i2i / video 单次调用）
         │   ├── /api/pipelines/**  一次性 Pipeline（standard / action_transfer / digital_human）
@@ -71,7 +71,7 @@ VideoClaw/
     ├── SKILL.md                # skill 正文：停点表与工作流规则（共 7 个停点）
     ├── references/             # OpenClaw 集成参考文档（workflow / sandbox / pipelines / run_project / send_message）
     └── video-claw/
-        ├── backend/            # FastAPI 后端（:8000）
+        ├── backend/            # FastAPI 后端（.env BACKEND_PORT）
         │   ├── api_server.py   # 入口：uvicorn.run
         │   ├── config.py       # 配置加载与目录常量（CODE_DIR / RESULT_DIR / ...）
         │   ├── session.py      # 会话 JSON 持久化（SessionManager）
@@ -84,7 +84,7 @@ VideoClaw/
         │   ├── templates/      # 解说短视频 HTML 模板（1080x1920 / 1920x1080 / 1080x1080）
         │   ├── docs/           # api.md（接口文档）+ session_format.md（会话格式）
         │   └── code/           # 数据与产物（result/ + data/）
-        └── frontend/           # Next.js 前端（:3000）
+        └── frontend/           # Next.js 前端（.env FRONTEND_PORT）
             ├── app/            # 路由页：/ · /sandbox · /settings · /pipelines/*
             ├── components/     # stages/（六阶段 UI）· Sandbox/ · pipelines/ · 布局组件
             ├── lib/            # workflowApi.ts（REST 客户端）· modelRegistry.ts
@@ -187,7 +187,9 @@ docker build -f Dockerfile.frontend -t video-claw-frontend:latest .
 # 2) 构建前端运行产物并组装（首次必须执行；改前端代码后重复此步）
 cd video-claw/video-claw/frontend
 npm ci                                    # npm 12+ 报 EALLOWREMOTE 时改用 npm ci --allow-remote=all
-BACKEND_INTERNAL_URL=http://backend:8000 NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT:-8000} npm run build
+# NEXT_PUBLIC_BACKEND_PORT / BACKEND_INTERNAL_URL 的端口必须与仓库根 .env 的 BACKEND_PORT 一致
+export BACKEND_PORT=$(grep -E '^BACKEND_PORT=' ../../../.env 2>/dev/null | cut -d= -f2 | tr -d ' ')
+BACKEND_INTERNAL_URL=http://backend:${BACKEND_PORT:-8000} NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT:-8000} npm run build
 rm -rf .next-runtime && mkdir .next-runtime
 cp -a .next/standalone/. .next-runtime/
 mkdir -p .next-runtime/.next/static && cp -a .next/static/. .next-runtime/.next/static/
@@ -199,7 +201,7 @@ docker compose up -d
 docker compose logs -f backend            # 等健康检查通过
 ```
 
-- 前端：[http://localhost:3000](http://localhost:3000)；后端健康检查：[http://localhost:8000/api/health](http://localhost:8000/api/health)
+- 前端：[http://localhost:3000](http://localhost:3000)（默认，按 `.env` 的 `FRONTEND_PORT`）；后端健康检查：[http://localhost:8000/api/health](http://localhost:8000/api/health)（默认，按 `.env` 的 `BACKEND_PORT`）
 - 首次启动自动在宿主生成 `./data/config/config.yaml`，填入 API Key 后 `docker compose restart backend`（也可在 WebUI「设置」页填写）。
 
 ## 本地开发（不构建镜像）
@@ -224,7 +226,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 - **镜像构建的唯一入口**是 `docker build -f Dockerfile.backend / Dockerfile.frontend`（compose 服务只有 `image:` + `pull_policy: never`，`docker compose up -d` 不构建、不拉取）；迁移机器可用 `docker save` / `docker load`。
 - **改后端代码免重建**：`docker-compose.yml` 将后端源码逐项只读（`:ro`）挂载进容器 `/app`（不能整目录挂载，会遮蔽镜像内的 `.venv`、`docker-entrypoint.sh`、`config.yaml` 软链等）。改完执行 `docker compose restart backend` 生效；依赖文件（`pyproject.toml` / `uv.lock`）不挂载，改依赖需重建镜像。
 - **改前端代码免重建**：前端是 standalone 编译产物，按「快速开始」步骤 2 重新构建并组装 `.next-runtime/` 后 `docker compose restart frontend` 生效。compose 以 `create_host_path: false` 只读挂载该目录——未构建时 `up` 会直接报错而不是静默建空目录。
-- **注意**：standalone 产物在**构建时**固化 rewrites 代理地址，运行时环境变量不生效，因此宿主机构建必须带 `BACKEND_INTERNAL_URL=http://backend:8000`（`Dockerfile.frontend` 中已内置该变量）。
+- **注意**：standalone 产物在**构建时**固化 rewrites 代理地址，运行时环境变量不生效，因此宿主机构建必须带 `BACKEND_INTERNAL_URL=http://backend:<BACKEND_PORT>`（端口与 `.env` 的 `BACKEND_PORT` 一致；构建命令已自动从 `.env` 读取）。
 
 ## 配置说明
 
@@ -253,9 +255,9 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 | 变量                                 | 使用方                                   | 说明                                                                           |
 | ------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------ |
-| `BACKEND_HOST` / `BACKEND_PORT`  | backend 容器（entrypoint）               | 覆盖写入`server.host` / `server.port`，默认 `0.0.0.0:8000`               |
-| `FRONTEND_PORT` / `BACKEND_PORT` | 宿主`.env`（`cp .env.example .env`） | compose 发布到宿主机的端口，默认 3000 / 8000                                   |
-| `BACKEND_INTERNAL_URL`             | 前端（构建期 + 运行期）                  | 代理目标；本地默认`http://127.0.0.1:8000`，Docker 内 `http://backend:8000` |
+| `BACKEND_HOST` / `BACKEND_PORT`  | backend 容器（compose 注入）               | 由 compose 从 `.env` 注入；容器内监听端口与宿主发布端口一致（`server.host/port` 由其对齐） |
+| `FRONTEND_PORT` / `BACKEND_PORT` | 宿主`.env`（`cp .env.example .env`） | 前端/后端对外端口；backend 容器内监听同端口，默认 3000 / 8000                   |
+| `BACKEND_INTERNAL_URL`             | 前端（构建期 + 运行期）                  | 代理目标；本地默认`http://127.0.0.1:8000`，Docker 内 `http://backend:<BACKEND_PORT>` |
 | `VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*` | backend（compose `env_file` 注入；本地直跑读仓库根/backends 下 `.env`） | 后端配置覆盖层（供应商/默认模型/自定义模型），优先级高于 `config.yaml`，详见上方「配置说明」 |
 | `VC_SERVER__*` / `VC_COMMON__*` | backend（同上） | API Server（host/port/log_level/access_log）与 Common（proxy/print_model_input）配置；未配置时 `server.port` 自动对齐 `.env` 的 `BACKEND_PORT` |
 | `NEXT_PUBLIC_BACKEND_PORT` | 前端（构建期） | 浏览器直连后端的端口（SSE），需与 `.env` 的 `BACKEND_PORT` 一致；缺省 8000 |
@@ -264,8 +266,8 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 | 服务         | 端口                          | 说明                                                                            |
 | ------------ | ----------------------------- | ------------------------------------------------------------------------------- |
-| frontend     | 3000:3000                     | Next.js standalone server；server 端 rewrite 代理`/api/*`、`/code/*`        |
-| backend      | 8000:8000（容器内不额外发布） | FastAPI + uvicorn，单进程；`/code` 静态托管产物                               |
+| frontend     | `${FRONTEND_PORT:-3000}`（容器同端口）                          | Next.js standalone server；server 端 rewrite 代理`/api/*`、`/code/*`        |
+| backend      | `${BACKEND_PORT:-8000}`（容器同端口） | FastAPI + uvicorn，单进程；`/code` 静态托管产物                               |
 | 外部模型 API | 443                           | DashScope / OpenAI / Gemini / DeepSeek / 火山方舟 ARK / Kling（按所选模型访问） |
 
 ## 数据与产物

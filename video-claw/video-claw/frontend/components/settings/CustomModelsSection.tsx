@@ -72,7 +72,7 @@ export function CustomProvidersSection({
   setConfig: React.Dispatch<React.SetStateAction<ConfigTree>>;
   envOverrides: EnvOverrides;
 }) {
-  const [draft, setDraft] = useState({ key: '', name: '', protocol: 'openai', base_url: '', api_key: '' });
+  const [draft, setDraft] = useState({ key: '', protocol: 'openai', base_url: '', api_key: '' });
   const [error, setError] = useState('');
 
   const providers: Array<[string, any]> = Object.entries(config.api_providers || {}).filter(
@@ -132,7 +132,6 @@ export function CustomProvidersSection({
       const next = structuredClone(current || {});
       next.api_providers = next.api_providers || {};
       next.api_providers[key] = {
-        name: draft.name.trim(),
         protocol: draft.protocol,
         base_url: draft.base_url.trim(),
         api_key: draft.api_key,
@@ -140,7 +139,7 @@ export function CustomProvidersSection({
       };
       return next;
     });
-    setDraft({ key: '', name: '', protocol: 'openai', base_url: '', api_key: '' });
+    setDraft({ key: '', protocol: 'openai', base_url: '', api_key: '' });
   };
 
   return (
@@ -179,15 +178,6 @@ export function CustomProvidersSection({
                 </button>
               </div>
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
-                <label className="flex flex-col">
-                  <FieldLabel text="显示名" envLocked={isEnvField(key, 'name')} />
-                  <input
-                    className={inputClass}
-                    value={provider.name || ''}
-                    disabled={envOnly || isEnvField(key, 'name')}
-                    onChange={e => updateProvider(key, 'name', e.target.value)}
-                  />
-                </label>
                 <label className="flex flex-col">
                   <FieldLabel text="protocol 协议" envLocked={isEnvField(key, 'protocol')} />
                   <select
@@ -235,7 +225,6 @@ export function CustomProvidersSection({
         <p className="mb-2 text-xs font-medium text-gray-600">新增供应商</p>
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
           <input className={inputClass} placeholder="名称（如 local_llm）" value={draft.key} onChange={e => setDraft({ ...draft, key: e.target.value })} />
-          <input className={inputClass} placeholder="显示名（可选）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
           <select className={inputClass} value={draft.protocol} onChange={e => setDraft({ ...draft, protocol: e.target.value })}>
             {PROTOCOL_OPTIONS.map(option => (
               <option key={option.id} value={option.id}>
@@ -336,7 +325,6 @@ export function CustomModelsSection({
       const list = Array.isArray(next.custom_models) ? next.custom_models : [];
       list.push({
         id: candidate,
-        name: '',
         provider: providerKeys[0] || '',
         model: '',
         types: [],
@@ -360,7 +348,7 @@ export function CustomModelsSection({
       const providerKey = entry.provider || '';
       const providerDraft = { key: providerKey, ...(config.api_providers?.[providerKey] || {}) };
       const result = await testCustomModel({
-        model: { id: entry.id, name: entry.name, model: entry.model, abilities: entry.abilities || [] },
+        model: { id: entry.id, model: entry.model, abilities: entry.abilities || [] },
         provider: providerDraft,
         model_type: modelType as 'llm' | 'vlm' | 't2i' | 'i2i' | 'video',
       });
@@ -398,15 +386,6 @@ export function CustomModelsSection({
                     value={entry.id || ''}
                     disabled={envOnly || isEnvField(entry.id, 'id')}
                     onChange={e => updateModel(index, 'id', e.target.value)}
-                  />
-                </label>
-                <label className="flex flex-col">
-                  <FieldLabel text="显示名" envLocked={isEnvField(entry.id, 'name')} />
-                  <input
-                    className={inputClass}
-                    value={entry.name || ''}
-                    disabled={envOnly || isEnvField(entry.id, 'name')}
-                    onChange={e => updateModel(index, 'name', e.target.value)}
                   />
                 </label>
                 <label className="flex flex-col">
