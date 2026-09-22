@@ -5,7 +5,7 @@ from html import escape
 from urllib.parse import quote
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from api.schemas.pipelines import (
@@ -149,11 +149,14 @@ async def get_api_workflows(
 
 @router.get("/api/models")
 async def get_api_models(
+    response: Response,
     media_type: Optional[str] = Query(None, pattern="^(image|video)$"),
     model_type: Optional[str] = Query(None, pattern="^(llm|vlm|t2i|i2i|video)$"),
     ability: Optional[str] = Query(None),
     verified_only: bool = False,
 ):
+    # 模型列表随配置变更实时变化，禁止任何层缓存（浏览器/代理）
+    response.headers["Cache-Control"] = "no-store"
     if model_type:
         models = []
         for model in get_models_by_type(model_type):

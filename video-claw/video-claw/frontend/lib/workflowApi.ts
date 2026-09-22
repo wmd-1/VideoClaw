@@ -261,7 +261,8 @@ export async function fetchApiModels(params: {
   if (params.modelType) search.set('model_type', params.modelType);
   if (params.ability) search.set('ability', params.ability);
   if (params.verifiedOnly) search.set('verified_only', 'true');
-  const resp = await fetch(`/api/models${search.toString() ? `?${search.toString()}` : ''}`);
+  // 列表随配置变更实时变化：禁止浏览器/代理缓存，避免保存后下拉仍显示旧模型
+  const resp = await fetch(`/api/models${search.toString() ? `?${search.toString()}` : ''}`, { cache: 'no-store' });
   if (!resp.ok) throw new Error('获取模型列表失败');
   const data = await resp.json();
   return data.models || [];

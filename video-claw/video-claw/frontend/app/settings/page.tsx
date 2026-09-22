@@ -209,6 +209,16 @@ export default function SettingsPage() {
   };
 
   const save = async () => {
+    // 保存前预检：自定义模型必须已选类型（types），避免提交后被后端校验拒绝（400）
+    const invalidModels = (Array.isArray(config.custom_models) ? config.custom_models : [])
+      .map((item: any, index: number) => ({ id: String(item?.id || `第 ${index + 1} 条`), types: item?.types }))
+      .filter(item => !Array.isArray(item.types) || item.types.length === 0);
+    if (invalidModels.length > 0) {
+      setSaving(false);
+      setMessage('');
+      setError(`请先为这些自定义模型选择类型（types）：${invalidModels.map(item => item.id).join('、')}`);
+      return;
+    }
     setSaving(true);
     setMessage('');
     setError('');

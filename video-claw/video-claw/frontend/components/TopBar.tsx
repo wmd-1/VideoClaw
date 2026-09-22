@@ -427,10 +427,10 @@ export default function TopBar({
           <button
             onClick={onStop}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-medium transition-colors ring-1 ring-red-200"
-            title="停止执行"
+            title="停止生成"
           >
             <Square className="w-3.5 h-3.5 fill-current" />
-            <span>停止</span>
+            <span>停止生成</span>
           </button>
         )}
 
