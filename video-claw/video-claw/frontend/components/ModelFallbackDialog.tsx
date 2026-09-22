@@ -64,6 +64,9 @@ export default function ModelFallbackDialog({
           <p className="mt-1.5 text-amber-600">
             你可以为每个条目录上传自己的图片完成本步骤（不依赖模型生成），也可以更换模型后重试。
           </p>
+          <p className="mt-1.5 text-amber-600">
+            提示：若生成队列仍在执行，可先点击「停止」——已上传/已完成的条目会保留，随后即可「确认并继续」；重新执行本步骤时，已上传的条目会被自动跳过。
+          </p>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">

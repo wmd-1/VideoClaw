@@ -124,10 +124,13 @@ def make_http_client(
     headers: Dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    # 连接阶段独立短超时：目标不可达（地址写错/服务未启动等）时快速失败，
+    # 避免连接挂起占满整个读取超时（生成类服务常见 600s）而长期阻塞工作流。
+    connect_timeout = min(15.0, float(timeout))
     kwargs: Dict[str, Any] = {
         "base_url": normalize_base_url(base_url),
         "headers": headers,
-        "timeout": httpx.Timeout(timeout),
+        "timeout": httpx.Timeout(timeout, connect=connect_timeout),
     }
     if proxy:
         try:

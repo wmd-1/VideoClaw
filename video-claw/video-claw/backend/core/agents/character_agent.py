@@ -282,6 +282,12 @@ class CharacterDesignerAgent(AgentInterface):
             except Exception as e:
                 last_error = e
                 logger.error(f"Asset gen failed for {asset_type} {name}({asset_id}): {e}")
+                from models.custom_common import classify_model_unavailable
+
+                if classify_model_unavailable(e):
+                    # 模型级错误（鉴权/地址不可达等）：重试无意义，立即终止该条目的生成循环
+                    logger.warning(f"Asset {asset_id}: model unavailable, skip remaining retries")
+                    break
 
         # 达到最大迭代次数，尝试使用 VLM 选择最佳图片
         logger.warning(f"[{asset_type}] {name} reached max iterations ({max_iterations}), trying VLM selection")

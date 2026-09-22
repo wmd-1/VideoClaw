@@ -1347,25 +1347,22 @@ export default function WorkflowPanel() {
   // ── 计算项目状态 ──
   // 后端阶段状态: pending, running, waiting, completed, stopped, error
   // 前端 StageStatus: pending, running, waiting, completed, error
+  // 语义：阶段 completed = 已完成（若仍有 pending 阶段，则项目处于「等待确认继续」）
   const hasRunning = Object.values(stageStates).some(s => s.status === 'running');
   const hasWaiting = Object.values(stageStates).some(s => s.status === 'waiting');
   const hasError = Object.values(stageStates).some(s => s.status === 'error');
-  const allCompleted = Object.values(stageStates).every(s => s.status === 'completed' || s.status === 'pending');
+  const hasStopped = Object.values(stageStates).some(s => s.status === 'stopped');
+  const completedCoreStages = STAGE_ORDER.filter(stage => stageStates[stage]?.status === 'completed').length;
   const effectiveIsRunning = isRunning || hasRunning;
 
   let computedStatus: string;
   if (hasRunning) computedStatus = 'running';
   else if (hasWaiting) computedStatus = 'waiting';
   else if (hasError) computedStatus = 'error';
-  // Check if stopped in stageStates
-  else if (Object.values(stageStates).some(s => s.status === 'stopped')) computedStatus = 'stopped';
-  else if (allCompleted && stageStates[STAGE_ORDER[STAGE_ORDER.length - 1]]?.status === 'completed') {
-    computedStatus = 'completed';
-  } else if (allCompleted) {
-    computedStatus = 'completed';
-  } else {
-    computedStatus = Object.values(stageStates).some(s => s.status === 'stopped') ? 'stopped' : 'pending';
-  }
+  else if (hasStopped) computedStatus = 'stopped';
+  else if (completedCoreStages >= STAGE_ORDER.length) computedStatus = 'completed'; // 六个阶段全部完成
+  else if (completedCoreStages > 0) computedStatus = 'waiting'; // 已完成部分阶段：等待确认继续
+  else computedStatus = 'pending';
 
   const projectStatus = sessionId ? computedStatus : undefined;
 

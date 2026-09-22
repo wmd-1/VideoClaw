@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, Loader2, Save, Settings, XCircle } from 'lucide-react';
 import BrandHeader from '@/components/BrandHeader';
-import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
+import { fetchModelGroupsByType, mergeProviderGroups } from '@/lib/modelRegistry';
 import {
   CustomModelsSection,
   CustomProvidersSection,
@@ -47,7 +47,7 @@ const EMPTY_ENV_OVERRIDES: EnvOverrides = { fields: [], providers: [], models: [
 const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
   {
     title: 'Default Models',
-    description: '主流程和 Pipeline 使用的默认模型（下拉来自内置注册表与已保存的自定义模型）。',
+    description: '主流程和 Pipeline 使用的默认模型；每个下拉列出的都是全部可用模型（不做类型限制，可交叉选择，如 vlm 模型放入 llm 槽位）。',
     fields: [
       { path: 'models.llm', label: 'llm 文本模型', type: 'select', options: [] },
       { path: 'models.vlm', label: 'vlm 视觉语言模型', type: 'select', options: [] },
@@ -155,25 +155,26 @@ export default function SettingsPage() {
     load();
   }, []);
 
+  // Default Models 各下拉共享同一份「全部可用模型」：不做类型/能力过滤，
+  // 任何模型（含 vlm/图像/视频）都可以被任一下拉选中（保持可交叉选择的逻辑）。
   const refreshModelSelects = () => {
     Promise.all([
       fetchModelGroupsByType('llm'),
       fetchModelGroupsByType('vlm'),
       fetchModelGroupsByType('i2i'),
       fetchModelGroupsByType('t2i'),
-      fetchVideoModelGroupsByAbility('first_frame_i2v'),
-      fetchVideoModelGroupsByAbility('start_end_frame_i2v'),
-      fetchVideoModelGroupsByAbility('reference_to_video'),
+      fetchModelGroupsByType('video'),
     ])
-      .then(([llm, vlm, imageIt2i, imageT2i, firstFrameVideo, startEndVideo, referenceVideo]) => {
+      .then(groupsList => {
+        const merged = mergeProviderGroups(groupsList);
         setModelSelects({
-          llm,
-          vlm,
-          image_it2i: imageIt2i,
-          image_t2i: imageT2i,
-          video_first_frame: firstFrameVideo,
-          video_start_end: startEndVideo,
-          video_reference: referenceVideo,
+          llm: merged,
+          vlm: merged,
+          image_it2i: merged,
+          image_t2i: merged,
+          video_first_frame: merged,
+          video_start_end: merged,
+          video_reference: merged,
         });
       })
       .catch(() => {});

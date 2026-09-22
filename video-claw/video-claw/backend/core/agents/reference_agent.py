@@ -386,6 +386,12 @@ class ReferenceGeneratorAgent(AgentInterface):
             except Exception as e:
                 last_error = e
                 logger.error(f"Segment {segment_id} image generation failed: {e}")
+                from models.custom_common import classify_model_unavailable
+
+                if classify_model_unavailable(e):
+                    # 模型级错误（鉴权/地址不可达等）：重试无意义，立即终止该片段的生成循环
+                    logger.warning(f"Segment {segment_id}: model unavailable, skip remaining retries")
+                    break
 
         # 所有版本都没有达到硬性标准，使用 VLM 选择最好的
         if all_versions:

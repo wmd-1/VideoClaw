@@ -75,20 +75,30 @@ function projectTaskFromSession(session: any): RunningTaskItem | null {
   };
 }
 
+const CORE_WORKFLOW_STAGES = ['script_generation', 'character_design', 'storyboard', 'reference_generation', 'video_generation', 'post_production'];
+
 function projectReviewTaskFromSession(session: any): RunningTaskItem | null {
-  const statusMap = session.status || {};
-  const waitingStage = Object.keys(statusMap).find(key => statusMap[key] === 'waiting');
-  const completed = Object.values(statusMap).filter(value => ['completed', 'session_completed'].includes(String(value))).length;
-  const allDone = completed >= WORKFLOW_STAGE_COUNT || statusMap.completed === 'completed';
-  if (!waitingStage && !allDone) return null;
-  const targetStage = waitingStage || Object.keys(statusMap).reverse().find(key => ['completed', 'session_completed'].includes(String(statusMap[key]))) || '';
+  const statusMap: Record<string, string> = session.status || {};
+  const values = Object.values(statusMap).map(String);
+  // 执行中 / 出错的会话分别由「进行中任务」与错误提示处理，不进入本面板
+  if (values.includes('running') || values.includes('error')) return null;
+
+  const completedStages = CORE_WORKFLOW_STAGES.filter(stage =>
+    ['completed', 'session_completed'].includes(String(statusMap[stage])),
+  );
+  const waitingStage = CORE_WORKFLOW_STAGES.find(stage => String(statusMap[stage]) === 'waiting');
+  const allDone = completedStages.length >= CORE_WORKFLOW_STAGES.length || statusMap.completed === 'completed';
+
+  // 进入本面板：有停留待确认的阶段（含手动停止保留），或已完成部分阶段、等待用户确认继续
+  if (!waitingStage && completedStages.length === 0) return null;
+  const targetStage = waitingStage || completedStages[completedStages.length - 1] || '';
   return {
-    id: `project-review-${session.id}-${waitingStage || 'completed'}`,
+    id: `project-review-${session.id}-${targetStage || 'completed'}`,
     href: `/?session=${encodeURIComponent(session.id)}${targetStage ? `&stage=${encodeURIComponent(targetStage)}` : ''}`,
     title: session.idea || session.title || session.id,
     scope: waitingStage ? `主流程 · ${waitingStage}` : '主流程',
-    status: waitingStage ? 'waiting' : 'completed',
-    progress: waitingStage ? Math.round((completed / WORKFLOW_STAGE_COUNT) * 100) : 100,
+    status: allDone ? 'completed' : 'waiting',
+    progress: allDone ? 100 : Math.round((completedStages.length / CORE_WORKFLOW_STAGES.length) * 100),
   };
 }
 
