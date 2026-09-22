@@ -680,6 +680,8 @@ export default function WorkflowPanel() {
   // ── 确认阶段并继续 ──
   const handleConfirmStage = async (stageId: string) => {
     if (!sessionId || isRunning) return;
+    // 点击「确认并继续」= 明确要继续：清除历史停止标记（否则 runStage 会直接抛 Stopped）
+    stoppedRef.current = false;
     setIsRunning(true);
 
     try {
@@ -785,7 +787,21 @@ export default function WorkflowPanel() {
         }
       }
     } catch (error: any) {
-      console.error('Continue error:', error);
+      const message = String(error?.message || '');
+      const isInterrupted =
+        error?.name === 'AbortError' || /abort|stopped/i.test(message) || message === 'Stopped';
+      if (isInterrupted) {
+        // 流被中止（停止/刷新等），不当作错误：尽力同步后端真实状态
+        console.warn('Continue interrupted:', message || error?.name);
+        try {
+          const status = await getProjectStatus(sessionId);
+          setGlobalStatusMap(status.status || {});
+        } catch {
+          /* ignore */
+        }
+      } else {
+        console.error('Continue error:', error);
+      }
     } finally {
       setIsRunning(false);
     }
@@ -1183,7 +1199,8 @@ export default function WorkflowPanel() {
       const completedStages = allStatusStages.filter(k => ["completed", "session_completed"].includes(stMap[k]));
       setCompletedStagesFromSession(completedStages);
 
-      for (const sName of allStatusStages) {
+      // 仅处理已知工作流阶段：status map 可能含 init 等内部键（无独立 artifact，直接跳过避免 404）
+      for (const sName of allStatusStages.filter(name => STAGE_ORDER.includes(name))) {
         const cStatus = stMap[sName];
         if (cStatus === 'pending' || cStatus === 'idle') {
           // 即使是 pending，如果 artifacts 中有数据，也尝试恢复数据（用于初始占位显示）
@@ -1376,9 +1393,12 @@ export default function WorkflowPanel() {
 
     // 判断后续阶段是否已执行过：如有，则隐藏"确认并继续"
     const idx = STAGE_ORDER.indexOf(activeStage);
-    const hasSubsequentExecution = STAGE_ORDER.slice(idx + 1).some(
-      s => stageStates[s]?.status && stageStates[s].status !== 'pending'
-    );
+    // 后续阶段「真正执行过」才隐藏「确认并继续」；waiting/stopped 为可重做的中间态
+    // （如后端暂停/手动停止保留的现场），不应使当前阶段的确认按钮消失。
+    const hasSubsequentExecution = STAGE_ORDER.slice(idx + 1).some(s => {
+      const st = stageStates[s]?.status;
+      return Boolean(st) && st !== 'pending' && st !== 'waiting' && st !== 'stopped';
+    });
     const showConfirm = !hasSubsequentExecution;
 
     // 计算是否有待生成的项（阶段2、4、5）
