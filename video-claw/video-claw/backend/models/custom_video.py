@@ -7,6 +7,7 @@
 轮询有超时上限；失败时尽力取消任务。
 """
 
+import json
 import logging
 import os
 import sys
@@ -21,6 +22,7 @@ if backend_dir not in sys.path:
 
 import httpx
 
+from config import Config
 from models.custom_common import (
     DEFAULT_VIDEO_POLL_INTERVAL,
     DEFAULT_VIDEO_POLL_TIMEOUT,
@@ -44,16 +46,18 @@ class CustomVideoClient:
         self,
         meta: Dict[str, Any],
         poll_interval: float = DEFAULT_VIDEO_POLL_INTERVAL,
-        poll_timeout: float = DEFAULT_VIDEO_POLL_TIMEOUT,
-        timeout: float = 600.0,
+        poll_timeout: Optional[float] = None,
+        timeout: Optional[float] = None,
     ):
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
         self._protocol = str(meta.get("protocol") or "")
         self._base_url = str(meta.get("base_url") or "")
         self._poll_interval = poll_interval
-        self._poll_timeout = poll_timeout
-        self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=timeout))
+        # 生成与轮询超时：默认取 Config.TIMEOUT_VIDEO（.env VC_TIMEOUT_VIDEO，缺省 3 小时）
+        resolved_timeout = float(timeout if timeout is not None else Config.TIMEOUT_VIDEO)
+        self._poll_timeout = float(poll_timeout if poll_timeout is not None else Config.TIMEOUT_VIDEO)
+        self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=resolved_timeout))
 
     # 与内置 VideoClient.generate_video 保持签名/约定一致（调用方零改动）
     def generate_video(
@@ -87,6 +91,23 @@ class CustomVideoClient:
         """生成视频：写入 save_path 并返回远端标识（视频 URL/任务下载地址）。"""
         duration = self._clamp_duration(duration)
         size = video_size(video_ratio, resolution)
+        # vllm-omni：优先 /videos/sync（一次请求直出视频字节，官方 recipes 主形态）；
+        # 端点不可用（404/405/非视频响应）时回退异步三段式。
+        if self._protocol == "vllm-omni":
+            sync_error = self._try_sync_generate(
+                prompt=prompt,
+                image_path=image_path,
+                last_image_path=last_image_path,
+                reference_image_paths=reference_image_paths,
+                size=size,
+                duration=duration,
+                negative_prompt=negative_prompt,
+                seed=seed,
+                save_path=save_path,
+            )
+            if sync_error is None:
+                return f"{self._base_url}/videos/sync"
+            logger.info("vllm-omni sync unavailable (%s); falling back to async job flow", sync_error)
         job = self._create_job(
             prompt=prompt,
             image_path=image_path,
@@ -128,6 +149,60 @@ class CustomVideoClient:
             maximum = minimum
         return min(max(int(duration), minimum), maximum)
 
+    def _task_for_input(
+        self,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        refs: List[str],
+    ) -> str:
+        """按输入推断 MiniMax-H3 的任务类型（t2va / fl2va / ref2va）。"""
+        if refs:
+            return "ref2va"
+        if image_path or last_image_path:
+            return "fl2va"  # 首帧 / 尾帧 / 首尾帧
+        return "t2va"
+
+    def _extra_params(self, task: str, duration: int, frame_indices: Optional[List[int]] = None) -> str:
+        """vllm-omni 的 extra_params 表单字段（JSON 字符串）。"""
+        payload: Dict[str, Any] = {"task": task, "duration": float(duration)}
+        if frame_indices:
+            payload["frame_indices"] = frame_indices
+        return json.dumps(payload)
+
+    def _file_uri(self, path: str) -> str:
+        """将本地路径转为 file:// URI（sglang conditions 的服务端可见引用形态）。"""
+        if path.startswith("file://"):
+            return path
+        return "file://" + os.path.abspath(path)
+
+    def _sglang_conditions_variant(
+        self,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        refs: List[str],
+        task: str,
+    ) -> Tuple[str, List[Tuple[str, str]], Dict[str, Any]]:
+        """sglang 官方 cookbook 形态（JSON + conditions，file:// 引用服务端可见路径）。"""
+        conditions: List[Dict[str, Any]] = []
+        if refs:
+            conditions = [
+                {"type": "image", "uri": self._file_uri(path), "role": "reference"} for path in refs
+            ]
+        elif image_path and last_image_path:
+            conditions = [
+                {"type": "image", "uri": self._file_uri(image_path), "role": "keyframe", "frame_index": 0},
+                {"type": "image", "uri": self._file_uri(last_image_path), "role": "keyframe", "frame_index": -1},
+            ]
+        elif last_image_path:
+            conditions = [
+                {"type": "image", "uri": self._file_uri(last_image_path), "role": "keyframe", "frame_index": -1}
+            ]
+        else:
+            conditions = [
+                {"type": "image", "uri": self._file_uri(image_path or ""), "role": "keyframe", "frame_index": 0}
+            ]
+        return ("json", [], {"task": task, "conditions": conditions})
+
     def _image_file_specs(
         self,
         image_path: Optional[str],
@@ -136,54 +211,175 @@ class CustomVideoClient:
     ) -> List[List[Tuple[str, str]]]:
         """构造文件字段候选方案：每种方案为 [(字段名, 图片路径), ...] 列表。
 
-        不同推理服务（vllm-omni / sglang / OpenAI 兼容）的多图字段命名不一致，
-        按主形态优先、失败回退的顺序返回候选；单图（首帧）沿用 `input_reference`。
+        按协议给出主形态优先、失败回退的候选：
+        - vllm-omni（MiniMax-H3 recipes）：单图 `input_reference`，多图 `input_references` 重复
+        - sglang（MiniMax-H3 cookbook）：顺序双帧用同名 `input_reference` 重复
+        - openai 兼容：沿用常见字段命名回退
         """
         refs = [path for path in (reference_image_paths or []) if path]
         if refs:
-            # 参考图生视频：多图字段候选（同名多文件 / 具名字段 / 表单数组）
-            return [
-                [("input_reference", path) for path in refs],
-                [("reference_images", path) for path in refs],
-                [("image[]", path) for path in refs],
-            ]
+            specs: List[List[Tuple[str, str]]] = []
+            if self._protocol == "vllm-omni":
+                if len(refs) == 1:
+                    specs.append([("input_reference", refs[0])])
+                else:
+                    specs.append([("input_references", path) for path in refs])
+            specs.append([("input_reference", path) for path in refs])
+            specs.append([("reference_images", path) for path in refs])
+            specs.append([("image[]", path) for path in refs])
+            return specs
         if image_path and last_image_path:
-            # 首尾帧生视频：首帧固定 input_reference，尾帧字段按常见命名回退
-            return [
-                [("input_reference", image_path), ("last_frame", last_image_path)],
-                [("input_reference", image_path), ("last_image", last_image_path)],
-                [("input_reference", image_path), ("tail_image", last_image_path)],
-                [("input_reference", image_path), ("input_reference", last_image_path)],
-            ]
+            specs = []
+            if self._protocol == "vllm-omni":
+                # H3 首尾帧：同名 input_references 重复 + extra_params.frame_indices=[0,-1]
+                specs.append([("input_references", image_path), ("input_references", last_image_path)])
+            if self._protocol == "sglang":
+                # H3 顺序双帧：同名 input_reference 按序重复
+                specs.append([("input_reference", image_path), ("input_reference", last_image_path)])
+            specs.append([("input_reference", image_path), ("last_frame", last_image_path)])
+            specs.append([("input_reference", image_path), ("last_image", last_image_path)])
+            specs.append([("input_reference", image_path), ("tail_image", last_image_path)])
+            specs.append([("input_reference", image_path), ("input_reference", last_image_path)])
+            return specs
+        if last_image_path and not image_path:
+            # 仅尾帧（frame_index=-1）：单 input_reference + extra_params.frame_indices=[-1]
+            return [[("input_reference", last_image_path)]]
         if image_path:
             return [[("input_reference", image_path)]]
         return [[]]
 
     def _create_variants(
-        self, image_specs: List[List[Tuple[str, str]]]
-    ) -> List[Tuple[str, List[Tuple[str, str]]]]:
-        """返回 (编码, 文件字段方案) 尝试序列。
+        self,
+        image_specs: List[List[Tuple[str, str]]],
+        task: str,
+        duration: int,
+        tail_only: bool = False,
+    ) -> List[Tuple[str, List[Tuple[str, str]], Dict[str, Any]]]:
+        """返回 (编码, 文件字段方案, 附加表单字段) 尝试序列。
 
-        - 含文件：仅 multipart（JSON 无法携带文件，避免退化成“无图生成”的静默错误）
-        - 纯文本：sglang 以 JSON 为主形态，其余以 multipart 为主形态（各自回退另一种）
+        协议差异：
+        - vllm-omni：extra_params（task/duration/frame_indices）为首选形态，失败回退旧形态（保障兼容）
+        - sglang：task 为 MiniMax-H3 必填（t2va/fl2va/ref2va）
+        - openai：保持原始形态（无附加字段）
+        - 含文件仅 multipart（JSON 无法携带文件，避免退化为“无图生成”）
         """
-        variants: List[Tuple[str, List[Tuple[str, str]]]] = []
+        variants: List[Tuple[str, List[Tuple[str, str]], Dict[str, Any]]] = []
         for field_spec in image_specs:
             if field_spec:
-                variants.append(("multipart", field_spec))
+                if self._protocol == "vllm-omni":
+                    if task != "fl2va":
+                        frame_indices = None
+                    elif tail_only:
+                        frame_indices = [-1]
+                    elif len(field_spec) == 2 and all(name == "input_references" for name, _ in field_spec):
+                        frame_indices = [0, -1]
+                    else:
+                        frame_indices = None
+                    variants.append(("multipart", field_spec, {"extra_params": self._extra_params(task, duration, frame_indices)}))
+                    variants.append(("multipart", field_spec, {}))
+                elif self._protocol == "sglang":
+                    variants.append(("multipart", field_spec, {"task": task}))
+                else:
+                    variants.append(("multipart", field_spec, {}))
             elif self._protocol == "sglang":
-                variants.extend([("json", []), ("multipart", [])])
+                variants.extend([("json", [], {"task": task, "conditions": []}), ("multipart", [], {"task": task})])
+            elif self._protocol == "vllm-omni":
+                variants.extend([
+                    ("multipart", [], {"extra_params": self._extra_params(task, duration)}),
+                    ("multipart", [], {}),
+                    ("json", [], {}),
+                ])
             else:
-                variants.extend([("multipart", []), ("json", [])])
+                variants.extend([("multipart", [], {}), ("json", [], {})])
         # 去重（多个候选方案可能与纯文本序列重复）
         seen = set()
-        unique: List[Tuple[str, List[Tuple[str, str]]]] = []
+        unique: List[Tuple[str, List[Tuple[str, str]], Dict[str, str]]] = []
         for item in variants:
-            marker = (item[0], tuple(item[1]))
+            marker = (item[0], tuple(item[1]), json.dumps(item[2], sort_keys=True, default=str))
             if marker not in seen:
                 seen.add(marker)
                 unique.append(item)
         return unique
+
+    def _try_sync_generate(
+        self,
+        prompt: str,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        reference_image_paths: Optional[List[str]],
+        size: str,
+        duration: int,
+        negative_prompt: Optional[str],
+        seed: Optional[int],
+        save_path: str,
+    ) -> Optional[str]:
+        """尝试 vllm-omni 的 /videos/sync 同步端点：成功落盘返回 None，否则返回错误信息（供回退异步）。"""
+        refs = [path for path in (reference_image_paths or []) if path]
+        task = self._task_for_input(image_path, last_image_path, refs)
+        tail_only = bool(last_image_path) and not image_path
+        last_error = ""
+        for field_spec in self._image_file_specs(image_path, last_image_path, reference_image_paths):
+            if task != "fl2va":
+                frame_indices = None
+            elif tail_only:
+                frame_indices = [-1]
+            elif len(field_spec) == 2 and all(name == "input_references" for name, _ in field_spec):
+                frame_indices = [0, -1]
+            else:
+                frame_indices = None
+            form_extra = {"extra_params": self._extra_params(task, duration, frame_indices)}
+            try:
+                response = self._post_sync(
+                    prompt, field_spec, size, duration, negative_prompt, seed, form_extra
+                )
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                continue
+            if response.status_code >= 400:
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                if response.status_code in (404, 405):
+                    return last_error  # 端点不存在：快速回退异步
+                continue
+            content_type = response.headers.get("content-type", "")
+            if "video" in content_type or "octet-stream" in content_type:
+                with open(save_path, "wb") as handle:
+                    handle.write(response.content)
+                return None
+            last_error = f"unexpected content-type: {content_type or 'empty'}"
+        return last_error or "sync endpoint unavailable"
+
+    def _post_sync(
+        self,
+        prompt: str,
+        field_spec: List[Tuple[str, str]],
+        size: str,
+        duration: int,
+        negative_prompt: Optional[str],
+        seed: Optional[int],
+        form_extra: Optional[Dict[str, str]] = None,
+    ) -> httpx.Response:
+        base_fields: Dict[str, Any] = {"prompt": prompt, "model": self._model, "size": size}
+        if negative_prompt:
+            base_fields["negative_prompt"] = negative_prompt
+        if seed is not None:
+            base_fields["seed"] = str(seed)
+        data = dict(base_fields)
+        data["seconds"] = str(duration)
+        if form_extra:
+            data.update({key: value for key, value in form_extra.items() if isinstance(value, (str, int, float))})
+        if field_spec:
+            opened: List[Any] = []
+            try:
+                files = []
+                for field_name, path in field_spec:
+                    handle = open(path, "rb")
+                    opened.append(handle)
+                    files.append((field_name, (os.path.basename(path), handle, guess_mime_type(path))))
+                return self._client.post("/videos/sync", data=data, files=files)
+            finally:
+                for handle in opened:
+                    handle.close()
+        return self._client.post("/videos/sync", files={key: (None, str(value)) for key, value in data.items()})
 
     def _create_job(
         self,
@@ -196,14 +392,24 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
     ) -> Dict[str, Any]:
+        refs = [path for path in (reference_image_paths or []) if path]
+        task = self._task_for_input(image_path, last_image_path, refs)
+        tail_only = bool(last_image_path) and not image_path
+        variants = self._create_variants(
+            self._image_file_specs(image_path, last_image_path, reference_image_paths),
+            task,
+            duration,
+            tail_only=tail_only,
+        )
+        if self._protocol == "sglang" and (refs or image_path or last_image_path):
+            # H3 cookbook 官方形态（JSON + conditions，file:// 引用服务端可见路径）：作为最后回退
+            variants.append(self._sglang_conditions_variant(image_path, last_image_path, refs, task))
         last_error = ""
         last_exc: Optional[Exception] = None
-        for encoding, field_spec in self._create_variants(
-            self._image_file_specs(image_path, last_image_path, reference_image_paths)
-        ):
+        for encoding, field_spec, form_extra in variants:
             try:
                 response = self._post_create(
-                    encoding, prompt, field_spec, size, duration, negative_prompt, seed
+                    encoding, prompt, field_spec, size, duration, negative_prompt, seed, form_extra
                 )
                 if response.status_code < 400:
                     try:
@@ -214,8 +420,9 @@ class CustomVideoClient:
                         ) from exc
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
                 logger.warning(
-                    "Custom video create via %s failed (%s), trying fallback",
+                    "Custom video create via %s%s failed (%s), trying fallback",
                     encoding,
+                    "+params" if form_extra else "",
                     response.status_code,
                 )
                 if response.status_code not in RETRYABLE_STATUS_CODES:
@@ -237,6 +444,7 @@ class CustomVideoClient:
         duration: int,
         negative_prompt: Optional[str],
         seed: Optional[int],
+        form_extra: Optional[Dict[str, str]] = None,
     ) -> httpx.Response:
         base_fields: Dict[str, Any] = {
             "prompt": prompt,
@@ -251,10 +459,15 @@ class CustomVideoClient:
         if encoding == "json":
             fields = dict(base_fields)
             fields["seconds"] = str(duration)
+            if form_extra:
+                fields.update(form_extra)
             return self._client.post("/videos", json=fields)
 
         data = dict(base_fields)
         data["seconds"] = str(duration)
+        if form_extra:
+            # 仅标量字段可由 multipart 表单承载（如 task/extra_params；conditions 等结构化字段仅 JSON）
+            data.update({key: value for key, value in form_extra.items() if isinstance(value, (str, int, float))})
         if field_spec:
             opened: List[Any] = []
             try:

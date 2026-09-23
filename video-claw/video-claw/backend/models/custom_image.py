@@ -37,12 +37,14 @@ logger = logging.getLogger(__name__)
 class CustomImageClient:
     """自定义文生图/图生图客户端（协议差异在内部适配）。"""
 
-    def __init__(self, meta: Dict[str, Any], timeout: float = 600.0):
+    def __init__(self, meta: Dict[str, Any], timeout: Optional[float] = None):
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
         self._protocol = str(meta.get("protocol") or "")
         self._base_url = str(meta.get("base_url") or "")
-        self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=timeout))
+        # 生成超时：默认取 Config.TIMEOUT_IMAGE（.env VC_TIMEOUT_IMAGE，缺省 3 小时）
+        resolved_timeout = float(timeout if timeout is not None else Config.TIMEOUT_IMAGE)
+        self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=resolved_timeout))
 
     def generate_image(
         self,

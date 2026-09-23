@@ -53,8 +53,14 @@ export default function StageActions({
   // 按钮是否禁用逻辑
   let isButtonDisabled = isRunning;
   if (!isRunning && stageId) {
-    // 除了第一阶段和第六阶段外，completed 状态下禁用继续生成
-    if (stageId !== 'script_generation' && stageId !== 'post_production' && status === 'completed') {
+    // 除第 1/6 阶段外，completed 且「没有待生成/失败条目」时才禁用继续生成（避免误点重跑）；
+    // 存在失败或未生成条目时允许重跑——重新配置模型后的常规恢复路径
+    if (
+      stageId !== 'script_generation' &&
+      stageId !== 'post_production' &&
+      status === 'completed' &&
+      !hasPendingItems
+    ) {
       isButtonDisabled = true;
     }
   }

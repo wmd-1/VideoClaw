@@ -887,12 +887,18 @@ class ReferenceGeneratorAgent(AgentInterface):
             nonlocal first_frame_prompts
             nonlocal selected_images_map
             nonlocal rewrite_results_map
-            # 筛选需要生成的（跳过已有图的）
+            # 筛选需要生成的（跳过已有图的；失败条目即使留有历史版本也要重跑）
+            existing_artifact = self._session_artifact(input_data, "reference_generation") or {}
+            failed_ids = {
+                str(scene.get("id"))
+                for scene in (existing_artifact.get("scenes") or [])
+                if isinstance(scene, dict) and scene.get("status") == "failed"
+            }
             pending_segments = []
             for seg in segments:
                 segment_id = seg['segment_id']
                 existing = self._list_versions(sid, segment_id)
-                if existing:
+                if existing and str(segment_id) not in failed_ids:
                     continue
                 pending_segments.append(seg)
 

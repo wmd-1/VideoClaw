@@ -668,16 +668,24 @@ class CharacterDesignerAgent(AgentInterface):
 
         def run():
             all_tasks = []
+            # 失败条目即使留有历史版本也要重跑（重新配置模型后的恢复路径）
+            existing_artifact = self._session_artifact(input_data, "character_design") or {}
+            failed_ids = {
+                str(item.get("id"))
+                for key in ("characters", "settings")
+                for item in (existing_artifact.get(key) or [])
+                if isinstance(item, dict) and item.get("status") == "failed"
+            }
             for asset_id, info in chars_desc.items():
                 existing = self._list_versions(sid, 'characters', asset_id)
-                if existing:
+                if existing and str(asset_id) not in failed_ids:
                     continue
                 all_tasks.append(("characters", asset_id, info.get("name", ""), info.get("description", ""), info.get("species", "")))
 
             for asset_id, info in sets_desc.items():
                 desc = info.get("description", "") if isinstance(info, dict) else info
                 existing = self._list_versions(sid, 'settings', asset_id)
-                if existing:
+                if existing and str(asset_id) not in failed_ids:
                     continue
                 all_tasks.append(("settings", asset_id, info.get("name", "") if isinstance(info, dict) else "", desc, ""))
 

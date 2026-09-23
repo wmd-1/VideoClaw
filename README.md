@@ -1,4 +1,4 @@
-<!-- 最后更新：2026-09-16 -->
+<!-- 最后更新：2026-09-23 -->
 
 # VideoClaw（AI 创意视频生成系统）
 
@@ -35,7 +35,7 @@
         │   ├── /api/tasks/**      任务查询 + SSE 事件流（进度 / 产物 / 完成）
         │   └── /api/config · /api/models · /api/sessions · /api/health · /code（静态产物）
         ▼
-   外部模型 API：DashScope / OpenAI / Gemini / DeepSeek / 火山方舟 ARK / Kling
+   外部/本地模型服务：内置供应商（默认休眠，可用 .env 恢复）+ 自定义供应商（local_*：vllm / vllm-omni / sglang）
         ▼
    backend/code/   产物：result/{script,image,video,task}；元数据：data/{sessions,tasks}
 ```
@@ -44,7 +44,7 @@
 - **Agent 体系**：每个阶段一个 Agent，统一实现 `process(input_data, intervention) -> {"payload", "requires_intervention", "completed"}` 接口（`core/agents/base_agent.py`）。
 - **模型接入层**：所有模型在 `models/config_model.py` 的 `MODEL_CONFIG` 注册表统一登记（provider / 能力标签 / 并发 / 价格），前端与 Pipeline 通过 `/api/models?media_type=&ability=` 按能力标签筛选可用模型。
 - **Pipeline 引擎**：任务创建即返回 `task_id`，后台 asyncio 执行，进度与产物经进程内事件总线 + SSE（`/api/tasks/{id}/events`）实时推送；SSE 订阅保存在进程内存，**服务须单进程运行**。
-- **配置单源**：`config.yaml` 是唯一配置来源——可直接编辑文件，也可由 WebUI 设置页经 `PUT /api/config` 写回；Docker 下该文件持久化在宿主 `./data/config/`。
+- **配置与覆盖层**：`config.yaml`（Docker 下持久化于宿主 `./data/config/`）为文件配置源，可由 WebUI 设置页经 `PUT /api/config` 写回；环境变量层（`.env` 的 `VC_*`）优先级更高（字段级覆盖，见「配置说明」）。
 
 ### 技术栈
 
@@ -62,8 +62,8 @@ VideoClaw/
 ├── docker-compose.yml          # 编排 backend + frontend（只运行本地镜像，不构建）
 ├── Dockerfile.backend          # 后端镜像（uv + ffmpeg + headless Chromium）
 ├── Dockerfile.frontend         # 前端镜像（多阶段 → standalone runner）
-├── docker-entrypoint.sh        # 后端启动前：生成 config、强制 0.0.0.0、软链持久化配置
-├── .env.example                # 可选：覆盖宿主机端口（FRONTEND_PORT / BACKEND_PORT）
+├── docker-entrypoint.sh        # 后端启动前：生成 config 并软链持久化（server.host/port 由 config.py 环境层对齐）
+├── .env.example                # 可选：端口、供应商/模型（VC_*）、生成超时等覆盖示例
 ├── docs/                       # 展示向 README（README.md / README_EN.md：作品集与演示）
 ├── video-claw-pics/  FilmAgent-pics/   # 展示图与论文配图
 ├── FilmAgent/                  # 系列工作（SIGGRAPH Asia 2024 论文代码）
@@ -123,9 +123,9 @@ VideoClaw/
 | 视频 | `video_client.py` + `video_{dashscope,kling,seedance}.py`                                  | DashScope（Wan）/ Kling / 火山方舟（Seedance）       |
 
 - 注册表 `models/config_model.py::MODEL_CONFIG` 登记每个模型的 `provider / type（能力标签）/ concurrency / price`，是模型清单的权威来源。
-- 支持**自定义供应商与模型**：`api_providers` 下新增供应商（`protocol` = `openai` / `vllm-omni` / `sglang`），并在 `custom_models` 中通过 `provider` 引用注册模型（LLM/VLM/文生图/图生图/视频）；注册表查询时合并自定义条目，客户端路由「注册表优先」（未注册模型直接报错而非落入默认供应商）。适配层见 `models/custom_{common,llm,image,video}.py`：图像支持 `b64_json`/URL/二进制三种响应，视频为异步任务（创建→轮询→下载，multipart 主形态、零鉴权兼容、超时上限与尽力取消）。
+- 支持**自定义供应商与模型**：`api_providers` 下新增供应商（`protocol` = `openai` / `vllm-omni` / `sglang`），并在 `custom_models` 中通过 `provider` 引用注册模型（LLM/VLM/文生图/图生图/视频）；注册表查询时合并自定义条目，客户端路由「注册表优先」（未注册模型直接报错而非落入默认供应商）。适配层见 `models/custom_{common,llm,image,video}.py`：图像支持 `b64_json`/URL/二进制三种响应；视频支持同步（`/videos/sync` 直出）与异步任务（创建→轮询→下载）两条链路，并已按 MiniMax-H3 官方手册适配：自动推断 `task`（t2va/fl2va/ref2va）、vllm-omni 使用 `extra_params` 与 `input_reference(s)`（首尾帧附 `frame_indices`）、sglang 携带 `task`（并提供 JSON+conditions 回退）；multipart 主形态、零鉴权兼容、超时上限与尽力取消。
 - 连通性测试：`POST /api/models/test`（接受未保存草稿，不持久化配置，媒体类会发起一次真实生成）；设置页「自定义供应商/自定义模型」提供逐类型测试按钮。
-- `/api/models` 支持按 `media_type`（image/video）与 `ability`（text_to_image、image_to_video、reference_image、action_transfer、digital_human 等）筛选，前端与 Agent 均以此选择模型。
+- `/api/models` 支持按 `media_type`（image/video）与 `ability`（text_to_image、image_to_image、first_frame_i2v、start_end_frame_i2v、reference_to_video、action_transfer、digital_human 等）筛选，且仅返回当前可用模型；前端与 Agent 均以此选择模型。
 
 ### 后端 · Pipeline 引擎
 
@@ -190,10 +190,12 @@ npm ci                                    # npm 12+ 报 EALLOWREMOTE 时改用 n
 # NEXT_PUBLIC_BACKEND_PORT / BACKEND_INTERNAL_URL 的端口必须与仓库根 .env 的 BACKEND_PORT 一致
 export BACKEND_PORT=$(grep -E '^BACKEND_PORT=' ../../../.env 2>/dev/null | cut -d= -f2 | tr -d ' ')
 BACKEND_INTERNAL_URL=http://backend:${BACKEND_PORT:-8000} NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT:-8000} npm run build
-rm -rf .next-runtime && mkdir .next-runtime
+# 清空式组装（保留目录本身，避免 Docker 挂载 inode 失效；首次或改前端后执行）
+mkdir -p .next-runtime && rm -rf .next-runtime/* .next-runtime/.[!.]*
 cp -a .next/standalone/. .next-runtime/
 mkdir -p .next-runtime/.next/static && cp -a .next/static/. .next-runtime/.next/static/
 cp -a public .next-runtime/public
+docker compose restart frontend    # 保留目录 inode 后普通 restart 即生效
 
 # 3) 启动
 cd <仓库根>
@@ -225,7 +227,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 - **镜像构建的唯一入口**是 `docker build -f Dockerfile.backend / Dockerfile.frontend`（compose 服务只有 `image:` + `pull_policy: never`，`docker compose up -d` 不构建、不拉取）；迁移机器可用 `docker save` / `docker load`。
 - **改后端代码免重建**：`docker-compose.yml` 将后端源码逐项只读（`:ro`）挂载进容器 `/app`（不能整目录挂载，会遮蔽镜像内的 `.venv`、`docker-entrypoint.sh`、`config.yaml` 软链等）。改完执行 `docker compose restart backend` 生效；依赖文件（`pyproject.toml` / `uv.lock`）不挂载，改依赖需重建镜像。
-- **改前端代码免重建**：前端是 standalone 编译产物，按「快速开始」步骤 2 重新构建并组装 `.next-runtime/` 后 `docker compose restart frontend` 生效。compose 以 `create_host_path: false` 只读挂载该目录——未构建时 `up` 会直接报错而不是静默建空目录。
+- **改前端代码免重建**：前端是 standalone 编译产物，按「快速开始」步骤 2 重新构建并组装 `.next-runtime/`（采用**清空式**组装：保留目录本身，避免 Docker 挂载 inode 失效）后 `docker compose restart frontend` 生效；若改用了删除目录重建的组装方式，则需 `docker rm -f video-claw-frontend && docker compose up -d frontend` 重建容器。compose 以 `create_host_path: false` 只读挂载该目录——未构建时 `up` 会直接报错而不是静默建空目录。
 - **注意**：standalone 产物在**构建时**固化 rewrites 代理地址，运行时环境变量不生效，因此宿主机构建必须带 `BACKEND_INTERNAL_URL=http://backend:<BACKEND_PORT>`（端口与 `.env` 的 `BACKEND_PORT` 一致；构建命令已自动从 `.env` 读取）。
 
 ## 配置说明
@@ -234,7 +236,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 | 段落              | 关键字段                                                                                                               | 说明                                                                                             |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `server`        | `host` / `port` / `log_level` / `access_log`                                                                   | 服务绑定与日志；启动参数改动需重启后端生效（Docker 下`host` 由 entrypoint 强制为 `0.0.0.0`） |
+| `server`        | `host` / `port` / `log_level` / `access_log`                                                                   | 服务绑定与日志；Docker 下 host/port 由 compose 注入的 `BACKEND_HOST`/`BACKEND_PORT` 对齐（设置页已不展示本段） |
 | `api_providers` | `common.proxy`；各 provider 的 `api_key` / `base_url` / `enable_proxy`                                         | 平台密钥与代理；`enable_proxy` 控制该 provider 是否走公共代理                                  |
 | `models`        | `llm` / `vlm` / `image_t2i` / `image_it2i` / `video_first_frame` / `video_start_end` / `video_reference` | 主流程默认模型；Pipeline 在各自页面单独选模型，不读该默认值                                      |
 | `custom_models` | `id` / `provider` / `model` / `types` / `abilities` / `concurrency` | 自定义模型注册列表（引用 `api_providers` 中的自定义供应商）；`concurrency` 缺省 1（本地单卡服务最保守） |
@@ -244,7 +246,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 - `VC_PROVIDER_<名称>__PROTOCOL|BASE_URL|API_KEY|ENABLE_PROXY`（内置/自定义供应商通用，供应商名大写、中划线转下划线）；
 - `VC_MODEL_LLM|VLM|IMAGE_T2I|IMAGE_IT2I|VIDEO_FIRST_FRAME|VIDEO_START_END|VIDEO_REFERENCE`；
-- `VC_CUSTOM_MODEL_<序号>__ID|PROVIDER|MODEL|NAME|TYPES|ABILITIES|CONCURRENCY`（列表字段逗号分隔；与 `config.yaml` 中同 `id` 条目逐字段合并，.env 优先）。
+- `VC_CUSTOM_MODEL_<序号>__ID|PROVIDER|MODEL|TYPES|ABILITIES|CONCURRENCY`（列表字段逗号分隔；与 `config.yaml` 中同 `id` 条目逐字段合并，.env 优先）。
 
 被 `.env` 覆盖的字段在设置页**只读**并标注「来自 .env」，保存设置不会将其写回；修改 `.env` 后执行 `docker compose up -d backend`（重建容器）生效。
 
@@ -260,6 +262,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 | `BACKEND_INTERNAL_URL`             | 前端（构建期 + 运行期）                  | 代理目标；本地默认`http://127.0.0.1:8000`，Docker 内 `http://backend:<BACKEND_PORT>` |
 | `VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*` | backend（compose `env_file` 注入；本地直跑读仓库根/backends 下 `.env`） | 后端配置覆盖层（供应商/默认模型/自定义模型），优先级高于 `config.yaml`，详见上方「配置说明」 |
 | `VC_SERVER__*` / `VC_COMMON__*` | backend（同上） | API Server（host/port/log_level/access_log）与 Common（proxy/print_model_input）配置；未配置时 `server.port` 自动对齐 `.env` 的 `BACKEND_PORT` |
+| `VC_TIMEOUT_IMAGE` / `VC_TIMEOUT_VIDEO` | backend（同上） | 生成超时（秒）：图片生成读取超时 / 视频生成 HTTP 与轮询上限，默认 3 小时（10800）；连接阶段仍为 15s 快速失败 |
 | `NEXT_PUBLIC_BACKEND_PORT` | 前端（构建期） | 浏览器直连后端的端口（SSE），需与 `.env` 的 `BACKEND_PORT` 一致；缺省 8000 |
 
 ## 服务拓扑与端口
@@ -286,7 +289,7 @@ Docker 下所有运行时状态落在宿主 `./data/`（迁移机器时整体拷
 
 ## 测试与校验
 
-- 后端：无独立单测套件；以 `GET /api/health` + `GET /api/models` 做启动冒烟，实际功能冒烟走 `/sandbox` 或 Pipeline 页面。
+- 后端：无独立单测套件；以 `GET /api/health` + `GET /api/models` 做启动冒烟，实际功能冒烟走 `/sandbox` 或 Pipeline 页面；回归验证脚本见 `tmp_verify/`（容器内 `docker exec -i video-claw-backend /app/.venv/bin/python - < <script>` 执行）。
 - 前端：`npm run lint`（eslint）；`npm run build`（含 TypeScript 检查，同时产出 standalone 产物用于部署）。
 
 ## 说明

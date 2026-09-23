@@ -1401,19 +1401,21 @@ export default function WorkflowPanel() {
     });
     const showConfirm = !hasSubsequentExecution;
 
-    // 计算是否有待生成的项（阶段2、4、5）
+    // 计算是否有待生成的项（阶段2、4、5）；失败条目（含历史版本）也视为待处理，允许阶段级重跑
     let hasPendingItems = false;
     if (activeStage === 'character_design') {
       const chars = state?.artifact?.characters || [];
       const sets = state?.artifact?.settings || [];
-      hasPendingItems = chars.some((c: any) => !c.selected) || sets.some((s: any) => !s.selected);
+      hasPendingItems =
+        chars.some((c: any) => !c.selected || c.status === 'failed') ||
+        sets.some((s: any) => !s.selected || s.status === 'failed');
     } else if (activeStage === 'reference_generation') {
       const scenes = state?.artifact?.scenes || [];
-      hasPendingItems = scenes.some((s: any) => !s.selected);
+      hasPendingItems = scenes.some((s: any) => !s.selected || s.status === 'failed');
     } else if (activeStage === 'video_generation') {
       const clips = state?.artifact?.clips || [];
-      // 检查是否有未选中的 clips
-      const hasUnselected = clips.some((c: any) => !c.selected);
+      // 检查是否有未选中或失败的 clips
+      const hasUnselected = clips.some((c: any) => !c.selected || c.status === 'failed');
       // 检查参考图阶段的 scenes 数量是否大于 video clips 数量
       // 如果是，说明有新分镜需要生成
       const refScenes = stageStates['reference_generation']?.artifact?.scenes || [];

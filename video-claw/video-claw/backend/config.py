@@ -725,12 +725,34 @@ _FILE_RAW_PROVIDER_KEYS: set = _load_raw_provider_keys()
 CONFIG_VALUES, CONFIG_ENV_INFO = _apply_env_overrides(_FILE_CONFIG_VALUES)
 
 
+def _resolve_generation_timeouts() -> Tuple[float, float]:
+    """生成超时（秒）：VC_TIMEOUT_IMAGE / VC_TIMEOUT_VIDEO，默认 3 小时（10800）。"""
+    env = _load_env_sources()
+    default = 10800.0
+
+    def _pick(key: str) -> float:
+        try:
+            value = float(str(env.get(key) or "").strip())
+            return value if value > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    return _pick("VC_TIMEOUT_IMAGE"), _pick("VC_TIMEOUT_VIDEO")
+
+
+# 视频/图像生成超时（自定义模型客户端消费；.env 可覆盖，容器重建后生效）
+_GENERATION_TIMEOUT_IMAGE, _GENERATION_TIMEOUT_VIDEO = _resolve_generation_timeouts()
+
+
 class Config:
     CONFIG = CONFIG_VALUES
     ENV_OVERRIDES = CONFIG_ENV_INFO
 
     HOST = _get(CONFIG, "server.host")
     PORT = _get(CONFIG, "server.port")
+    # 生成超时（.env：VC_TIMEOUT_IMAGE / VC_TIMEOUT_VIDEO，默认 3 小时）
+    TIMEOUT_IMAGE = _GENERATION_TIMEOUT_IMAGE
+    TIMEOUT_VIDEO = _GENERATION_TIMEOUT_VIDEO
     LOG_LEVEL = _get(CONFIG, "server.log_level")
     DEBUG = LOG_LEVEL == "DEBUG"
     ACCESS_LOG = _get(CONFIG, "server.access_log")
