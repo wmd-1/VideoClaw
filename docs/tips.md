@@ -3,3 +3,5 @@
 cd /home/wmd/projects
 
 sudo tar --exclude='VideoClaw/.*/' -czf VideoClaw.tar.gz VideoClaw
+
+sudo tar -czf VideoClaw.tar.gz VideoClaw

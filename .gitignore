@@ -31,6 +31,8 @@ playwright-report/
 *.zip
 *.so
 *.log
+*.tar.gz
+*.tar
 
 # Editor / OS
 .idea/
