@@ -33,11 +33,15 @@ export const MODEL_TYPE_OPTIONS = [
 export const ABILITY_OPTIONS = [
   { id: 'text_to_video', label: '文生视频' },
   { id: 'first_frame_i2v', label: '首帧生视频' },
+  { id: 'start_end_frame_i2v', label: '首尾帧生视频' },
+  { id: 'reference_to_video', label: '参考图生视频' },
+  { id: 'image_to_video', label: '图生视频（通用）' },
   { id: 'text_to_image', label: '文生图能力' },
   { id: 'image_to_image', label: '图生图能力' },
   { id: 'reference_image', label: '参考图能力' },
   { id: 'text_generation', label: '文本生成能力' },
   { id: 'vision_language', label: '视觉语言能力' },
+  { id: 'image_understanding', label: '视觉理解能力' },
 ];
 
 const inputClass =
@@ -376,8 +380,9 @@ export function CustomModelsSection({
         {models.map((entry, index) => {
           const envOnly = isEnvOnly(entry.id);
           const selectedTypes: string[] = entry.types || [];
+          // key 使用稳定的行下标：编辑 id 时不触发重挂载（否则输入一个字符就失焦）
           return (
-            <div key={`${entry.id}-${index}`} className="rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+            <div key={index} className="rounded-xl border border-gray-100 bg-gray-50/60 p-3">
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
                 <label className="flex flex-col">
                   <FieldLabel text="id 模型标识" envLocked={isEnvField(entry.id, 'id')} />
