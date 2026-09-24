@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { VIDEO_RATIOS, VIDEO_RESOLUTIONS, type ModelOption, type ProviderGroup } from '@/config/models';
 import BrandHeader from '@/components/BrandHeader';
 import { DIRECT_API_BASE, fetchSandboxTasks, uploadMedia } from '@/lib/workflowApi';
-import { fetchModelGroupsByType } from '@/lib/modelRegistry';
+import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 
 // 辅助函数：将相对路径转换为完整 URL
 const toMediaUrl = (path: string) => {
@@ -77,6 +77,8 @@ interface HistoryRecord {
     prompt?: string;
     images?: string[];
     reference_image?: string;
+    audio_url?: string;
+    reference_videos?: string[];
     ratio?: string;
     resolution?: string;
     duration?: number;
@@ -315,6 +317,219 @@ function ImageUploader({
   );
 }
 
+// 音频参考大小限制与视频参考 MIME（与沙盒后端约定一致）
+const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+const VIDEO_ACCEPT = '.mp4,.mov,.webm,video/mp4,video/quicktime,video/webm';
+
+// 音频参考上传组件：URL 直填（HTTP(S)/data:）或本地上传（复用 /api/upload_media），
+// 本地文件由后端转换为服务端可访问 URL
+function AudioRefUploader({ value, onChange }: { value: string; onChange: (url: string) => void }) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [inputMode, setInputMode] = useState<'url' | 'file'>(value && (value.startsWith('http') || value.startsWith('data:')) ? 'url' : 'file');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleDragOver = (e: DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e: DragEvent) => { e.preventDefault(); setIsDragging(false); };
+  const handleDrop = async (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files.length > 0) await uploadFile(e.dataTransfer.files[0]);
+  };
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) await uploadFile(e.target.files[0]);
+  };
+  const uploadFile = async (file: File) => {
+    if (!file.type.startsWith('audio/')) {
+      alert('请选择音频文件（mp3 / wav / m4a 等）');
+      return;
+    }
+    if (file.size > MAX_AUDIO_BYTES) {
+      alert('音频文件不能超过 20MB');
+      return;
+    }
+    setUploading(true);
+    try {
+      const result = await uploadMedia(file);
+      onChange(result.file_path);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '上传失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const isDirect = value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:');
+
+  return (
+    <div className="mb-4">
+      <label className="block text-sm font-medium text-gray-700 mb-2">音频参考（唇形同步等，可选）</label>
+      <div className="flex gap-2 mb-2">
+        <button
+          type="button"
+          onClick={() => setInputMode('url')}
+          className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
+            inputMode === 'url' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
+          }`}
+        >
+          URL 地址
+        </button>
+        <button
+          type="button"
+          onClick={() => setInputMode('file')}
+          className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
+            inputMode === 'file' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
+          }`}
+        >
+          本地上传
+        </button>
+      </div>
+
+      {inputMode === 'url' && (
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={isDirect ? value : ''}
+            onChange={e => onChange(e.target.value)}
+            placeholder="https://example.com/audio.wav（或 data:audio/wav;base64,...）"
+            className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+          />
+          {value && isDirect && (
+            <div className="relative group">
+              <audio src={value} controls className="w-full" />
+              <button
+                onClick={() => onChange('')}
+                className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {inputMode === 'file' && (
+        value && !isDirect ? (
+          <div className="relative group rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500 break-all">
+            已上传：{value}
+            <button
+              onClick={() => onChange('')}
+              className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+              isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            {uploading ? (
+              <Loader2 className="w-6 h-6 mx-auto mb-2 text-indigo-500 animate-spin" />
+            ) : (
+              <Upload className="w-6 h-6 mx-auto mb-2 text-gray-400" />
+            )}
+            <p className="text-sm text-gray-500">
+              拖拽音频到此处，或 <span className="text-indigo-600">点击选择文件</span>
+            </p>
+            <p className="text-xs text-gray-400 mt-1">支持 mp3、wav、m4a 等，不超过 20MB</p>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// 参考视频上传组件：多选 mp4/mov/webm，上传后以文件路径列表提交（后端按 input_references 上传）
+function VideoRefsUploader({ paths, onChange }: { paths: string[]; onChange: (paths: string[]) => void }) {
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadFiles = async (files: FileList) => {
+    const accepted: string[] = [];
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const okType = file.type.startsWith('video/') || /\.(mp4|mov|webm)$/i.test(file.name);
+        if (!okType) {
+          alert(`不支持的文件类型：${file.name}（仅支持 mp4 / mov / webm）`);
+          continue;
+        }
+        if (file.size > MAX_VIDEO_BYTES) {
+          alert(`视频文件不能超过 200MB：${file.name}`);
+          continue;
+        }
+        const result = await uploadMedia(file);
+        accepted.push(result.file_path);
+      }
+      if (accepted.length) onChange([...paths, ...accepted]);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '上传失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="mb-4">
+      <label className="block text-sm font-medium text-gray-700 mb-2">参考视频（主体/背景迁移等，可选）</label>
+      <div
+        onClick={() => fileInputRef.current?.click()}
+        className="border-2 border-dashed border-gray-300 hover:border-gray-400 rounded-lg p-5 text-center cursor-pointer transition-colors"
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={VIDEO_ACCEPT}
+          multiple
+          onChange={e => {
+            if (e.target.files && e.target.files.length > 0) uploadFiles(e.target.files);
+            e.target.value = '';
+          }}
+          className="hidden"
+        />
+        {uploading ? (
+          <Loader2 className="w-6 h-6 mx-auto mb-1 text-indigo-500 animate-spin" />
+        ) : (
+          <Upload className="w-6 h-6 mx-auto mb-1 text-gray-400" />
+        )}
+        <p className="text-sm text-gray-500">
+          选择一个或多个视频文件 <span className="text-indigo-600">（可与图片参考组合）</span>
+        </p>
+        <p className="text-xs text-gray-400 mt-1">支持 mp4、mov、webm，单个不超过 200MB</p>
+      </div>
+      {paths.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {paths.map((path, index) => (
+            <div key={`${path}-${index}`} className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+              <span className="truncate">视频 {index + 1}：{path}</span>
+              <button
+                onClick={() => onChange(paths.filter((_, i) => i !== index))}
+                className="ml-2 p-1 text-red-500 hover:bg-red-50 rounded"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SandboxPage() {
   const [activeTool, setActiveTool] = useState<ToolType>('llm');
   const [modelGroups, setModelGroups] = useState<Record<ToolType, ProviderGroup[]>>(EMPTY_MODEL_GROUPS);
@@ -333,10 +548,6 @@ export default function SandboxPage() {
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
   const searchParams = useSearchParams();
 
-  const flattenModels = (groups: ProviderGroup[]): ModelOption[] => groups.flatMap(group => group.models);
-
-  const getModels = () => flattenModels(modelGroups[activeTool] || []);
-
   const firstModelId = (groups: ProviderGroup[]) => {
     const models = flattenModels(groups);
     return models.find(model => model.default)?.id || models[0]?.id || '';
@@ -347,6 +558,18 @@ export default function SandboxPage() {
   const [videoRatio, setVideoRatio] = useState('16:9');
   const [videoResolution, setVideoResolution] = useState('720P');
   const [videoDuration, setVideoDuration] = useState(5);
+  // 媒体参考输入：音频参考（URL/上传件路径）与参考视频路径列表
+  const [audioRefUrl, setAudioRefUrl] = useState('');
+  const [videoRefPaths, setVideoRefPaths] = useState<string[]>([]);
+  // 能力过滤后的视频模型分组：附加音频/视频参考时仅保留声明对应能力的模型
+  const [filteredVideoGroups, setFilteredVideoGroups] = useState<ProviderGroup[] | null>(null);
+
+  const flattenModels = (groups: ProviderGroup[]): ModelOption[] => groups.flatMap(group => group.models);
+
+  const getModels = () => {
+    if (activeTool === 'video' && filteredVideoGroups) return flattenModels(filteredVideoGroups);
+    return flattenModels(modelGroups[activeTool] || []);
+  };
 
   // 获取历史记录
   const fetchHistory = async () => {
@@ -384,6 +607,23 @@ export default function SandboxPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // 入口过滤：附加音频参考 → audio_reference；附加参考视频 → video_reference。
+  // 未声明对应能力的模型不出现在模型列表（spec: 未声明能力则不可见）
+  useEffect(() => {
+    let cancelled = false;
+    const requiredAbility = activeTool === 'video'
+      ? (audioRefUrl ? 'audio_reference' : videoRefPaths.length > 0 ? 'video_reference' : '')
+      : '';
+    if (!requiredAbility) {
+      setFilteredVideoGroups(null);
+      return;
+    }
+    fetchVideoModelGroupsByAbility(requiredAbility)
+      .then(groups => { if (!cancelled) setFilteredVideoGroups(groups); })
+      .catch(() => { if (!cancelled) setFilteredVideoGroups(null); });
+    return () => { cancelled = true; };
+  }, [activeTool, audioRefUrl, videoRefPaths]);
+
   const applyRecord = (record: HistoryRecord) => {
     setSelectedRecord(record);
     setActiveTool(record.tool as ToolType);
@@ -393,6 +633,8 @@ export default function SandboxPage() {
     setVideoRatio(record.input.ratio || '16:9');
     setVideoResolution(record.input.resolution || '720P');
     setVideoDuration(Number(record.input.duration) || 5);
+    setAudioRefUrl(record.input.audio_url || '');
+    setVideoRefPaths(record.input.reference_videos || []);
     if (record.output?.response) {
       setResult(record.output.response);
     } else {
@@ -481,6 +723,8 @@ export default function SandboxPage() {
     setCurrentOutput(null);
     setError(null);
     setImageUrl('');
+    setAudioRefUrl('');
+    setVideoRefPaths([]);
   };
 
   // 监听工具变化，确保模型选择同步
@@ -543,6 +787,8 @@ export default function SandboxPage() {
           body.ratio = videoRatio;
           body.resolution = videoResolution;
           body.duration = videoDuration;
+          if (audioRefUrl) body.audio_url = audioRefUrl;
+          if (videoRefPaths.length > 0) body.reference_videos = videoRefPaths;
           break;
       }
 
@@ -729,6 +975,14 @@ export default function SandboxPage() {
                   required={activeTool === 'i2i'}
                   label={getImageLabel()}
                 />
+              )}
+
+              {/* 媒体参考上传（视频生成）：音频参考与参考视频，与图片参考并列 */}
+              {activeTool === 'video' && (
+                <>
+                  <AudioRefUploader value={audioRefUrl} onChange={setAudioRefUrl} />
+                  <VideoRefsUploader paths={videoRefPaths} onChange={setVideoRefPaths} />
+                </>
               )}
 
               {/* 提示词输入 */}

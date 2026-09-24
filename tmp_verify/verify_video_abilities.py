@@ -1,9 +1,13 @@
 """验证自定义视频多图支持：首尾帧/参考图字段候选、编码组合与前端三能力可查询。"""
 import json
+import os
 import sys
 import urllib.request
 
 sys.path.insert(0, "/app")
+# 测试辅助：通过 VC_PATCHED_BACKEND 优先加载补丁代码副本（镜像重建后无需该变量）
+if os.environ.get("VC_PATCHED_BACKEND"):
+    sys.path.insert(0, os.environ["VC_PATCHED_BACKEND"])
 from models.custom_video import CustomVideoClient  # noqa: E402
 
 failures = []
@@ -88,7 +92,7 @@ def get(url):
 
 video_ids = {m["id"] for m in get("/api/models?model_type=video")["models"]}
 check("video 类型列表非空", bool(video_ids), str(sorted(video_ids)))
-for ability in ("first_frame_i2v", "start_end_frame_i2v", "reference_to_video"):
+for ability in ("first_frame_i2v", "start_end_frame_i2v", "reference_to_video", "audio_reference", "video_reference"):
     ids = {m["id"] for m in get(f"/api/models?media_type=video&ability={ability}&verified_only=true")["models"]}
     check(f"ability={ability} 返回均为可用视频模型子集", ids <= video_ids, str(sorted(ids)))
 

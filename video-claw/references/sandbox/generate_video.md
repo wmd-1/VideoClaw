@@ -29,8 +29,18 @@ curl -X POST "http://localhost:8000/api/sandbox/video" \
 | duration | | 时长（秒），默认 5；实际按模型 `capabilities.duration{min,max}` 夹取 |
 | fps | | 帧率（可选）；仅自定义模型声明 `capabilities.fps` 支持列表时注入对应协议字段，越界夹取到最近支持值，未声明时忽略 |
 | short_edge | | 短边像素（可选，如 768）；模型声明或显式指定时，vllm-omni 走 `short_edge`+`aspect_ratio`、sglang 注入 `target{short_edge, aspect_ratio, duration_seconds}` |
+| audio_url | | 音频参考（可选，唇形同步等）：HTTP(S) URL、`data:` URL，或本地已上传文件路径（后端自动转换为服务端可访问 URL）；仅对声明 `audio_reference` 能力的自定义视频模型生效 |
+| reference_videos | | 参考视频列表（可选，主体/背景迁移等）：已上传视频文件路径（mp4/mov/webm），与图片参考可组合；仅对声明 `video_reference` 能力的自定义视频模型生效 |
 
 > 参数超出模型能力范围时会被夹取到边界值（不会直接失败），夹取/忽略事实记录在后端日志，并随响应 `warnings` 字段透出。
+
+## 音视频参考（自定义视频模型，vllm-omni / MiniMax-H3 ref2va）
+
+- **音频参考**：`audio_url` 支持三种形态——HTTP(S) URL 直填；`data:` URL（`data:audio/wav;base64,...`）；本地文件路径（如 `/api/upload_media` 返回的路径），后端会自动复制到 `result/sandbox/uploads/` 并按 backend 对外基址组装绝对 URL 提交。
+- **跨机可达性要求**：backend 与推理服务通常部署在不同机器上，组装出的 URL 必须能被**推理服务端**访问（两者需同网段或放通防火墙）。若不可达，请改填公网 HTTP(S) URL 或 `data:` URL。
+- **参考视频**：`reference_videos` 为本地视频文件路径列表，后端以 `input_references` multipart 重复上传（MIME 按文件类型推断），可与 `image` 图片参考按顺序组合。
+- **失败语义**：媒体参考被服务端拒绝（4xx）时请求按既有回退序列处理，最终失败且错误信息包含服务端响应与目标地址，不会静默退化为"无参考"请求。
+- **模型选择**：仅在设置页为自定义模型声明 `audio_reference` / `video_reference` 能力标签后，相应入口才会展示该模型；未声明能力的模型直接调用时返回能力不支持错误。
 
 ## 可用模型
 

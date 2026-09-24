@@ -39,3 +39,7 @@ class SandboxVideoRequest(BaseModel):
     duration: Optional[int] = 5
     fps: Optional[int] = None
     short_edge: Optional[int] = None
+    # 音频参考：HTTP(S)/data: URL 或本地已上传文件路径（后者转换为服务端可访问 URL）
+    audio_url: Optional[str] = None
+    # 参考视频：已上传媒体文件路径（以 input_references multipart 上传）
+    reference_videos: Optional[List[str]] = None

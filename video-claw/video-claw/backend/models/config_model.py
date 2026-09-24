@@ -699,6 +699,12 @@ def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[s
             for a in video_abilities
         ):
             input_modalities.append("image")
+        # 媒体参考能力标签（vllm-omni MiniMax-H3 ref2va）：声明后纳入输入模态，
+        # 供 /api/models ability 过滤与沙盒/工作流入口使用
+        if "audio_reference" in video_abilities:
+            input_modalities.append("audio")
+        if "video_reference" in video_abilities:
+            input_modalities.append("video")
 
     ability_types = list(dict.fromkeys(ability_types))
     input_modalities = list(dict.fromkeys(input_modalities))

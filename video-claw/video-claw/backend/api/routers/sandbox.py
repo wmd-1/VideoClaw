@@ -1,12 +1,13 @@
 import json
 import logging
 import os
+import shutil
 import threading
 import uuid
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 
 from api.schemas.sandbox import (
@@ -26,6 +27,8 @@ SANDBOX_DIR = os.path.join(settings.CODE_DIR, "result", "sandbox")
 SANDBOX_HISTORY_FILE = os.path.join(SANDBOX_DIR, "history.json")
 SANDBOX_ACTIVE_TASKS: dict[str, dict] = {}
 SANDBOX_LOCK = threading.RLock()
+# 媒体参考（音频等）转换后的对外可访问目录：位于 /code 静态目录内（D1）
+SANDBOX_MEDIA_UPLOAD_DIR = os.path.join(settings.CODE_DIR, "result", "sandbox", "uploads")
 
 # 确保目录存在
 os.makedirs(SANDBOX_DIR, exist_ok=True)
@@ -161,6 +164,40 @@ def _delete_record_files(files: List[str]):
             except Exception:
                 logger.warning("Failed to delete sandbox artifact: %s", f, exc_info=True)
                 pass
+
+
+def _resolve_media_reference_url(base_url: str, value: str) -> str:
+    """将音频参考转换为推理服务端可访问的资源地址（D1，不得静默丢弃）。
+
+    - 已是 HTTP(S)/data: URL 时原样返回；
+    - 本地文件：位于 /code 静态目录内则直接组装绝对 URL；否则（如 TEMP_DIR 上传件）
+      先复制到 result/sandbox/uploads，再按 backend 对外基址（request.base_url）+ /code 组装；
+    - 无法定位文件时抛错（明确报错而非退化为无参考请求）。
+
+    注意：跨机部署时该 URL 必须能被推理服务端访问（防火墙/同网段），否则请改填 data: URL。
+    """
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("音频参考为空（audio_url 不能为空字符串）")
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+    code_dir = os.path.abspath(settings.CODE_DIR)
+    candidates = []
+    if os.path.isabs(value):
+        candidates.append(os.path.abspath(value))
+    else:
+        candidates.append(os.path.join(code_dir, value))
+        candidates.append(os.path.join(code_dir, "result", value))
+    source = next((path for path in candidates if os.path.isfile(path)), None)
+    if not source:
+        raise ValueError(f"音频参考文件不存在: {value}")
+    if not source.startswith(code_dir + os.sep):
+        os.makedirs(SANDBOX_MEDIA_UPLOAD_DIR, exist_ok=True)
+        target = os.path.join(SANDBOX_MEDIA_UPLOAD_DIR, f"{uuid.uuid4().hex[:8]}_{os.path.basename(source)}")
+        shutil.copy2(source, target)
+        source = target
+    relative = os.path.relpath(source, code_dir).replace(os.sep, "/")
+    return base_url.rstrip("/") + "/code/" + relative
 
 
 # 请求模型
@@ -379,14 +416,24 @@ async def sandbox_i2i(req: SandboxI2IRequest):
 
 
 @router.post("/api/sandbox/video")
-async def sandbox_video(req: SandboxVideoRequest):
+async def sandbox_video(req: SandboxVideoRequest, request: Request):
     """临时工作台 - 视频生成"""
     from models.video_client import VideoClient
     client = VideoClient()
     duration = int(req.duration or 5)
+    # 音频参考：本地文件 → 服务端可访问 URL（失败即报错，不静默降级）
+    try:
+        audio_reference_url = (
+            _resolve_media_reference_url(str(request.base_url), req.audio_url) if req.audio_url else None
+        )
+    except ValueError as e:
+        logger.warning("Sandbox video audio reference rejected: model=%s %s", req.model, e)
+        return {"success": False, "error": str(e)}
     input_data = {
         "prompt": req.prompt,
         "reference_image": req.image,
+        "audio_url": audio_reference_url,
+        "reference_videos": req.reference_videos,
         "ratio": req.ratio,
         "resolution": req.resolution,
         "duration": duration,
@@ -402,9 +449,11 @@ async def sandbox_video(req: SandboxVideoRequest):
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}.mp4")
         logger.info(
-            "Sandbox video started: model=%s image=%s ratio=%s resolution=%s duration=%ss fps=%s short_edge=%s",
+            "Sandbox video started: model=%s image=%s audio_ref=%s video_refs=%d ratio=%s resolution=%s duration=%ss fps=%s short_edge=%s",
             req.model,
             bool(req.image),
+            bool(audio_reference_url),
+            len(req.reference_videos or []),
             req.ratio,
             req.resolution,
             duration,
@@ -424,6 +473,8 @@ async def sandbox_video(req: SandboxVideoRequest):
             resolution=req.resolution or "720P",
             fps=req.fps,
             short_edge=req.short_edge,
+            audio_reference_url=audio_reference_url,
+            reference_video_paths=req.reference_videos,
             adjustments=adjustments,
         )
         # 保存到历史记录

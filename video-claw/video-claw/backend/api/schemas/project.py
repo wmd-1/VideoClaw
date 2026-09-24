@@ -12,6 +12,9 @@ class ProjectStartRequest(BaseModel):
     video_duration: Optional[int] = None
     video_fps: Optional[int] = None
     video_short_edge: Optional[int] = None
+    # 音频参考（可选）：透传至自定义视频模型 ref2va（audio_reference.audio_url）；
+    # 未提供时行为与现状完全一致
+    audio_reference_url: Optional[str] = None
     expand_idea: Optional[bool] = True
     llm_model: Optional[str] = None
     vlm_model: Optional[str] = None

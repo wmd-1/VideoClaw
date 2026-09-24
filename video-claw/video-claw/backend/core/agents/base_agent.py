@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 SESSION_PARAM_KEYS = [
     "idea", "user_textbox_input", "style", "video_ratio", "video_resolution",
-    "video_duration", "video_fps", "video_short_edge",
+    "video_duration", "video_fps", "video_short_edge", "audio_reference_url",
     "llm_model", "vlm_model",
     "image_t2i_model", "image_it2i_model", "video_model",
     "video_first_frame_model", "video_start_end_model", "video_reference_model",

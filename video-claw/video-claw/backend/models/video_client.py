@@ -102,6 +102,7 @@ class VideoClient:
         reference_image_paths: Optional[list[str]] = None,
         reference_video_paths: Optional[list[str]] = None,
         reference_audio_path: Optional[str] = None,
+        audio_reference_url: Optional[str] = None,
         audio_path: Optional[str] = None,
         negative_prompt: Optional[str] = None,
         prompt_extend: Optional[bool] = None,
@@ -163,6 +164,8 @@ class VideoClient:
                 lines.append(f"Reference Videos: {reference_video_paths}")
             if reference_audio_path:
                 lines.append(f"Reference Audio: {reference_audio_path}")
+            if audio_reference_url:
+                lines.append(f"Audio Reference URL: {audio_reference_url}")
             if audio_path:
                 lines.append(f"Audio: {audio_path}")
             if negative_prompt:
@@ -199,6 +202,7 @@ class VideoClient:
                     reference_image_paths=reference_image_paths,
                     reference_video_paths=reference_video_paths,
                     reference_audio_path=reference_audio_path,
+                    audio_reference_url=audio_reference_url,
                     audio_path=audio_path,
                     negative_prompt=negative_prompt,
                     prompt_extend=prompt_extend,

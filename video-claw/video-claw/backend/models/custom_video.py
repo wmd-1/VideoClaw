@@ -81,6 +81,7 @@ class CustomVideoClient:
         reference_image_paths: Optional[List[str]] = None,
         reference_video_paths: Optional[List[str]] = None,
         reference_audio_path: Optional[str] = None,
+        audio_reference_url: Optional[str] = None,
         audio_path: Optional[str] = None,
         negative_prompt: Optional[str] = None,
         prompt_extend: Optional[bool] = None,
@@ -102,6 +103,8 @@ class CustomVideoClient:
         """
         duration = self._clamp_duration(duration)
         size = video_size(video_ratio, resolution)
+        # 音频参考 → vllm-omni 的 audio_reference 表单字段（URL 形态，D1）
+        audio_reference = self._audio_reference_field(audio_reference_url)
         # 统一参数 → 协议字段（单点映射构造器，防多链路漂移）
         protocol_fields, json_fields, drop_size = self._map_protocol_params(
             duration=duration,
@@ -118,6 +121,8 @@ class CustomVideoClient:
                 image_path=image_path,
                 last_image_path=last_image_path,
                 reference_image_paths=reference_image_paths,
+                reference_video_paths=reference_video_paths,
+                audio_reference=audio_reference,
                 size=size,
                 duration=duration,
                 negative_prompt=negative_prompt,
@@ -134,6 +139,8 @@ class CustomVideoClient:
             image_path=image_path,
             last_image_path=last_image_path,
             reference_image_paths=reference_image_paths,
+            reference_video_paths=reference_video_paths,
+            audio_reference=audio_reference,
             size=size,
             duration=duration,
             negative_prompt=negative_prompt,
@@ -300,6 +307,29 @@ class CustomVideoClient:
             "duration_seconds": int(duration),
         }
 
+    def _audio_reference_field(self, audio_reference_url: Optional[str]) -> Optional[str]:
+        """音频参考 → vllm-omni 的 audio_reference 表单字段（JSON 字符串，含 audio_url）。
+
+        audio_url 接受 HTTP(S) URL 或 data: URL（MiniMax-H3 recipes）；
+        非 vllm-omni 协议不支持媒体参考字段：显式记录忽略事实，绝不静默丢弃（D4）。
+        """
+        if not audio_reference_url:
+            return None
+        if self._protocol != "vllm-omni":
+            self._record_adjustment("audio_reference 已忽略（协议不支持音频参考）")
+            return None
+        return json.dumps({"audio_url": audio_reference_url})
+
+    def _media_reference_paths(
+        self,
+        reference_image_paths: Optional[List[str]],
+        reference_video_paths: Optional[List[str]],
+    ) -> List[str]:
+        """媒体参考列表：图片参考在前、视频参考在后，按传入顺序合并（D2）。"""
+        images = [path for path in (reference_image_paths or []) if path]
+        videos = [path for path in (reference_video_paths or []) if path]
+        return images + videos
+
     def _task_for_input(
         self,
         image_path: Optional[str],
@@ -359,15 +389,17 @@ class CustomVideoClient:
         image_path: Optional[str],
         last_image_path: Optional[str],
         reference_image_paths: Optional[List[str]],
+        reference_video_paths: Optional[List[str]] = None,
     ) -> List[List[Tuple[str, str]]]:
-        """构造文件字段候选方案：每种方案为 [(字段名, 图片路径), ...] 列表。
+        """构造文件字段候选方案：每种方案为 [(字段名, 媒体路径), ...] 列表。
 
         按协议给出主形态优先、失败回退的候选：
-        - vllm-omni（MiniMax-H3 recipes）：单图 `input_reference`，多图 `input_references` 重复
+        - vllm-omni（MiniMax-H3 recipes）：单文件 `input_reference`，多文件 `input_references` 重复；
+          视频参考（mp4/quicktime/webm 等）与图片参考按顺序合并到同一序列（D2）
         - sglang（MiniMax-H3 cookbook）：顺序双帧用同名 `input_reference` 重复
         - openai 兼容：沿用常见字段命名回退
         """
-        refs = [path for path in (reference_image_paths or []) if path]
+        refs = self._media_reference_paths(reference_image_paths, reference_video_paths)
         if refs:
             specs: List[List[Tuple[str, str]]] = []
             if self._protocol == "vllm-omni":
@@ -463,15 +495,17 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
         save_path: str,
+        reference_video_paths: Optional[List[str]] = None,
+        audio_reference: Optional[str] = None,
         protocol_fields: Optional[Dict[str, str]] = None,
         drop_size: bool = False,
     ) -> Optional[str]:
         """尝试 vllm-omni 的 /videos/sync 同步端点：成功落盘返回 None，否则返回错误信息（供回退异步）。"""
-        refs = [path for path in (reference_image_paths or []) if path]
+        refs = self._media_reference_paths(reference_image_paths, reference_video_paths)
         task = self._task_for_input(image_path, last_image_path, refs)
         tail_only = bool(last_image_path) and not image_path
         last_error = ""
-        for field_spec in self._image_file_specs(image_path, last_image_path, reference_image_paths):
+        for field_spec in self._image_file_specs(image_path, last_image_path, reference_image_paths, reference_video_paths):
             if task != "fl2va":
                 frame_indices = None
             elif tail_only:
@@ -484,6 +518,7 @@ class CustomVideoClient:
             try:
                 response = self._post_sync(
                     prompt, field_spec, size, duration, negative_prompt, seed, form_extra,
+                    audio_reference=audio_reference,
                     protocol_fields=protocol_fields,
                     drop_size=drop_size,
                 )
@@ -512,6 +547,7 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
         form_extra: Optional[Dict[str, str]] = None,
+        audio_reference: Optional[str] = None,
         protocol_fields: Optional[Dict[str, str]] = None,
         drop_size: bool = False,
     ) -> httpx.Response:
@@ -524,6 +560,8 @@ class CustomVideoClient:
             base_fields["negative_prompt"] = negative_prompt
         if seed is not None:
             base_fields["seed"] = str(seed)
+        if audio_reference:
+            base_fields["audio_reference"] = audio_reference
         data = dict(base_fields)
         data["seconds"] = str(duration)
         if form_extra:
@@ -552,15 +590,17 @@ class CustomVideoClient:
         duration: int,
         negative_prompt: Optional[str],
         seed: Optional[int],
+        reference_video_paths: Optional[List[str]] = None,
+        audio_reference: Optional[str] = None,
         protocol_fields: Optional[Dict[str, str]] = None,
         json_fields: Optional[Dict[str, Any]] = None,
         drop_size: bool = False,
     ) -> Dict[str, Any]:
-        refs = [path for path in (reference_image_paths or []) if path]
+        refs = self._media_reference_paths(reference_image_paths, reference_video_paths)
         task = self._task_for_input(image_path, last_image_path, refs)
         tail_only = bool(last_image_path) and not image_path
         variants = self._create_variants(
-            self._image_file_specs(image_path, last_image_path, reference_image_paths),
+            self._image_file_specs(image_path, last_image_path, reference_image_paths, reference_video_paths),
             task,
             duration,
             tail_only=tail_only,
@@ -574,6 +614,7 @@ class CustomVideoClient:
             try:
                 response = self._post_create(
                     encoding, prompt, field_spec, size, duration, negative_prompt, seed, form_extra,
+                    audio_reference=audio_reference,
                     protocol_fields=protocol_fields,
                     json_fields=json_fields,
                     drop_size=drop_size,
@@ -612,6 +653,7 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
         form_extra: Optional[Dict[str, str]] = None,
+        audio_reference: Optional[str] = None,
         protocol_fields: Optional[Dict[str, str]] = None,
         json_fields: Optional[Dict[str, Any]] = None,
         drop_size: bool = False,
@@ -625,6 +667,8 @@ class CustomVideoClient:
             base_fields["negative_prompt"] = negative_prompt
         if seed is not None:
             base_fields["seed"] = str(seed)
+        if audio_reference:
+            base_fields["audio_reference"] = audio_reference
 
         if encoding == "json":
             fields = dict(base_fields)

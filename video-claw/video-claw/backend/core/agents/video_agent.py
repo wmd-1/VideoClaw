@@ -109,11 +109,13 @@ class VideoDirectorAgent(AgentInterface):
                       llm_model: str = "",
                       video_duration: Optional[int] = None,
                       video_fps: Optional[int] = None,
-                      video_short_edge: Optional[int] = None) -> tuple:
+                      video_short_edge: Optional[int] = None,
+                      audio_reference_url: Optional[str] = None) -> tuple:
         """生成单个视频片段，返回 (segment_id, path_or_None, rewrite_result_or_None)。
 
         video_duration 为会话级时长覆盖（未设置时沿用分镜时长）；
-        video_fps/video_short_edge 为会话级高级参数（未设置时不注入）。
+        video_fps/video_short_edge 为会话级高级参数（未设置时不注入）；
+        audio_reference_url 为会话级音频参考（未设置时行为与现状一致）。
         """
         if self.cancellation_check and self.cancellation_check():
             logger.info(f"VideoDirectorAgent: {segment_id} 跳过（用户取消）")
@@ -148,6 +150,7 @@ class VideoDirectorAgent(AgentInterface):
                     "video_resolution": video_resolution,
                     "video_fps": video_fps,
                     "video_short_edge": video_short_edge,
+                    "audio_reference_url": audio_reference_url,
                 },
                 image_path=img_path,
                 save_path=save_path,
@@ -160,6 +163,7 @@ class VideoDirectorAgent(AgentInterface):
                 reference_image_paths=reference_image_paths if video_generation_mode == "reference" else None,
                 fps=video_fps,
                 short_edge=video_short_edge,
+                audio_reference_url=audio_reference_url,
             )
             return segment_id, save_path, rewrite_result
         except Exception as e:
@@ -498,6 +502,7 @@ class VideoDirectorAgent(AgentInterface):
         video_duration = self._optional_int(input_data.get("video_duration"))
         video_fps = self._optional_int(input_data.get("video_fps"))
         video_short_edge = self._optional_int(input_data.get("video_short_edge"))
+        audio_reference_url = str(input_data.get("audio_reference_url") or "").strip() or None
         video_sound = "on"
         video_shot_type = "multi"
 
@@ -579,7 +584,7 @@ class VideoDirectorAgent(AgentInterface):
                                 img_path, video_model, duration,
                                 video_sound, video_shot_type, video_ratio, video_resolution,
                                 video_generation_mode, last_img_path, reference_image_paths, llm_model,
-                                video_duration, video_fps, video_short_edge
+                                video_duration, video_fps, video_short_edge, audio_reference_url
                             )
                             futs[fut] = seg_id
                         for fut in as_completed(futs):
@@ -669,7 +674,7 @@ class VideoDirectorAgent(AgentInterface):
                         img_path, video_model, dur,
                         video_sound, video_shot_type, video_ratio, video_resolution,
                         video_generation_mode, last_img_path, reference_image_paths, llm_model,
-                        video_duration, video_fps, video_short_edge
+                        video_duration, video_fps, video_short_edge, audio_reference_url
                     )
                     futs[fut] = seg_id
                 for fut in as_completed(futs):

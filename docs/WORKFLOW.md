@@ -237,9 +237,10 @@ flowchart LR
 
 **自定义模型在这阶段的约定**（vllm-omni / sglang / OpenAI 标准）：
 
-- 支持四种能力：`text_to_video`（文生视频）、`first_frame_i2v`（首帧）、`start_end_frame_i2v`（首尾帧）、`reference_to_video`（参考图）；
+- 支持四种能力：`text_to_video`（文生视频）、`first_frame_i2v`（首帧）、`start_end_frame_i2v`（首尾帧）、`reference_to_video`（参考图）；另含媒体参考扩展能力标签 `audio_reference`（音频参考）与 `video_reference`（参考视频，仅 vllm-omni 协议支持），未声明对应能力的模型不出现在相应选择入口；
 - MiniMax-H3 任务自动推断并携带：纯文本 `t2va`、含首帧/首尾帧 `fl2va`、含参考图 `ref2va`；vllm-omni 以 `extra_params`（task/duration/frame_indices）为首选形态、失败自动回退旧形态；sglang 以 `task` 字段为必填；
 - 多图字段：vllm-omni 多图用 `input_references` 重复（首尾帧附 `frame_indices=[0, -1]`）；sglang 顺序多图用同名 `input_reference` 重复；均保留命名回退候选（`last_frame` / `reference_images` / `image[]` 等）；含图的创建仅走 multipart（避免退化为“无图生成”）；
+- **音视频参考**（vllm-omni / MiniMax-H3 ref2va）：音频参考以 `audio_reference={"audio_url": <HTTP(S) 或 data: URL>}` 表单字段携带（本地文件先转为服务端可访问 URL；跨机部署需保证该 URL 可被推理服务访问，否则改填 `data:` URL）；视频参考与图片参考按传入顺序合并进 `input_references` 重复上传（MIME 按文件类型推断：`video/mp4`、`video/quicktime`、`video/webm` 等）；媒体参考提交失败时按既有回退序列处理，最终失败错误包含服务端响应与目标地址，**绝不静默退化为无参考请求**；sync（`/v1/videos/sync`）与异步三段式两条链路行为一致；
 - 采用三段式异步任务：创建（multipart 主形态，含文件时必用）→ 轮询任务状态（`GET /v1/videos/{id}`，失败回退列表）→ 下载内容写入 `save_path`；
 - 与内置客户端约定一致：**既落盘又返回远端标识**；轮询有超时上限，失败/超时会尽力取消任务；`api_key` 为空时不发鉴权头（兼容零鉴权本地服务）。
 
@@ -260,7 +261,7 @@ flowchart LR
 - `short_edge: 768`：声明后 vllm-omni 走 `short_edge`+`aspect_ratio`、sglang 注入 `target`；
 - `ratios` / `resolutions`：画幅/分辨率可选范围（前端生成配置按此联动过滤）。
 
-**会话级参数**（`generation.*` / 会话 meta，随 `/api/project/start` 与 `PATCH /api/project/{id}/models` 传递）：`video_ratio`、`video_resolution` 既有之外，新增 `video_duration`（会话级时长覆盖，缺省跟随分镜时长）、`video_fps`、`video_short_edge`（缺省不注入）。参数夹取/忽略事实记录在后端日志，沙盒接口响应以 `warnings` 字段透出；任务侧"生成配置 → 高级参数"面板按所选模型能力联动并在切换模型时夹取当前值并提示。
+**会话级参数**（`generation.*` / 会话 meta，随 `/api/project/start` 与 `PATCH /api/project/{id}/models` 传递）：`video_ratio`、`video_resolution` 既有之外，新增 `video_duration`（会话级时长覆盖，缺省跟随分镜时长）、`video_fps`、`video_short_edge`（缺省不注入）、`audio_reference_url`（可选音频参考，仅对声明 `audio_reference` 能力的自定义视频模型生效，缺省不改变现有链路）。参数夹取/忽略事实记录在后端日志，沙盒接口响应以 `warnings` 字段透出；任务侧"生成配置 → 高级参数"面板按所选模型能力联动并在切换模型时夹取当前值并提示。
 
 **用户可介入**：
 

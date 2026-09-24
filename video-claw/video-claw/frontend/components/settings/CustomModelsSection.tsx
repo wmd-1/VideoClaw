@@ -36,6 +36,8 @@ export const ABILITY_OPTIONS = [
   { id: 'start_end_frame_i2v', label: '首尾帧生视频' },
   { id: 'reference_to_video', label: '参考图生视频' },
   { id: 'image_to_video', label: '图生视频（通用）' },
+  { id: 'audio_reference', label: '音频参考' },
+  { id: 'video_reference', label: '参考视频' },
   { id: 'text_to_image', label: '文生图能力' },
   { id: 'image_to_image', label: '图生图能力' },
   { id: 'reference_image', label: '参考图能力' },

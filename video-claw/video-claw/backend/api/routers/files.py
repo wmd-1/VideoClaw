@@ -60,6 +60,8 @@ async def upload_media(file: UploadFile = File(...)):
     allowed_exts = [
         ".jpg", ".jpeg", ".png", ".webp", ".bmp",
         ".mp4", ".mov", ".avi", ".mkv", ".webm",
+        # 音频参考（媒体参考能力）：上传后转换为服务端可访问 URL
+        ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
     ]
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()

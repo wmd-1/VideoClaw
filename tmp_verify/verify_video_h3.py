@@ -4,9 +4,13 @@
 """
 import io
 import json
+import os
 import sys
 
 sys.path.insert(0, "/app")
+# 测试辅助：通过 VC_PATCHED_BACKEND 优先加载补丁代码副本（镜像重建后无需该变量）
+if os.environ.get("VC_PATCHED_BACKEND"):
+    sys.path.insert(0, os.environ["VC_PATCHED_BACKEND"])
 from models.custom_video import CustomVideoClient  # noqa: E402
 
 failures = []
@@ -152,6 +156,35 @@ files = captured["kwargs"].get("files")
 data = captured["kwargs"].get("data", {})
 check("multipart 同名多文件保留", isinstance(files, list) and [f[0] for f in files] == ["input_references", "input_references"], str(files and [f[0] for f in files]))
 check("multipart data 含 extra_params JSON 字符串", "extra_params" in data and json.loads(data["extra_params"])["task"] == "fl2va", str(data.get("extra_params"))[:80])
+
+# ── 媒体参考：audio_reference 字段与视频参考合并（vllm-omni ref2va） ──
+v1, v2 = "/tmp/h3_v1.mp4", "/tmp/h3_v2.mp4"
+for path in (v1, v2):
+    with open(path, "wb") as f:
+        f.write(b"\x00\x00\x00\x18ftypmp42" + b"v" * 16)
+
+audio_url = "http://127.0.0.1:9999/audio/ref.wav"
+check("audio_reference 字段：JSON 字符串含 audio_url", json.loads(vm._audio_reference_field(audio_url)) == {"audio_url": audio_url}, str(vm._audio_reference_field(audio_url)))
+check("audio_reference 缺省：不注入字段", vm._audio_reference_field(None) is None and vm._audio_reference_field("") is None)
+check("sglang 不支持音频参考：显式忽略（不静默）", sg._audio_reference_field(audio_url) is None and any("audio_reference" in a for a in sg._adjustments), str(sg._adjustments))
+
+merged = vm._image_file_specs(None, None, [p1], [v1])
+check("图片+视频合并：input_references 按序（图在前）", merged[0] == [("input_references", p1), ("input_references", v1)], str(merged[0]))
+check("单视频参考：input_reference 单文件", vm._image_file_specs(None, None, [], [v1])[0] == [("input_reference", v1)], str(vm._image_file_specs(None, None, [], [v1])[0]))
+mixed = vm._image_file_specs(None, None, [p1, p2], [v1, v2])
+check("双图+双视频：input_references ×4 按序", [n for n, _ in mixed[0]] == ["input_references"] * 4 and [p for _, p in mixed[0]] == [p1, p2, v1, v2], str(mixed[0]))
+check("纯图片参考行为不变：input_references ×2", vm._image_file_specs(None, None, [p1, p2])[0] == [("input_references", p1), ("input_references", p2)])
+
+# 音频参考进入 sync 表单（双链路一致性：_post_sync 与 _post_create 共用 audio_reference 入参）
+vm2 = make_client("vllm-omni")
+vm2._client.post = fake_post
+audio_field = json.dumps({"audio_url": audio_url})
+vm2._post_sync("p", [("input_reference", p1)], "1280x720", 5, None, None, {"extra_params": "{}"}, audio_reference=audio_field)
+check("sync 表单含 audio_reference JSON", captured["kwargs"]["data"]["audio_reference"] == audio_field, str(captured["kwargs"]["data"].get("audio_reference"))[:80])
+vm2._post_create("multipart", "p", [("input_references", v1), ("input_references", v2)], "1280x720", 5, None, None, audio_reference=audio_field)
+files2 = captured["kwargs"]["files"]
+check("async 表单含 audio_reference JSON", captured["kwargs"]["data"]["audio_reference"] == audio_field, str(captured["kwargs"]["data"].get("audio_reference"))[:80])
+check("async 视频参考文件字段保留", [f[0] for f in files2] == ["input_references", "input_references"], str([f[0] for f in files2]))
 
 print(f"\n{'ALL PASS' if not failures else 'FAILED: ' + ', '.join(failures)}")
 sys.exit(0 if not failures else 1)

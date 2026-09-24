@@ -98,6 +98,7 @@ async def start_project(req: ProjectStartRequest):
         "video_duration": req.video_duration,
         "video_fps": req.video_fps,
         "video_short_edge": req.video_short_edge,
+        "audio_reference_url": req.audio_reference_url,
         "expand_idea": req.expand_idea if req.expand_idea is not None else True,
         "llm_model": req.llm_model,
         "vlm_model": req.vlm_model,
@@ -224,6 +225,7 @@ async def update_models(session_id: str, request: Request):
         "video_duration",
         "video_fps",
         "video_short_edge",
+        "audio_reference_url",
         "style",
         "enable_concurrency",
     )
