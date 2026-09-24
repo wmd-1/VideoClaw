@@ -12,7 +12,7 @@ import {
   type ProviderGroup,
   type VideoGenerationMode,
 } from '@/config/models';
-import { STAGES } from './TopBar';
+import { STAGES, useEnabledStages } from './TopBar';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 
 export interface ProjectParams {
@@ -54,21 +54,22 @@ interface HomePageProps {
   history: HistoryItem[];
 }
 
-/* 根据 status 映射生成进度文本 */
-function stageProgressLabel(statusMap?: Record<string, string>): { text: string; color: string } {
+/* 根据 status 映射生成进度文本（totalStages 按后端启用的阶段数计算） */
+function stageProgressLabel(statusMap: Record<string, string> | undefined, totalStages: number): { text: string; color: string } {
   const map = statusMap || {};
   const completed = Object.keys(map).filter(k => ["completed", "session_completed"].includes(map[k]));
   if (completed.length === 0) return { text: '未开始', color: 'text-gray-400' };
-  if (completed.length >= STAGES.length) return { text: '已完成', color: 'text-green-600' };
-  
+  if (completed.length >= totalStages) return { text: '已完成', color: 'text-green-600' };
+
   // 对比 STAGES 获取最后一个已完成的
   const lastStageId = STAGES.filter(s => completed.includes(s.id)).pop()?.id || completed[completed.length - 1];
   const stageDef = STAGES.find(s => s.id === lastStageId);
   const name = stageDef?.shortName || lastStageId;
-  return { text: `已完成: ${name} (${completed.length}/${STAGES.length})`, color: 'text-blue-600' };
+  return { text: `已完成: ${name} (${completed.length}/${totalStages})`, color: 'text-blue-600' };
 }
 
 export default function HomePage({ onStartProject, onResumeProject, onDeleteSession, history }: HomePageProps) {
+  const enabledStages = useEnabledStages();
   const [idea, setIdea] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState('realistic');
@@ -717,7 +718,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
           <div className="max-h-[60vh] overflow-y-auto pr-1">
             <div className="grid grid-cols-2 gap-3">
               {history.map(item => {
-                const progress = stageProgressLabel(item.stages);
+                const progress = stageProgressLabel(item.stages, enabledStages.length);
                 return (
                 <div key={item.id} className="relative group">
                   <div
@@ -738,7 +739,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                         <span className="text-[10px] text-gray-400">{item.date}</span>
                       </div>
                       <div className={`flex items-center gap-1 mt-1.5 text-[10px] font-medium ${progress.color}`}>
-                        {item.stages && Object.keys(item.stages).filter(k => ["completed", "session_completed"].includes(item.stages![k])).length >= STAGES.length ? (
+                        {item.stages && Object.keys(item.stages).filter(k => ["completed", "session_completed"].includes(item.stages![k])).length >= enabledStages.length ? (
                           <CheckCircle className="w-3 h-3" />
                         ) : (
                           <span className="w-1.5 h-1.5 rounded-full bg-current flex-shrink-0" />

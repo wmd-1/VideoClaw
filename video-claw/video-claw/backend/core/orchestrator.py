@@ -22,6 +22,7 @@ from core.agents import (
     CharacterDesignerAgent,
     StoryboardAgent,
     ReferenceGeneratorAgent,
+    PromptRewriteAgent,
     VideoDirectorAgent,
     VideoEditorAgent,
 )
@@ -36,19 +37,31 @@ class WorkflowStage(str, Enum):
     CHARACTER_DESIGN = "character_design"
     STORYBOARD = "storyboard"
     REFERENCE_GENERATION = "reference_generation"
+    PROMPT_REWRITE = "prompt_rewrite"
     VIDEO_GENERATION = "video_generation"
     POST_PRODUCTION = "post_production"
     COMPLETED = "completed"
 
 
-STAGE_ORDER = [
-    WorkflowStage.SCRIPT_GENERATION,
-    WorkflowStage.CHARACTER_DESIGN,
-    WorkflowStage.STORYBOARD,
-    WorkflowStage.REFERENCE_GENERATION,
-    WorkflowStage.VIDEO_GENERATION,
-    WorkflowStage.POST_PRODUCTION,
-]
+def get_stage_order() -> List[WorkflowStage]:
+    """按配置组装阶段顺序。
+
+    design_agent.enable=true 时在「参考图」与「视频」之间注入「提示词改写」（七阶段）；
+    默认禁用时保持原六阶段（阶段不注入流程，而非注册后跳过）。
+    """
+    from config import Config  # 惰性导入，避免循环依赖
+
+    order = [
+        WorkflowStage.SCRIPT_GENERATION,
+        WorkflowStage.CHARACTER_DESIGN,
+        WorkflowStage.STORYBOARD,
+        WorkflowStage.REFERENCE_GENERATION,
+        WorkflowStage.VIDEO_GENERATION,
+        WorkflowStage.POST_PRODUCTION,
+    ]
+    if Config.DESIGN_AGENT_ENABLED:
+        order.insert(order.index(WorkflowStage.REFERENCE_GENERATION) + 1, WorkflowStage.PROMPT_REWRITE)
+    return order
 
 SESSION_META_KEYS = (
     "idea",
@@ -142,6 +155,7 @@ class WorkflowEngine:
             WorkflowStage.CHARACTER_DESIGN: CharacterDesignerAgent,
             WorkflowStage.STORYBOARD: StoryboardAgent,
             WorkflowStage.REFERENCE_GENERATION: ReferenceGeneratorAgent,
+            WorkflowStage.PROMPT_REWRITE: PromptRewriteAgent,
             WorkflowStage.VIDEO_GENERATION: VideoDirectorAgent,
             WorkflowStage.POST_PRODUCTION: VideoEditorAgent,
         }
@@ -465,10 +479,11 @@ class WorkflowEngine:
         task.add_done_callback(_cleanup)
 
     def _get_next_stage(self, current: WorkflowStage) -> Optional[WorkflowStage]:
+        order = get_stage_order()
         try:
-            idx = STAGE_ORDER.index(current)
-            if idx + 1 < len(STAGE_ORDER):
-                return STAGE_ORDER[idx + 1]
+            idx = order.index(current)
+            if idx + 1 < len(order):
+                return order[idx + 1]
         except ValueError:
             pass
         return None
@@ -639,6 +654,18 @@ class WorkflowEngine:
             video_art["clips"] = existing_clips
             state.artifacts[video_stage_key] = video_art
 
+            # (C) 同步到提示词改写阶段（prompt_rewrite）：分镜内容变更后改写结果过期，
+            # 已完成的改写条目置为 pending，提示用户重新生成
+            if WorkflowStage.PROMPT_REWRITE in get_stage_order():
+                pr_key = WorkflowStage.PROMPT_REWRITE.value
+                pr_art = state.artifacts.get(pr_key)
+                if isinstance(pr_art, dict) and isinstance(pr_art.get("items"), list):
+                    synced_ids = {c["segment_id"] for c in all_sync_clips}
+                    for item in pr_art["items"]:
+                        if isinstance(item, dict) and item.get("id") in synced_ids and item.get("status") == "done":
+                            item["status"] = "pending"
+                    state.artifacts[pr_key] = pr_art
+
         # 案例 3: 角色/场景描述修改同步回剧本元数据，保证后续阶段读到用户最新描述。
         if stage == WorkflowStage.CHARACTER_DESIGN:
             script_art = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
@@ -712,6 +739,10 @@ class WorkflowEngine:
                 scenes = art.get("scenes", [])
                 if not scenes or any(not s.get("selected") for s in scenes):
                     has_pending = True
+            elif s_val == "prompt_rewrite":
+                items = art.get("items", [])
+                if not items or any(i.get("status") not in ("done", "failed") for i in items):
+                    has_pending = True
             elif s_val == "video_generation":
                 clips = art.get("clips", [])
                 if not clips or any(not c.get("selected") for c in clips):
@@ -729,6 +760,7 @@ class WorkflowEngine:
         item_keys_by_stage = {
             WorkflowStage.CHARACTER_DESIGN: ("characters", "settings"),
             WorkflowStage.REFERENCE_GENERATION: ("scenes",),
+            WorkflowStage.PROMPT_REWRITE: ("items",),
             WorkflowStage.VIDEO_GENERATION: ("clips",),
         }
         keys = item_keys_by_stage.get(stage, ())
@@ -763,6 +795,8 @@ class WorkflowEngine:
             return isinstance(intervention.get("regenerate_characters"), list) or isinstance(intervention.get("regenerate_settings"), list)
         if stage == WorkflowStage.REFERENCE_GENERATION:
             return isinstance(intervention.get("regenerate_scenes"), list)
+        if stage == WorkflowStage.PROMPT_REWRITE:
+            return isinstance(intervention.get("regenerate_items"), list)
         if stage == WorkflowStage.VIDEO_GENERATION:
             return isinstance(intervention.get("regenerate_clips"), list)
         if stage == WorkflowStage.POST_PRODUCTION:
@@ -780,6 +814,8 @@ class WorkflowEngine:
             }
         if stage == WorkflowStage.REFERENCE_GENERATION:
             return {"scenes": set(intervention.get("regenerate_scenes") or [])}
+        if stage == WorkflowStage.PROMPT_REWRITE:
+            return {"items": set(intervention.get("regenerate_items") or [])}
         if stage == WorkflowStage.VIDEO_GENERATION:
             return {"clips": set(intervention.get("regenerate_clips") or [])}
         return {}
@@ -1063,6 +1099,8 @@ class WorkflowEngine:
                             keys = ["characters", "settings"]
                         elif stage == WorkflowStage.REFERENCE_GENERATION:
                             keys = ["scenes"]
+                        elif stage == WorkflowStage.PROMPT_REWRITE:
+                            keys = ["items"]
                         elif stage == WorkflowStage.VIDEO_GENERATION:
                             keys = ["clips"]
                         else:
@@ -1219,6 +1257,7 @@ class WorkflowEngine:
         merge_keys_by_stage = {
             "character_design": ("characters", "settings"),
             "reference_generation": ("scenes",),
+            "prompt_rewrite": ("items",),
             "video_generation": ("clips",),
         }
         if stage in merge_keys_by_stage:
@@ -1261,6 +1300,32 @@ class WorkflowEngine:
                     for current in current_items:
                         if isinstance(current, dict) and current.get("id") not in seen_ids:
                             merged_items.append(current)
+
+                    # 提示词改写：用户直接编辑改写文本时记录版本（旧文本 superseded、新文本 user）
+                    if stage == "prompt_rewrite":
+                        for merged in merged_items:
+                            prev = current_by_id.get(merged.get("id")) or {}
+                            new_text = str(merged.get("rewritten_prompt") or "")
+                            old_text = str(prev.get("rewritten_prompt") or "")
+                            if not new_text or new_text == old_text:
+                                continue
+                            versions = merged.get("versions") if isinstance(merged.get("versions"), list) else []
+                            if old_text and not any(
+                                isinstance(v, dict) and v.get("content") == old_text for v in versions
+                            ):
+                                versions.append({
+                                    "content": old_text, "source": "superseded",
+                                    "created_at": datetime.now().isoformat(),
+                                })
+                            if not any(
+                                isinstance(v, dict) and v.get("content") == new_text and v.get("source") == "user"
+                                for v in versions
+                            ):
+                                versions.append({
+                                    "content": new_text, "source": "user",
+                                    "created_at": datetime.now().isoformat(),
+                                })
+                            merged["versions"] = versions
                     body[list_key] = merged_items
 
         if stage == "storyboard" and any(k in body for k in ("episodes", "segments", "shots")):

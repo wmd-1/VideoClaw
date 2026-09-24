@@ -64,3 +64,7 @@ tmp_verify/probe_*.py
 tmp_verify/debug_*.py
 tmp_verify/preclean_*.sh
 tmp_verify/*.yaml
+
+# Next.js 构建临时目录（组装/清理用，不入库）
+video-claw/video-claw/frontend/.next-old-tmp/
+video-claw/video-claw/frontend/.next-tmp-content/

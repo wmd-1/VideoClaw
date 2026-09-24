@@ -80,6 +80,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "video_resolution": "720P",
         "video_generation_mode": "first_frame",
     },
+    # 提示词改写外部服务（Design Agent Platform，session_type=minimax-h3-prompt-writing）
+    # enable 默认关闭：禁用时主流程保持原六阶段（阶段不注入流程）
+    "design_agent": {
+        "enable": False,
+        "base_url": "",
+        "api_key": "",
+        "login_name": "videoclaw",
+    },
     "custom_models": [],
 }
 
@@ -155,6 +163,14 @@ def _coerce_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
     for key, value in clean["generation"].items():
         clean["generation"][key] = "" if value is None else str(value)
+
+    design_agent = clean.get("design_agent")
+    if not isinstance(design_agent, dict):
+        design_agent = copy.deepcopy(DEFAULT_CONFIG["design_agent"])
+        clean["design_agent"] = design_agent
+    design_agent["enable"] = _as_bool(design_agent.get("enable"))
+    for key in ("base_url", "api_key", "login_name"):
+        design_agent[key] = "" if design_agent.get(key) is None else str(design_agent[key])
 
     for provider, values in clean["api_providers"].items():
         if provider == "common":
@@ -239,6 +255,9 @@ ENV_PROVIDER_PATTERN = re.compile(
 )
 ENV_CUSTOM_MODEL_PATTERN = re.compile(
     r"^VC_CUSTOM_MODEL_([A-Za-z0-9]+)__(ID|PROVIDER|MODEL|NAME|TYPES|ABILITIES|CONCURRENCY)$"
+)
+ENV_DESIGN_AGENT_PATTERN = re.compile(
+    r"^VC_DESIGN_AGENT__(ENABLE|BASE_URL|API_KEY|LOGIN_NAME)$"
 )
 ENV_MODEL_KEYS = {
     "VC_MODEL_LLM": "llm",
@@ -361,6 +380,7 @@ def _apply_env_overrides(
     custom_fields: Dict[str, Dict[str, str]] = {}
     server_fields: Dict[str, Any] = {}
     common_fields: Dict[str, Any] = {}
+    design_agent_fields: Dict[str, str] = {}
     for key, value in env.items():
         match = ENV_PROVIDER_PATTERN.match(key)
         if match:
@@ -379,7 +399,13 @@ def _apply_env_overrides(
         if key in ENV_COMMON_KEYS:
             common_fields[ENV_COMMON_KEYS[key]] = value
             continue
-        if key.startswith(("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_", "VC_SERVER_", "VC_COMMON_")):
+        match = ENV_DESIGN_AGENT_PATTERN.match(key)
+        if match:
+            design_agent_fields[match.group(1).lower()] = value
+            continue
+        if key.startswith(
+            ("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_", "VC_SERVER_", "VC_COMMON_", "VC_DESIGN_AGENT_")
+        ):
             logger.warning("Unrecognized VC_* variable ignored: %s", key)
         # 其他 VC_* 变量不属于本次支持的覆盖范围，静默忽略
 
@@ -444,6 +470,16 @@ def _apply_env_overrides(
             else:
                 common_section[field_name] = "" if raw is None else str(raw)
             env_fields.append(f"api_providers.common.{field_name}")
+
+    # 提示词改写服务（Design Agent Platform）：VC_DESIGN_AGENT__* 字段级覆盖
+    if design_agent_fields:
+        design_agent_section = effective.setdefault("design_agent", {})
+        for field_name, raw in design_agent_fields.items():
+            if field_name == "enable":
+                design_agent_section[field_name] = _as_bool(raw)
+            else:
+                design_agent_section[field_name] = "" if raw is None else str(raw)
+            env_fields.append(f"design_agent.{field_name}")
 
     custom_list = effective.setdefault("custom_models", [])
     custom_by_id = {
@@ -557,6 +593,16 @@ def _strip_env_overridden(
                 server_view.pop(field_name, None)
             else:
                 server_view[field_name] = copy.deepcopy(file_value)
+        elif field_path.startswith("design_agent."):
+            # 提示词改写服务配置：恢复文件原值，不写入 .env 覆盖值
+            field_name = field_path.split(".", 1)[1]
+            file_design_agent = current_file.get("design_agent", {}) if isinstance(current_file, dict) else {}
+            file_value = file_design_agent.get(field_name) if isinstance(file_design_agent, dict) else None
+            design_agent_view = view.setdefault("design_agent", {})
+            if file_value is None:
+                design_agent_view.pop(field_name, None)
+            else:
+                design_agent_view[field_name] = copy.deepcopy(file_value)
         else:
             match = custom_pattern.match(field_path)
             if not match:
@@ -740,8 +786,21 @@ def _resolve_generation_timeouts() -> Tuple[float, float]:
     return _pick("VC_TIMEOUT_IMAGE"), _pick("VC_TIMEOUT_VIDEO")
 
 
+def _resolve_design_agent_timeout() -> float:
+    """提示词改写单轮提交超时（秒）：VC_TIMEOUT_DESIGN_AGENT，默认 900（对齐外部平台单轮上限）。"""
+    env = _load_env_sources()
+    default = 900.0
+    try:
+        value = float(str(env.get("VC_TIMEOUT_DESIGN_AGENT") or "").strip())
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 # 视频/图像生成超时（自定义模型客户端消费；.env 可覆盖，容器重建后生效）
 _GENERATION_TIMEOUT_IMAGE, _GENERATION_TIMEOUT_VIDEO = _resolve_generation_timeouts()
+# 提示词改写单轮提交超时（design_agent_client 消费；.env 可覆盖）
+_GENERATION_TIMEOUT_DESIGN_AGENT = _resolve_design_agent_timeout()
 
 
 class Config:
@@ -753,6 +812,8 @@ class Config:
     # 生成超时（.env：VC_TIMEOUT_IMAGE / VC_TIMEOUT_VIDEO，默认 3 小时）
     TIMEOUT_IMAGE = _GENERATION_TIMEOUT_IMAGE
     TIMEOUT_VIDEO = _GENERATION_TIMEOUT_VIDEO
+    # 提示词改写单轮提交超时（.env：VC_TIMEOUT_DESIGN_AGENT，默认 900）
+    TIMEOUT_DESIGN_AGENT = _GENERATION_TIMEOUT_DESIGN_AGENT
     LOG_LEVEL = _get(CONFIG, "server.log_level")
     DEBUG = LOG_LEVEL == "DEBUG"
     ACCESS_LOG = _get(CONFIG, "server.access_log")
@@ -793,6 +854,12 @@ class Config:
     VIDEO_RESOLUTION = _get(CONFIG, "generation.video_resolution")
     VIDEO_GENERATION_MODE = _get(CONFIG, "generation.video_generation_mode")
     STYLE = _get(CONFIG, "generation.style")
+
+    # 提示词改写服务（Design Agent Platform）
+    DESIGN_AGENT_ENABLED = _get(CONFIG, "design_agent.enable", False)
+    DESIGN_AGENT_BASE_URL = _get(CONFIG, "design_agent.base_url", "")
+    DESIGN_AGENT_API_KEY = _get(CONFIG, "design_agent.api_key", "")
+    DESIGN_AGENT_LOGIN_NAME = _get(CONFIG, "design_agent.login_name", "videoclaw")
 
     BASE_DIR = str(BASE_DIR)
     CODE_DIR = os.path.join(BASE_DIR, "code")
@@ -845,6 +912,7 @@ class Config:
         cls.LOG_LEVEL = _get(clean, "server.log_level")
         cls.DEBUG = cls.LOG_LEVEL == "DEBUG"
         cls.ACCESS_LOG = _get(clean, "server.access_log")
+        cls.TIMEOUT_DESIGN_AGENT = _GENERATION_TIMEOUT_DESIGN_AGENT
 
         cls.PRINT_MODEL_INPUT = _get(clean, "api_providers.common.print_model_input")
         cls.PROXY = _get(clean, "api_providers.common.proxy")
@@ -882,6 +950,11 @@ class Config:
         cls.VIDEO_RESOLUTION = _get(clean, "generation.video_resolution")
         cls.VIDEO_GENERATION_MODE = _get(clean, "generation.video_generation_mode")
         cls.STYLE = _get(clean, "generation.style")
+
+        cls.DESIGN_AGENT_ENABLED = _get(clean, "design_agent.enable", False)
+        cls.DESIGN_AGENT_BASE_URL = _get(clean, "design_agent.base_url", "")
+        cls.DESIGN_AGENT_API_KEY = _get(clean, "design_agent.api_key", "")
+        cls.DESIGN_AGENT_LOGIN_NAME = _get(clean, "design_agent.login_name", "videoclaw")
         return cls.as_dict()
 
     @classmethod

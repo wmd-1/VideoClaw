@@ -260,6 +260,29 @@ class VideoDirectorAgent(AgentInterface):
             "不要生成字幕或水印"
         )
 
+    @staticmethod
+    def _lookup_rewritten_prompt(prompt_rewrite_art: Optional[dict], seg_id: str) -> str:
+        """从提示词改写产物中取该分镜的改写结果（仅 status=done 且文本非空）。"""
+        if not isinstance(prompt_rewrite_art, dict):
+            return ""
+        items = prompt_rewrite_art.get("items", [])
+        if not isinstance(items, list):
+            return ""
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == seg_id \
+                    and item.get("status") == "done" and str(item.get("rewritten_prompt") or "").strip():
+                return str(item["rewritten_prompt"]).strip()
+        return ""
+
+    def _final_prompt(self, segment: dict, style_prompt: str, character_artifact: Optional[dict],
+                      video_data: Optional[dict], prompt_rewrite_art: Optional[dict],
+                      seg_id: str) -> str:
+        """视频模型最终提示词：优先使用提示词改写结果，否则回退现有拼装逻辑。"""
+        rewritten = self._lookup_rewritten_prompt(prompt_rewrite_art, seg_id)
+        if rewritten:
+            return rewritten
+        return self._assemble_prompt(segment, style_prompt, character_artifact, video_data=video_data)
+
     def _get_style_keywords(self, session_data: dict) -> str:
         """从会话数据获取风格关键词"""
         style = session_data.get('style', 'realistic').lower()
@@ -524,6 +547,7 @@ class VideoDirectorAgent(AgentInterface):
         scene_list = ref_art.get('scenes', [])
         scene_map = {s['id']: s for s in scene_list if 'id' in s}
         character_art = artifacts.get('character_design', {})
+        prompt_rewrite_art = artifacts.get('prompt_rewrite', {})
         
         style_zh = input_data.get('style') or session_meta.get('style') or 'realistic'
         # 简单映射为中文显示名
@@ -556,7 +580,8 @@ class VideoDirectorAgent(AgentInterface):
                             seg = segment_map.get(seg_id)
                             clip = clip_map.get(seg_id) if clip_map.get(seg_id) else None
                             if not seg: continue
-                            prompt = self._assemble_prompt(seg, style_prompt, character_art, video_data=clip)
+                            prompt = self._final_prompt(seg, style_prompt, character_art, video_data=clip,
+                                                        prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id)
 
                             reference_image_paths = None
                             if video_generation_mode == "reference":
@@ -641,7 +666,8 @@ class VideoDirectorAgent(AgentInterface):
                 seg_id = seg["segment_id"]
                 existing = self._list_versions(sid, seg_id)
                 if existing: continue
-                prompt = self._assemble_prompt(seg, style_prompt, character_art)
+                prompt = self._final_prompt(seg, style_prompt, character_art, video_data=None,
+                                            prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id)
                 reference_image_paths = None
                 if video_generation_mode == "reference":
                     img_path = None

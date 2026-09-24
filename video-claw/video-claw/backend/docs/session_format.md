@@ -39,9 +39,9 @@ Session 数据存储在 `code/data/sessions/{session_id}.json`，包含完整的
 
 ## Stages Completed 阶段列表
 
-按顺序完成的所有阶段：
+按顺序完成的所有阶段（`design_agent.enable=true` 时含 `prompt_rewrite`，默认禁用时不含）：
 ```
-script_generation → character_design → storyboard → reference_generation → video_generation → post_production
+script_generation → character_design → storyboard → reference_generation → [prompt_rewrite] → video_generation → post_production
 ```
 
 ---
@@ -196,7 +196,38 @@ script_generation → character_design → storyboard → reference_generation �
 
 > **注意**：`clips[].id` = `storyboard.episodes[].segments[].segment_id`
 
-### 6. post_production
+### 6. prompt_rewrite（提示词改写，仅 `design_agent.enable=true` 时存在）
+
+```json
+{
+  "session_id": "...（外部 Design Agent Platform 会话 ID，用于复用/追加轮次）",
+  "items": [
+    {
+      "id": "seg_01_01",
+      "name": "第1集-片段1",
+      "index": 1,
+      "original_prompt": "改写输入的分镜镜头描述",
+      "rewritten_prompt": "改写后的 MiniMax H3 规范提示词（英文正文）",
+      "input_mode": "T2VA",
+      "duration": 8,
+      "selected": "",
+      "versions": [
+        {"content": "历史版本文本", "source": "agent/user/superseded", "created_at": "ISO 时间"}
+      ],
+      "status": "done/pending/failed",
+      "error": "失败原因（仅失败条目）"
+    }
+  ]
+}
+```
+
+> **注意**：
+> - `items[].id` = `storyboard.episodes[].segments[].segment_id`，跨阶段关联
+> - `duration` 为夹取到 H3 支持 4~15 秒范围后的目标时长（缺失/非法回退 8 秒）
+> - 视频生成阶段优先使用 `status=done` 条目的 `rewritten_prompt` 作为视频模型输入；本阶段未执行时回退默认拼装
+> - storyboard 分镜内容变更后，受影响条目的 `status` 会被同步置为 `pending`（改写结果过期）
+
+### 7. post_production
 
 ```json
 {
@@ -235,6 +266,9 @@ storyboard.episodes[].segments[].visual_prompt (由 reference_generation 同步)
     ↑
 reference_generation (修改 scenes.description)
 ```
+
+> 提示词改写（prompt_rewrite）为单向消费：storyboard 分镜变更后其 `items` 中对应条目置 `pending`；
+> 改写结果不写回 storyboard。
 
 ---
 
@@ -283,3 +317,14 @@ reference_generation (修改 scenes.description)
   "shot_001_01": "code/result/video/xxx/shot_001_01_v2.mp4"
 }
 ```
+
+### prompt_rewrite（修改改写提示词文本）
+```json
+{
+  "items": [
+    {"id": "seg_01_01", "rewritten_prompt": "用户编辑后的提示词"}
+  ]
+}
+```
+
+> 编辑后的文本记录入该条目 `versions`（旧文本 superseded、新文本 user）。

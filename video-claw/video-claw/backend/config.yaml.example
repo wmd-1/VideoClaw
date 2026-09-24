@@ -91,6 +91,16 @@ generation:
   video_resolution: 720P
   video_generation_mode: first_frame
 
+# 提示词改写服务（Design Agent Platform）：enable=false（默认）时主流程保持原六阶段，
+# 该阶段不出现在工作流引擎 / GET /api/stages / 前端导航中。
+# enable=true 时在「参考图」与「视频」之间注入「提示词改写」阶段，
+# base_url 填 Design Agent Platform 服务地址（如 http://host:8001，自动拼接 /design_agent 前缀）。
+design_agent:
+  enable: false
+  base_url: ''
+  api_key: ''
+  login_name: videoclaw   # 外部平台身份头 X-User-Login-Name 取值
+
 # 自定义模型注册：通过 provider 引用上面的供应商；types 取值 llm/vlm/t2i/i2i/video；
 # concurrency 缺省 1（本地单卡服务最保守）；model 为实际请求的模型名，按部署修改。
 custom_models:

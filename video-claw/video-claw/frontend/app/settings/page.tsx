@@ -70,6 +70,17 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
       { path: 'generation.video_fps', label: 'video_fps 帧率（留空使用服务端默认，需模型声明 fps 能力）', type: 'text' },
     ],
   },
+  {
+    title: '提示词改写服务',
+    description:
+      '主流程「提示词改写」阶段的外部服务（Design Agent Platform）。enable=false（默认）时主流程保持原六阶段，该阶段不出现在流程与导航中；enable=true 但 base_url 为空时，该阶段执行会明确失败。',
+    fields: [
+      { path: 'design_agent.enable', label: 'enable 启用提示词改写阶段', type: 'boolean' },
+      { path: 'design_agent.base_url', label: 'base_url 服务地址（如 http://host:8001）', type: 'text' },
+      { path: 'design_agent.api_key', label: 'api_key 密钥（预留，可留空）', type: 'password' },
+      { path: 'design_agent.login_name', label: 'login_name 外部平台身份登录名（X-User-Login-Name）', type: 'text' },
+    ],
+  },
 ];
 
 function getValue(config: ConfigTree, path: string) {
@@ -294,14 +305,24 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {group.fields.map(field => {
                     const value = getValue(config, field.path);
+                    // 被 .env 覆盖的字段只读展示（保存不会写回覆盖值）
+                    const overridden = envOverrides.fields.includes(field.path);
                     return (
                       <label key={field.path} className="flex flex-col gap-1.5 min-w-0">
-                        <span className="text-xs font-medium text-gray-500">{field.label}</span>
+                        <span className="text-xs font-medium text-gray-500">
+                          {field.label}
+                          {overridden && (
+                            <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-normal text-amber-700">
+                              来自 .env
+                            </span>
+                          )}
+                        </span>
                         {field.type === 'boolean' ? (
                           <select
                             value={String(Boolean(value))}
+                            disabled={overridden}
                             onChange={event => updateField(field, event.target.value === 'true')}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-300"
+                            className={`h-10 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 outline-none focus:border-blue-300 ${overridden ? 'bg-gray-100 text-gray-400' : 'bg-white'}`}
                           >
                             <option value="true">true</option>
                             <option value="false">false</option>
@@ -309,8 +330,9 @@ export default function SettingsPage() {
                         ) : field.type === 'select' ? (
                           <select
                             value={String(value ?? '')}
+                            disabled={overridden}
                             onChange={event => updateField(field, event.target.value)}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-300"
+                            className={`h-10 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 outline-none focus:border-blue-300 ${overridden ? 'bg-gray-100 text-gray-400' : 'bg-white'}`}
                           >
                             {isProviderOptions(field.options) ? (
                               field.options.map(group => (
@@ -330,18 +352,20 @@ export default function SettingsPage() {
                         ) : field.type === 'password' ? (
                           <input
                             type="text"
+                            disabled={overridden}
                             value={secretDrafts[field.path] ?? maskSecret(value)}
                             onFocus={event => event.currentTarget.select()}
                             onChange={event => updateSecretField(field, event.target.value)}
                             placeholder="输入新密钥覆盖"
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 font-mono text-sm text-gray-700 outline-none focus:border-blue-300"
+                            className={`h-10 rounded-lg border border-gray-200 px-3 font-mono text-sm text-gray-700 outline-none focus:border-blue-300 ${overridden ? 'bg-gray-100 text-gray-400' : 'bg-white'}`}
                           />
                         ) : (
                           <input
                             type={field.type === 'number' ? 'number' : 'text'}
+                            disabled={overridden}
                             value={String(value ?? '')}
                             onChange={event => updateField(field, event.target.value)}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-300"
+                            className={`h-10 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 outline-none focus:border-blue-300 ${overridden ? 'bg-gray-100 text-gray-400' : 'bg-white'}`}
                           />
                         )}
                       </label>

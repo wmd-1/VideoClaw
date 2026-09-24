@@ -318,11 +318,11 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
 
 ### 10. 获取阶段列表
 
-获取所有可用阶段列表。
+获取当前启用的阶段列表。`prompt_rewrite`（提示词改写）阶段仅在 `design_agent.enable=true`（config.yaml 或 `.env` 的 `VC_DESIGN_AGENT__ENABLE`）时出现于 `reference_generation` 与 `video_generation` 之间；默认禁用时返回原六阶段。
 
 **接口**: `GET /api/stages`
 
-**响应示例**:
+**响应示例**（启用提示词改写时）:
 ```json
 {
   "stages": [
@@ -330,11 +330,22 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
     {"id": "character_design", "name": "角色/场景设计", "order": 2},
     {"id": "storyboard", "name": "分镜设计", "order": 3},
     {"id": "reference_generation", "name": "参考图生成", "order": 4},
-    {"id": "video_generation", "name": "视频生成", "order": 5},
-    {"id": "post_production", "name": "后期剪辑", "order": 6}
-  ]
+    {"id": "prompt_rewrite", "name": "提示词改写", "order": 5},
+    {"id": "video_generation", "name": "视频生成", "order": 6},
+    {"id": "post_production", "name": "后期剪辑", "order": 7}
+  ],
+  "prompt_rewrite_enabled": true
 }
 ```
+
+**提示词改写阶段说明**：
+- 执行：与其他阶段一致，`POST /api/project/{session_id}/execute/prompt_rewrite`（要求分镜阶段已完成；未启用或未配置 `design_agent.base_url` 时返回明确错误）。
+- 停点：执行完成后进入 waiting，等待用户确认或干预。
+- 干预（`POST /api/project/{session_id}/intervene`，stage=prompt_rewrite）：
+  - `{"regenerate_items": ["seg_01_01", ...]}`：单条目重生成（后台执行，复用外部改写会话）；
+  - `{"revise_items": [{"id": "seg_01_01", "instruction": "改成雨天"}]}`：按修改意见向外部会话追加一轮修订。
+- 用户编辑（`PATCH /api/project/{session_id}/artifact/prompt_rewrite`）：`{"items": [{"id": "seg_01_01", "rewritten_prompt": "..."}]}`，编辑文本记录入该条目 `versions`。
+- 视频生成阶段自动优先使用改写结果；本阶段未执行时视频生成回退默认提示词拼装，行为与旧版本一致。
 
 ---
 

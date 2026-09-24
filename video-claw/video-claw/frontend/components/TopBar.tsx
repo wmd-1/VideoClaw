@@ -20,11 +20,46 @@ export const STAGES = [
   { id: 'character_design', name: '角色设计', shortName: '角色' },
   { id: 'storyboard', name: '分镜设计', shortName: '分镜' },
   { id: 'reference_generation', name: '参考图', shortName: '参考图' },
+  { id: 'prompt_rewrite', name: '提示词改写', shortName: '改写' },
   { id: 'video_generation', name: '视频生成', shortName: '视频' },
   { id: 'post_production', name: '后期剪辑', shortName: '后期' },
 ] as const;
 
 export type StageId = typeof STAGES[number]['id'];
+
+/** 禁用态（默认）的阶段集合：不含 prompt_rewrite，与引入本阶段前的六阶段一致 */
+export const DEFAULT_ENABLED_STAGES: string[] = STAGES.map(s => s.id).filter(id => id !== 'prompt_rewrite');
+
+let cachedEnabledStages: string[] | null = null;
+
+async function fetchEnabledStages(): Promise<string[]> {
+  if (cachedEnabledStages) return cachedEnabledStages;
+  try {
+    const resp = await fetch('/api/stages');
+    if (!resp.ok) return DEFAULT_ENABLED_STAGES;
+    const data = await resp.json();
+    const ids: string[] = (data?.stages || []).map((s: any) => s?.id).filter(Boolean);
+    const valid = ids.filter(id => STAGES.some(s => s.id === id));
+    cachedEnabledStages = valid.length ? valid : DEFAULT_ENABLED_STAGES;
+  } catch {
+    return DEFAULT_ENABLED_STAGES;
+  }
+  return cachedEnabledStages;
+}
+
+/** 后端启用的阶段列表（GET /api/stages 过滤）；加载完成前按禁用态（六阶段）渲染 */
+export function useEnabledStages(): string[] {
+  const [enabled, setEnabled] = useState<string[]>(cachedEnabledStages || DEFAULT_ENABLED_STAGES);
+  useEffect(() => {
+    if (cachedEnabledStages) return;
+    let cancelled = false;
+    fetchEnabledStages().then(ids => {
+      if (!cancelled) setEnabled(ids);
+    });
+    return () => { cancelled = true; };
+  }, []);
+  return enabled;
+}
 
 export interface ModelConfig {
   llm_model: string;
@@ -443,6 +478,8 @@ export default function TopBar({
   onModelConfigChange,
   projectStatus,
 }: TopBarProps) {
+  const enabledStages = useEnabledStages();
+  const visibleStages = STAGES.filter(s => enabledStages.includes(s.id));
   const getStageIcon = (status: StageStatus, isActive: boolean) => {
     switch (status) {
       case 'completed':
@@ -488,7 +525,7 @@ export default function TopBar({
       {/* 阶段进度条 */}
       {hasSession && (
         <nav className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0">
-          {STAGES.map((stage, idx) => {
+          {visibleStages.map((stage, idx) => {
             const status = stageStatuses[stage.id] || 'pending';
             const isActive = activeStage === stage.id;
 
@@ -498,7 +535,7 @@ export default function TopBar({
                   <div
                     className={clsx(
                       'w-6 h-px flex-shrink-0',
-                      stageStatuses[STAGES[idx - 1].id] === 'completed'
+                      stageStatuses[visibleStages[idx - 1].id] === 'completed'
                         ? 'bg-green-300'
                         : 'bg-gray-200'
                     )}

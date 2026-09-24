@@ -61,7 +61,10 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 
 ---
 
-## 阶段与停点（含停点0，共7个停点）
+## 阶段与停点（含停点0，默认共7个停点；启用提示词改写阶段后为8个）
+
+> 提示词改写（prompt_rewrite）为可选阶段：仅当 `design_agent.enable=true`（config.yaml 或 `.env` 的
+> `VC_DESIGN_AGENT__ENABLE`）时出现在参考图与视频生成之间；默认禁用时主流程保持六阶段。
 
 | 停点 | 阶段 | phase 值 | 描述 | 操作 |
 |------|------|----------|------|------|
@@ -71,7 +74,8 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 | 3 | 角色/场景设计 | - | 确认角色/场景图片 | 展示所有人物/场景图片，发送阶段url → 用户确认 |
 | 4 | 分镜设计 | - | 确认分镜列表 | 发送分镜个数、每集时长、总时长信息 → 用户确认 |
 | 5 | 参考图生成 | - | 确认参考图 | 发送阶段url → 用户确认 |
-| 6 | 视频生成 | - | 确认视频片段 | 发送阶段url → 用户确认 |
+| 6 | 提示词改写（可选阶段） | prompt_rewrite | 确认 MiniMax H3 规范改写提示词 | 发送阶段url → 用户确认（仅启用时） |
+| 7 | 视频生成 | - | 确认视频片段 | 发送阶段url → 用户确认 |
 | - | 后期剪辑 | post_production | 拼接视频并生成最终成片 | 无需确认，完成后发送阶段url和分集视频 |
 
 > **注意**：原有的部分复杂剧本流程（扩写、模式选择等）由于系统优化已简化，目前直接输出最终的剧本列表，以分集（`episode_number`）为单位。
@@ -116,9 +120,10 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 6. 参考 create_character.md 执行角色设计 → 停点3
 7. 参考 create_storyboard.md 执行分镜设计 → 停点4
 8. 参考 create_reference.md 执行参考图生成 → 停点5
-9. 参考 create_video.md 执行视频生成 → 停点6
-10. 参考 create_post.md 执行后期剪辑
-11. 完成 → 发送最终视频给用户（若用户在看完成片后希望继续推进故事，参考 smart_continue.md 开始智能续写，然后继续执行新生成片段的后续流程）
+9. （仅启用提示词改写阶段时）参考 create_prompt_rewrite.md 执行提示词改写 → 停点6
+10. 参考 create_video.md 执行视频生成 → 停点7
+11. 参考 create_post.md 执行后期剪辑
+12. 完成 → 发送最终视频给用户（若用户在看完成片后希望继续推进故事，参考 smart_continue.md 开始智能续写，然后继续执行新生成片段的后续流程）
 ```
 
 > **注意**：一定要参考 `references/` 目录下的具体文档执行每一步操作，不要凭记忆或想当然去调用 API！
@@ -295,6 +300,7 @@ send_to_user(f"📊 查看详情：{frontend_url}")
 | [create_character.md](references/workflow/create_character.md) | 角色/场景设计 API | 执行第二阶段时 |
 | [create_storyboard.md](references/workflow/create_storyboard.md) | 分镜设计 API/剧情续写 API | 执行第三阶段时/用户提出续写剧情时 |
 | [create_reference.md](references/workflow/create_reference.md) | 参考图生成 API | 执行第四阶段时 |
+| [create_prompt_rewrite.md](references/workflow/create_prompt_rewrite.md) | 提示词改写 API（可选阶段） | 启用提示词改写且执行该阶段时 |
 | [create_video.md](references/workflow/create_video.md) | 视频生成 API | 执行第五阶段时 |
 | [create_post.md](references/workflow/create_post.md) | 后期剪辑 API | 执行第六阶段时 |
 | [modify_character.md](references/workflow/modify_character.md) | 修改角色提示词 | 用户要求修改角色时 |
