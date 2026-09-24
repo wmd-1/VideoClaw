@@ -110,6 +110,12 @@ def video_size(video_ratio: str, resolution: Optional[str]) -> str:
     return ratio_map.get((resolution or "720P").upper(), "1280x720")
 
 
+def video_dimensions(video_ratio: str, resolution: Optional[str]) -> tuple:
+    """ratio + resolution → (width, height) 数值；供需要独立宽高字段的协议使用。"""
+    width_str, height_str = video_size(video_ratio, resolution).split("x", 1)
+    return int(width_str), int(height_str)
+
+
 def normalize_base_url(base_url: str) -> str:
     return str(base_url or "").strip().rstrip("/")
 

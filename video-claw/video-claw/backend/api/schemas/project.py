@@ -9,6 +9,9 @@ class ProjectStartRequest(BaseModel):
     style: Optional[str] = None
     video_ratio: Optional[str] = "9:16"
     video_resolution: Optional[str] = "720P"
+    video_duration: Optional[int] = None
+    video_fps: Optional[int] = None
+    video_short_edge: Optional[int] = None
     expand_idea: Optional[bool] = True
     llm_model: Optional[str] = None
     vlm_model: Optional[str] = None

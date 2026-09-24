@@ -33,6 +33,7 @@ from models.custom_common import (
     connection_hint,
     guess_mime_type,
     make_http_client,
+    video_dimensions,
     video_size,
 )
 
@@ -48,6 +49,7 @@ class CustomVideoClient:
         poll_interval: float = DEFAULT_VIDEO_POLL_INTERVAL,
         poll_timeout: Optional[float] = None,
         timeout: Optional[float] = None,
+        adjustments: Optional[List[str]] = None,
     ):
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
@@ -57,6 +59,8 @@ class CustomVideoClient:
         # 生成与轮询超时：默认取 Config.TIMEOUT_VIDEO（.env VC_TIMEOUT_VIDEO，缺省 3 小时）
         resolved_timeout = float(timeout if timeout is not None else Config.TIMEOUT_VIDEO)
         self._poll_timeout = float(poll_timeout if poll_timeout is not None else Config.TIMEOUT_VIDEO)
+        # 参数夹取/忽略记录：外部传入列表时同步写入（供 API 响应透出），否则仅内部收集
+        self._adjustments = adjustments if adjustments is not None else []
         self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=resolved_timeout))
 
     # 与内置 VideoClient.generate_video 保持签名/约定一致（调用方零改动）
@@ -86,11 +90,26 @@ class CustomVideoClient:
         cfg_scale: float = 0.5,
         generate_audio: Optional[bool] = None,
         audio: Optional[bool] = None,
+        fps: Optional[int] = None,
+        short_edge: Optional[int] = None,
         **_ignored: Any,
     ) -> str:
-        """生成视频：写入 save_path 并返回远端标识（视频 URL/任务下载地址）。"""
+        """生成视频：写入 save_path 并返回远端标识（视频 URL/任务下载地址）。
+
+        统一参数：duration（秒）、video_ratio、resolution、fps（可选）、short_edge（可选）。
+        fps/short_edge 为高级参数：仅在显式提供或模型能力声明触发时注入协议字段；
+        缺省时请求与既有实现完全一致（向后兼容）。
+        """
         duration = self._clamp_duration(duration)
         size = video_size(video_ratio, resolution)
+        # 统一参数 → 协议字段（单点映射构造器，防多链路漂移）
+        protocol_fields, json_fields, drop_size = self._map_protocol_params(
+            duration=duration,
+            video_ratio=video_ratio,
+            resolution=resolution,
+            fps=fps,
+            short_edge=short_edge,
+        )
         # vllm-omni：优先 /videos/sync（一次请求直出视频字节，官方 recipes 主形态）；
         # 端点不可用（404/405/非视频响应）时回退异步三段式。
         if self._protocol == "vllm-omni":
@@ -104,6 +123,8 @@ class CustomVideoClient:
                 negative_prompt=negative_prompt,
                 seed=seed,
                 save_path=save_path,
+                protocol_fields=protocol_fields,
+                drop_size=drop_size,
             )
             if sync_error is None:
                 return f"{self._base_url}/videos/sync"
@@ -117,6 +138,9 @@ class CustomVideoClient:
             duration=duration,
             negative_prompt=negative_prompt,
             seed=seed,
+            protocol_fields=protocol_fields,
+            json_fields=json_fields,
+            drop_size=drop_size,
         )
         job_id = self._extract_job_id(job)
         logger.info(
@@ -138,8 +162,19 @@ class CustomVideoClient:
 
     # ── 参数与创建 ──
 
+    def _capabilities(self) -> Dict[str, Any]:
+        caps = self._meta.get("capabilities")
+        return caps if isinstance(caps, dict) else {}
+
+    def _record_adjustment(self, message: str) -> None:
+        """记录参数夹取/忽略事实：写入日志与 adjustments 列表（可用时随响应透出）。"""
+        logger.info("Custom video param adjusted: model=%s %s", self._model, message)
+        if message not in self._adjustments:
+            self._adjustments.append(message)
+
     def _clamp_duration(self, duration: int) -> int:
-        contract = (self._meta.get("capabilities") or {}).get("duration") or {}
+        """按模型 capabilities.duration{min,max} 夹取时长（统一入口，单点实现）。"""
+        contract = self._capabilities().get("duration") or {}
         try:
             minimum = int(contract.get("min", 1))
             maximum = int(contract.get("max", duration))
@@ -147,7 +182,123 @@ class CustomVideoClient:
             minimum, maximum = 1, duration
         if maximum < minimum:
             maximum = minimum
-        return min(max(int(duration), minimum), maximum)
+        clamped = min(max(int(duration), minimum), maximum)
+        if clamped != int(duration):
+            self._record_adjustment(
+                f"duration {duration}s -> {clamped}s（模型能力范围 {minimum}-{maximum}s）"
+            )
+        return clamped
+
+    def _resolve_fps(self, fps: Optional[int]) -> Optional[int]:
+        """解析 fps 注入值：模型声明 fps 支持列表时夹取到最近支持值；未声明则不注入。"""
+        if fps is None:
+            return None
+        try:
+            requested = int(fps)
+        except (TypeError, ValueError):
+            return None
+        supported_raw = self._capabilities().get("fps")
+        if not isinstance(supported_raw, (list, tuple)) or not supported_raw:
+            # 模型未声明 fps 支持：沿用服务端默认，不注入字段（记录忽略事实）
+            self._record_adjustment(f"fps {requested} 已忽略（模型未声明 fps 支持）")
+            return None
+        supported: List[int] = []
+        for value in supported_raw:
+            try:
+                supported.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        if not supported:
+            self._record_adjustment(f"fps {requested} 已忽略（模型 fps 声明无效）")
+            return None
+        if requested in supported:
+            return requested
+        nearest = min(supported, key=lambda value: (abs(value - requested), value))
+        self._record_adjustment(f"fps {requested} -> {nearest}（模型支持 {supported}）")
+        return nearest
+
+    def _short_edge_value(self, short_edge: Optional[int]) -> Optional[int]:
+        """解析 short_edge 注入值：优先模型声明值，用户显式值仅在未声明时生效；均无则 None。"""
+        declared_raw = self._capabilities().get("short_edge")
+        try:
+            declared = int(declared_raw) if declared_raw else None
+        except (TypeError, ValueError):
+            declared = None
+        try:
+            requested = int(short_edge) if short_edge is not None else None
+        except (TypeError, ValueError):
+            requested = None
+        if declared is not None:
+            if requested is not None and requested != declared:
+                self._record_adjustment(
+                    f"short_edge {requested} -> {declared}（模型声明值）"
+                )
+            return declared
+        return requested
+
+    def _map_protocol_params(
+        self,
+        duration: int,
+        video_ratio: str,
+        resolution: Optional[str],
+        fps: Optional[int],
+        short_edge: Optional[int],
+    ) -> Tuple[Dict[str, str], Dict[str, Any], bool]:
+        """统一参数 → 协议字段（单点映射构造器，D1 映射矩阵）。
+
+        返回 (protocol_fields, json_fields, drop_size)：
+        - protocol_fields：标量字段（multipart / JSON 编码通用）；
+        - json_fields：结构化字段（JSON 编码原样下发；multipart 序列化为 JSON 字符串）；
+        - drop_size：True 时不下发 size，改用协议标准宽高字段避免冲突（D2）。
+        兼容策略（D5）：未显式提供 fps/short_edge 且模型未声明 short_edge 时返回空，
+        请求与既有实现完全一致。时长由同一 clamped 值派生（extra_params.duration /
+        seconds / target.duration_seconds 一致，D3）。
+        """
+        protocol_fields: Dict[str, str] = {}
+        json_fields: Dict[str, Any] = {}
+        drop_size = False
+        if self._protocol == "vllm-omni":
+            fps_value = self._resolve_fps(fps)
+            short_edge_value = self._short_edge_value(short_edge)
+            if short_edge_value is not None:
+                # 模型声明 short_edge（或用户显式指定）→ short_edge + aspect_ratio
+                protocol_fields["short_edge"] = str(short_edge_value)
+                protocol_fields["aspect_ratio"] = video_ratio or "16:9"
+                drop_size = True
+            elif fps_value is not None or short_edge is not None:
+                # 用户显式设置高级参数 → 由 ratio+resolution 推导 width/height
+                width, height = video_dimensions(video_ratio, resolution)
+                protocol_fields["width"] = str(width)
+                protocol_fields["height"] = str(height)
+                drop_size = True
+            if fps_value is not None:
+                protocol_fields["fps"] = str(fps_value)
+        elif self._protocol == "sglang":
+            target = self._sglang_target(duration, video_ratio, short_edge)
+            if target is not None:
+                json_fields["target"] = target
+        # openai 兼容：沿用 size/seconds，不注入新字段
+        return protocol_fields, json_fields, drop_size
+
+    def _sglang_target(
+        self,
+        duration: int,
+        video_ratio: str,
+        short_edge: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        """sglang 官方 cookbook 的 target 结构：short_edge/aspect_ratio/duration_seconds。
+
+        仅在 short_edge 可用（模型声明或用户显式指定）时注入；duration_seconds 与
+        顶层 seconds 由同一 clamped duration 派生，保证一致（D3）。
+        """
+        short_edge_value = self._short_edge_value(short_edge)
+        if short_edge_value is None:
+            return None
+        return {
+            "short_edge": int(short_edge_value),
+            "aspect_ratio": video_ratio or "16:9",
+            "duration_seconds": int(duration),
+        }
 
     def _task_for_input(
         self,
@@ -312,6 +463,8 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
         save_path: str,
+        protocol_fields: Optional[Dict[str, str]] = None,
+        drop_size: bool = False,
     ) -> Optional[str]:
         """尝试 vllm-omni 的 /videos/sync 同步端点：成功落盘返回 None，否则返回错误信息（供回退异步）。"""
         refs = [path for path in (reference_image_paths or []) if path]
@@ -330,7 +483,9 @@ class CustomVideoClient:
             form_extra = {"extra_params": self._extra_params(task, duration, frame_indices)}
             try:
                 response = self._post_sync(
-                    prompt, field_spec, size, duration, negative_prompt, seed, form_extra
+                    prompt, field_spec, size, duration, negative_prompt, seed, form_extra,
+                    protocol_fields=protocol_fields,
+                    drop_size=drop_size,
                 )
             except httpx.HTTPError as exc:
                 last_error = str(exc)
@@ -357,8 +512,14 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
         form_extra: Optional[Dict[str, str]] = None,
+        protocol_fields: Optional[Dict[str, str]] = None,
+        drop_size: bool = False,
     ) -> httpx.Response:
-        base_fields: Dict[str, Any] = {"prompt": prompt, "model": self._model, "size": size}
+        base_fields: Dict[str, Any] = {"prompt": prompt, "model": self._model}
+        if not drop_size:
+            base_fields["size"] = size
+        if protocol_fields:
+            base_fields.update(protocol_fields)
         if negative_prompt:
             base_fields["negative_prompt"] = negative_prompt
         if seed is not None:
@@ -391,6 +552,9 @@ class CustomVideoClient:
         duration: int,
         negative_prompt: Optional[str],
         seed: Optional[int],
+        protocol_fields: Optional[Dict[str, str]] = None,
+        json_fields: Optional[Dict[str, Any]] = None,
+        drop_size: bool = False,
     ) -> Dict[str, Any]:
         refs = [path for path in (reference_image_paths or []) if path]
         task = self._task_for_input(image_path, last_image_path, refs)
@@ -409,7 +573,10 @@ class CustomVideoClient:
         for encoding, field_spec, form_extra in variants:
             try:
                 response = self._post_create(
-                    encoding, prompt, field_spec, size, duration, negative_prompt, seed, form_extra
+                    encoding, prompt, field_spec, size, duration, negative_prompt, seed, form_extra,
+                    protocol_fields=protocol_fields,
+                    json_fields=json_fields,
+                    drop_size=drop_size,
                 )
                 if response.status_code < 400:
                     try:
@@ -445,12 +612,15 @@ class CustomVideoClient:
         negative_prompt: Optional[str],
         seed: Optional[int],
         form_extra: Optional[Dict[str, str]] = None,
+        protocol_fields: Optional[Dict[str, str]] = None,
+        json_fields: Optional[Dict[str, Any]] = None,
+        drop_size: bool = False,
     ) -> httpx.Response:
-        base_fields: Dict[str, Any] = {
-            "prompt": prompt,
-            "model": self._model,
-            "size": size,
-        }
+        base_fields: Dict[str, Any] = {"prompt": prompt, "model": self._model}
+        if not drop_size:
+            base_fields["size"] = size
+        if protocol_fields:
+            base_fields.update(protocol_fields)
         if negative_prompt:
             base_fields["negative_prompt"] = negative_prompt
         if seed is not None:
@@ -459,12 +629,17 @@ class CustomVideoClient:
         if encoding == "json":
             fields = dict(base_fields)
             fields["seconds"] = str(duration)
+            for key, value in (json_fields or {}).items():
+                fields[key] = value
             if form_extra:
                 fields.update(form_extra)
             return self._client.post("/videos", json=fields)
 
         data = dict(base_fields)
         data["seconds"] = str(duration)
+        for key, value in (json_fields or {}).items():
+            # multipart 表单仅承载标量：结构化字段（如 sglang target）序列化为 JSON 字符串
+            data[key] = value if isinstance(value, str) else json.dumps(value)
         if form_extra:
             # 仅标量字段可由 multipart 表单承载（如 task/extra_params；conditions 等结构化字段仅 JSON）
             data.update({key: value for key, value in form_extra.items() if isinstance(value, (str, int, float))})

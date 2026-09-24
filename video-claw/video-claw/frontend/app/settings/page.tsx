@@ -66,6 +66,8 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
       { path: 'generation.style', label: 'style 风格', type: 'select', options: STYLES },
       { path: 'generation.video_ratio', label: 'video_ratio 视频长宽比', type: 'select', options: VIDEO_RATIOS },
       { path: 'generation.video_resolution', label: 'video_resolution 视频分辨率', type: 'select', options: VIDEO_RESOLUTIONS },
+      { path: 'generation.video_duration', label: 'video_duration 默认时长/秒（留空跟随分镜，实际按模型能力夹取）', type: 'text' },
+      { path: 'generation.video_fps', label: 'video_fps 帧率（留空使用服务端默认，需模型声明 fps 能力）', type: 'text' },
     ],
   },
 ];

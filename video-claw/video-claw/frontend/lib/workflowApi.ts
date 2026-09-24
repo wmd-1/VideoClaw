@@ -363,6 +363,8 @@ export async function startProject(params: {
   style?: string;
   video_ratio?: string;
   video_resolution?: string;
+  video_duration?: string;
+  video_fps?: string;
   llm_model?: string;
   vlm_model?: string;
   image_t2i_model?: string;

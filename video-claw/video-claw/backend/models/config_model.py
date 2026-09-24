@@ -619,6 +619,63 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
     return merged
 
 
+def _normalize_video_capabilities(capability: dict[str, Any]) -> dict[str, Any]:
+    """归一化视频能力声明：duration{min,max}、fps[]、short_edge、ratios[]、resolutions[]。
+
+    用户声明经 _deep_merge_dict 覆盖默认值后调用；非法声明剔除（回落默认/移除），
+    保证 /api/models 下发的能力结构始终可被适配层与前端消费。
+    """
+    # duration：min/max 取整，min<=max；非法时回落默认 2-10
+    duration = capability.get("duration")
+    if isinstance(duration, dict):
+        try:
+            minimum = int(duration.get("min", 2))
+        except (TypeError, ValueError):
+            minimum = 2
+        try:
+            maximum = int(duration.get("max", 10))
+        except (TypeError, ValueError):
+            maximum = 10
+        if maximum < minimum:
+            maximum = minimum
+        duration["min"] = minimum
+        duration["max"] = maximum
+        duration.setdefault("integer", True)
+    elif duration is not None:
+        capability["duration"] = {"min": 2, "max": 10, "integer": True, "verified": True}
+    # fps：归一为去重排序的 int 列表；声明无效/为空则移除（表示"未声明，不注入"）
+    fps = capability.get("fps")
+    if fps is not None:
+        if isinstance(fps, (int, float)):
+            fps = [fps]
+        if isinstance(fps, (list, tuple)):
+            values = []
+            for value in fps:
+                try:
+                    values.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+            if values:
+                capability["fps"] = sorted(set(values))
+            else:
+                capability.pop("fps", None)
+        else:
+            capability.pop("fps", None)
+    # short_edge：单个 int；非法则移除
+    short_edge = capability.get("short_edge")
+    if short_edge is not None:
+        try:
+            capability["short_edge"] = int(short_edge)
+        except (TypeError, ValueError):
+            capability.pop("short_edge", None)
+    # ratios / resolutions：归一为字符串列表
+    for key in ("ratios", "resolutions"):
+        values = capability.get(key)
+        if values is not None and isinstance(values, (list, tuple)):
+            capability[key] = [str(value) for value in values if str(value).strip()]
+    return capability
+
+
 def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[str, Any]:
     """按 types/abilities 推导自定义模型能力标签，用户声明的 capabilities 可覆盖默认值。"""
     ability_types: list[str] = []
@@ -648,6 +705,8 @@ def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[s
 
     if "video" in types:
         ability_type = "image_to_video" if "first_frame_i2v" in ability_types else "text_to_video"
+        # 默认能力：duration 2-10（H3 类模型建议声明 4-15）、fps/short_edge 默认不声明
+        # （声明 fps: [24]、short_edge: 768 后适配层才注入对应字段，见 custom_video 映射层）
         capability: dict[str, Any] = {
             "ability_type": ability_type,
             "ability_types": ability_types,
@@ -689,6 +748,8 @@ def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[s
     user_caps = item.get("capabilities")
     if isinstance(user_caps, dict):
         capability = _deep_merge_dict(capability, user_caps)
+    if "video" in types:
+        capability = _normalize_video_capabilities(capability)
     return capability
 
 

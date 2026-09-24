@@ -53,3 +53,12 @@ export const VIDEO_RESOLUTIONS = [
     { id: '720P', label: '720P' },
     { id: '1080P', label: '1080P' },
 ];
+
+/* ─── 视频模型能力（/api/models capabilities 下发；未声明维度按全量选项处理） ─── */
+export interface VideoModelCapabilities {
+    duration?: { min?: number; max?: number };
+    fps?: number[];
+    ratios?: string[];
+    resolutions?: string[];
+    short_edge?: number;
+}

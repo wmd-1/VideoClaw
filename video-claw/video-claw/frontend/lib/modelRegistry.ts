@@ -1,4 +1,4 @@
-import type { ProviderGroup } from '@/config/models';
+import type { ProviderGroup, VideoModelCapabilities } from '@/config/models';
 import { fetchApiModels } from '@/lib/workflowApi';
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -42,6 +42,24 @@ export async function fetchModelGroupsByType(
 export async function fetchVideoModelGroupsByAbility(ability: string): Promise<ProviderGroup[]> {
   const models = await fetchApiModels({ mediaType: 'video', ability, verifiedOnly: true });
   return groupModelOptions(models);
+}
+
+/* 视频模型能力短缓存：切换模型联动时长/FPS/分辨率选项时避免频繁请求 */
+let videoCapsCache: { at: number; map: Map<string, VideoModelCapabilities> } | null = null;
+const VIDEO_CAPS_CACHE_TTL_MS = 10_000;
+
+export async function fetchVideoModelCapabilities(modelId: string): Promise<VideoModelCapabilities | null> {
+  const now = Date.now();
+  if (!videoCapsCache || now - videoCapsCache.at > VIDEO_CAPS_CACHE_TTL_MS) {
+    const models = await fetchApiModels({ modelType: 'video' });
+    const map = new Map<string, VideoModelCapabilities>();
+    for (const model of models) {
+      const caps = (model as any).capabilities;
+      if (caps && typeof caps === 'object') map.set(model.id, caps as VideoModelCapabilities);
+    }
+    videoCapsCache = { at: now, map };
+  }
+  return videoCapsCache.map.get(modelId) ?? null;
 }
 
 /**

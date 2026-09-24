@@ -37,3 +37,5 @@ class SandboxVideoRequest(BaseModel):
     ratio: Optional[str] = "16:9"
     resolution: Optional[str] = "720P"
     duration: Optional[int] = 5
+    fps: Optional[int] = None
+    short_edge: Optional[int] = None

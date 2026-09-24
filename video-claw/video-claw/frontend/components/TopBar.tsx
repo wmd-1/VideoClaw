@@ -9,8 +9,9 @@ import {
   VIDEO_GENERATION_MODES,
   type ProviderGroup,
   type VideoGenerationMode,
+  type VideoModelCapabilities,
 } from '@/config/models';
-import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
+import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, fetchVideoModelCapabilities } from '@/lib/modelRegistry';
 
 export type StageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'error' | 'stopped';
 
@@ -37,6 +38,10 @@ export interface ModelConfig {
   video_generation_mode: VideoGenerationMode;
   video_ratio: string;
   video_resolution: string;
+  /** 会话级时长覆盖（秒）；空串 = 跟随分镜时长 */
+  video_duration: string;
+  /** 会话级帧率；空串 = 服务端默认（不注入 fps 字段） */
+  video_fps: string;
   enable_concurrency: boolean;
 }
 
@@ -100,6 +105,9 @@ function ModelSelector({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [videoCaps, setVideoCaps] = useState<VideoModelCapabilities | null>(null);
+  const [clampHint, setClampHint] = useState('');
   const [llmProviders, setLlmProviders] = useState<ProviderGroup[]>([]);
   const [vlmProviders, setVlmProviders] = useState<ProviderGroup[]>([]);
   const [t2iProviders, setT2iProviders] = useState<ProviderGroup[]>([]);
@@ -166,6 +174,79 @@ function ModelSelector({
         ? referenceVideoProviders
         : firstFrameVideoProviders;
   const activeVideoLabel = VIDEO_GENERATION_MODES.find(item => item.id === config.video_generation_mode)?.label || '首帧生视频';
+
+  // 供模型切换联动读取最新 config（避免 effect 依赖 config 导致重复触发）
+  const configRef = useRef(config);
+  configRef.current = config;
+
+  // 切换模型时按新模型能力联动：夹取当前值并提示（能力未声明的维度不限制）
+  useEffect(() => {
+    let cancelled = false;
+    setClampHint('');
+    if (!activeVideoModel) return;
+    fetchVideoModelCapabilities(activeVideoModel)
+      .then(caps => {
+        if (cancelled) return;
+        setVideoCaps(caps);
+        if (!caps) return;
+        const current = configRef.current;
+        const hints: string[] = [];
+        const next: Partial<ModelConfig> = {};
+        if (caps.ratios?.length && !caps.ratios.includes(current.video_ratio)) {
+          next.video_ratio = caps.ratios[0];
+          hints.push(`画幅 ${current.video_ratio}→${caps.ratios[0]}`);
+        }
+        if (caps.resolutions?.length && !caps.resolutions.includes(current.video_resolution)) {
+          next.video_resolution = caps.resolutions[0];
+          hints.push(`分辨率 ${current.video_resolution}→${caps.resolutions[0]}`);
+        }
+        if (current.video_duration) {
+          const val = Number(current.video_duration);
+          const min = caps.duration?.min;
+          const max = caps.duration?.max;
+          if (Number.isFinite(val)) {
+            if (min != null && val < min) {
+              next.video_duration = String(min);
+              hints.push(`时长 ${val}→${min}s`);
+            } else if (max != null && val > max) {
+              next.video_duration = String(max);
+              hints.push(`时长 ${val}→${max}s`);
+            }
+          }
+        }
+        if (current.video_fps) {
+          const fpsList = caps.fps?.length ? caps.fps : null;
+          if (!fpsList) {
+            next.video_fps = '';
+            hints.push('FPS 已重置（模型未声明）');
+          } else if (!fpsList.includes(Number(current.video_fps))) {
+            const nearest = fpsList.reduce((a, b) =>
+              Math.abs(b - Number(current.video_fps)) < Math.abs(a - Number(current.video_fps)) ? b : a);
+            next.video_fps = String(nearest);
+            hints.push(`FPS ${current.video_fps}→${nearest}`);
+          }
+        }
+        if (Object.keys(next).length) {
+          onChange({ ...current, ...next });
+          setClampHint(`已按模型能力调整：${hints.join('，')}`);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeVideoModel]);
+
+  const ratioOptions = videoCaps?.ratios?.length
+    ? VIDEO_RATIOS.filter(r => videoCaps.ratios!.includes(r.id))
+    : VIDEO_RATIOS;
+  const resolutionOptions = videoCaps?.resolutions?.length
+    ? VIDEO_RESOLUTIONS.filter(r => videoCaps.resolutions!.includes(r.id))
+    : VIDEO_RESOLUTIONS;
+  const fpsOptions = videoCaps?.fps?.length ? videoCaps.fps : [];
+  const durationMin = Math.max(1, Math.min(videoCaps?.duration?.min ?? 2, videoCaps?.duration?.max ?? 15));
+  const durationMax = Math.max(durationMin, Math.min(videoCaps?.duration?.max ?? 15, durationMin + 19));
+  const durationOptions: number[] = [];
+  for (let v = durationMin; v <= durationMax; v++) durationOptions.push(v);
 
   const updateVideoMode = (mode: VideoGenerationMode) => {
     const nextModel =
@@ -241,7 +322,7 @@ function ModelSelector({
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">视频比例</span>
             <div className="flex gap-0.5">
-              {VIDEO_RATIOS.map(r => (
+              {ratioOptions.map(r => (
                 <button
                   key={r.id}
                   onClick={() => update('video_ratio', r.id)}
@@ -274,18 +355,65 @@ function ModelSelector({
               ))}
             </div>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-400 font-medium">视频分辨率</span>
-            <select
-              value={config.video_resolution}
-              onChange={e => update('video_resolution', e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+          {/* 高级参数：默认折叠，可选项按所选模型能力联动 */}
+          <div className="rounded-lg border border-gray-200">
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen(!advancedOpen)}
+              className="flex w-full items-center justify-between px-2 py-1.5 text-[10px] text-gray-400 font-medium"
             >
-              {VIDEO_RESOLUTIONS.map(item => (
-                <option key={item.id} value={item.id}>{item.label}</option>
-              ))}
-            </select>
-          </label>
+              <span>高级参数（时长 / FPS / 分辨率）</span>
+              <ChevronDown className={clsx('w-3 h-3 transition-transform', advancedOpen && 'rotate-180')} />
+            </button>
+            {advancedOpen && (
+              <div className="space-y-2.5 px-2 pb-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] text-gray-400 font-medium">视频时长（秒）</span>
+                  <select
+                    value={config.video_duration}
+                    onChange={e => update('video_duration', e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+                  >
+                    <option value="">跟随分镜</option>
+                    {durationOptions.map(v => (
+                      <option key={v} value={String(v)}>{v}s</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] text-gray-400 font-medium">帧率 FPS</span>
+                  <select
+                    value={config.video_fps}
+                    onChange={e => update('video_fps', e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+                  >
+                    <option value="">默认（服务端）</option>
+                    {fpsOptions.map(v => (
+                      <option key={v} value={String(v)}>{v}</option>
+                    ))}
+                  </select>
+                  {!fpsOptions.length && (
+                    <span className="text-[9px] text-gray-300">当前模型未声明 FPS 能力，设置后将被忽略</span>
+                  )}
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] text-gray-400 font-medium">视频分辨率</span>
+                  <select
+                    value={config.video_resolution}
+                    onChange={e => update('video_resolution', e.target.value)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+                  >
+                    {resolutionOptions.map(item => (
+                      <option key={item.id} value={item.id}>{item.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+          </div>
+          {clampHint && (
+            <p className="text-[10px] text-amber-600 leading-snug">{clampHint}</p>
+          )}
           <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
             <input
               type="checkbox"

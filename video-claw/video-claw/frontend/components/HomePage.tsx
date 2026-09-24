@@ -21,6 +21,8 @@ export interface ProjectParams {
   style: string;
   video_ratio: string;
   video_resolution: string;
+  video_duration?: string; // 会话级时长覆盖（秒）；空 = 跟随分镜
+  video_fps?: string; // 会话级帧率；空 = 服务端默认
   llm_model: string;
   vlm_model: string;
   image_t2i_model: string;
@@ -80,6 +82,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const [selectedVideoMode, setSelectedVideoMode] = useState<VideoGenerationMode>('first_frame');
   const [selectedRatio, setSelectedRatio] = useState('');
   const [selectedResolution, setSelectedResolution] = useState('720P');
+  const [selectedDuration, setSelectedDuration] = useState('');
+  const [selectedFps, setSelectedFps] = useState('');
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState('');
   const [enableConcurrency, setEnableConcurrency] = useState(true);
@@ -171,6 +175,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         setSelectedReferenceVideo(referenceModel);
         setSelectedRatio(generation.video_ratio || '16:9');
         setSelectedResolution(generation.video_resolution || '720P');
+        setSelectedDuration(generation.video_duration ? String(generation.video_duration) : '');
+        setSelectedFps(generation.video_fps ? String(generation.video_fps) : '');
       } catch (e: any) {
         if (!cancelled) setConfigError(e.message || '读取默认模型配置失败');
       } finally {
@@ -222,6 +228,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       style: selectedStyle,
       video_ratio: selectedRatio,
       video_resolution: selectedResolution,
+      video_duration: selectedDuration || undefined,
+      video_fps: selectedFps || undefined,
       llm_model: selectedLLM,
       vlm_model: selectedVLM,
       image_t2i_model: selectedT2I,

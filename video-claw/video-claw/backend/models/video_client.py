@@ -111,6 +111,9 @@ class VideoClient:
         cfg_scale: float = 0.5,
         generate_audio: Optional[bool] = None,
         audio: Optional[bool] = None,
+        fps: Optional[int] = None,
+        short_edge: Optional[int] = None,
+        adjustments: Optional[list[str]] = None,
     ) -> str:
         """
         生成视频
@@ -177,7 +180,8 @@ class VideoClient:
         if entry_kind == "custom":
             from models.custom_video import CustomVideoClient
 
-            custom_client = CustomVideoClient(entry_meta)
+            # fps/short_edge 仅自定义模型协议适配层支持；内置客户端沿用各自语义
+            custom_client = CustomVideoClient(entry_meta, adjustments=adjustments)
             try:
                 return custom_client.generate_video(
                     prompt=prompt,
@@ -204,6 +208,8 @@ class VideoClient:
                     cfg_scale=cfg_scale,
                     generate_audio=generate_audio,
                     audio=audio,
+                    fps=fps,
+                    short_edge=short_edge,
                 )
             finally:
                 custom_client.close()

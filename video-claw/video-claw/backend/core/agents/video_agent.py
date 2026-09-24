@@ -86,6 +86,17 @@ class VideoDirectorAgent(AgentInterface):
             client.generate_video(prompt=rewrite, model=model, **kwargs)
             return rewrite, diagnosis, rewrite_result
 
+    @staticmethod
+    def _optional_int(value: Any) -> Optional[int]:
+        """宽松转换可选整型参数（会话 meta 中可能以字符串存储）；无效/非正数时返回 None。"""
+        if value is None or value == "":
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
     def _generate_one(self, sid: str, segment_id: str, prompt: str,
                       img_path: Optional[str], video_model: str,
                       duration: int = 10, sound: str = "",
@@ -95,8 +106,15 @@ class VideoDirectorAgent(AgentInterface):
                       video_generation_mode: str = "first_frame",
                       last_image_path: Optional[str] = None,
                       reference_image_paths: Optional[List[str]] = None,
-                      llm_model: str = "") -> tuple:
-        """生成单个视频片段，返回 (segment_id, path_or_None, rewrite_result_or_None)。"""
+                      llm_model: str = "",
+                      video_duration: Optional[int] = None,
+                      video_fps: Optional[int] = None,
+                      video_short_edge: Optional[int] = None) -> tuple:
+        """生成单个视频片段，返回 (segment_id, path_or_None, rewrite_result_or_None)。
+
+        video_duration 为会话级时长覆盖（未设置时沿用分镜时长）；
+        video_fps/video_short_edge 为会话级高级参数（未设置时不注入）。
+        """
         if self.cancellation_check and self.cancellation_check():
             logger.info(f"VideoDirectorAgent: {segment_id} 跳过（用户取消）")
             return segment_id, None, None
@@ -112,6 +130,8 @@ class VideoDirectorAgent(AgentInterface):
             return segment_id, None, None
 
         save_path = self._next_version_path(sid, segment_id)
+        # 会话级时长覆盖：未设置时沿用分镜时长
+        duration = video_duration or duration
         try:
             from models.video_client import VideoClient
             client = VideoClient()
@@ -126,6 +146,8 @@ class VideoDirectorAgent(AgentInterface):
                     "duration": duration,
                     "video_ratio": video_ratio,
                     "video_resolution": video_resolution,
+                    "video_fps": video_fps,
+                    "video_short_edge": video_short_edge,
                 },
                 image_path=img_path,
                 save_path=save_path,
@@ -136,6 +158,8 @@ class VideoDirectorAgent(AgentInterface):
                 resolution=video_resolution,
                 last_image_path=last_image_path if video_generation_mode == "start_end_frame" else None,
                 reference_image_paths=reference_image_paths if video_generation_mode == "reference" else None,
+                fps=video_fps,
+                short_edge=video_short_edge,
             )
             return segment_id, save_path, rewrite_result
         except Exception as e:
@@ -471,6 +495,9 @@ class VideoDirectorAgent(AgentInterface):
         
         video_ratio = input_data.get("video_ratio", "16:9")
         video_resolution = input_data.get("video_resolution", "720P")
+        video_duration = self._optional_int(input_data.get("video_duration"))
+        video_fps = self._optional_int(input_data.get("video_fps"))
+        video_short_edge = self._optional_int(input_data.get("video_short_edge"))
         video_sound = "on"
         video_shot_type = "multi"
 
@@ -551,7 +578,8 @@ class VideoDirectorAgent(AgentInterface):
                                 self._generate_one, sid, seg_id, prompt,
                                 img_path, video_model, duration,
                                 video_sound, video_shot_type, video_ratio, video_resolution,
-                                video_generation_mode, last_img_path, reference_image_paths, llm_model
+                                video_generation_mode, last_img_path, reference_image_paths, llm_model,
+                                video_duration, video_fps, video_short_edge
                             )
                             futs[fut] = seg_id
                         for fut in as_completed(futs):
@@ -640,7 +668,8 @@ class VideoDirectorAgent(AgentInterface):
                         self._generate_one, sid, seg_id, prompt,
                         img_path, video_model, dur,
                         video_sound, video_shot_type, video_ratio, video_resolution,
-                        video_generation_mode, last_img_path, reference_image_paths, llm_model
+                        video_generation_mode, last_img_path, reference_image_paths, llm_model,
+                        video_duration, video_fps, video_short_edge
                     )
                     futs[fut] = seg_id
                 for fut in as_completed(futs):

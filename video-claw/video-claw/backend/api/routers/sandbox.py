@@ -390,7 +390,11 @@ async def sandbox_video(req: SandboxVideoRequest):
         "ratio": req.ratio,
         "resolution": req.resolution,
         "duration": duration,
+        "fps": req.fps,
+        "short_edge": req.short_edge,
     }
+    # 参数夹取/忽略记录：随响应透出（可用时）
+    adjustments: list = []
     task_id = _start_active_task("video", req.model, input_data)
     try:
         # 生成唯一的保存路径
@@ -398,12 +402,14 @@ async def sandbox_video(req: SandboxVideoRequest):
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}.mp4")
         logger.info(
-            "Sandbox video started: model=%s image=%s ratio=%s resolution=%s duration=%ss",
+            "Sandbox video started: model=%s image=%s ratio=%s resolution=%s duration=%ss fps=%s short_edge=%s",
             req.model,
             bool(req.image),
             req.ratio,
             req.resolution,
             duration,
+            req.fps,
+            req.short_edge,
         )
 
         result = await run_in_threadpool(
@@ -416,6 +422,9 @@ async def sandbox_video(req: SandboxVideoRequest):
             shot_type="multi",
             video_ratio=req.ratio or "16:9",
             resolution=req.resolution or "720P",
+            fps=req.fps,
+            short_edge=req.short_edge,
+            adjustments=adjustments,
         )
         # 保存到历史记录
         record_id = _add_record(
@@ -432,6 +441,7 @@ async def sandbox_video(req: SandboxVideoRequest):
             "result": result,
             "video_path": _converted_video_path(save_path),
             "record_id": record_id,
+            "warnings": adjustments,
         }
     except Exception as e:
         logger.exception("Sandbox video failed: model=%s", req.model)

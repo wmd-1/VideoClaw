@@ -243,6 +243,25 @@ flowchart LR
 - 采用三段式异步任务：创建（multipart 主形态，含文件时必用）→ 轮询任务状态（`GET /v1/videos/{id}`，失败回退列表）→ 下载内容写入 `save_path`；
 - 与内置客户端约定一致：**既落盘又返回远端标识**；轮询有超时上限，失败/超时会尽力取消任务；`api_key` 为空时不发鉴权头（兼容零鉴权本地服务）。
 
+**统一视频参数与协议字段映射**（单点映射构造器，`models/custom_video.py`）：
+
+统一参数：时长 `duration`（整数秒）、画幅 `ratio`、分辨率 `resolution`（档位或显式 `WxH`）、可选 `fps`、可选 `short_edge`。**未提供 fps/short_edge 且模型未声明 short_edge 时，请求与既有实现完全一致（向后兼容）；新字段仅在用户显式设置或模型能力声明触发时注入。**
+
+| 统一参数 | vllm-omni | sglang | openai 兼容 |
+| --- | --- | --- | --- |
+| ratio + resolution | 推导 `width`/`height`（如 16:9+720P → 1280×720）；模型声明 `short_edge` 时改用 `short_edge`+`aspect_ratio`（不再下发 `size`） | `target.aspect_ratio`（+ `target.short_edge`），`size` 保留 | `size`（宽高串，始终下发） |
+| duration（经能力夹取） | `extra_params.duration`（浮点秒）+ 顶层 `seconds` | `target.duration_seconds` + 顶层 `seconds`（三者同源一致） | `seconds` |
+| fps | `fps` 字段（模型声明 `fps` 支持列表时注入，越界夹取到最近支持值） | 不注入（服务端默认） | 不注入 |
+
+**模型能力声明**（自定义模型 `capabilities`，经 `/api/models` 下发到前端联动）：
+
+- `duration: {min, max}`：时长夹取范围（默认 2–10；MiniMax-H3 类模型建议声明 `{min: 4, max: 15}`）；越界夹取到边界并记录；
+- `fps: [24]`：支持的帧率列表；未声明时请求携带的 fps 会被忽略（沿用服务端默认）并记录；
+- `short_edge: 768`：声明后 vllm-omni 走 `short_edge`+`aspect_ratio`、sglang 注入 `target`；
+- `ratios` / `resolutions`：画幅/分辨率可选范围（前端生成配置按此联动过滤）。
+
+**会话级参数**（`generation.*` / 会话 meta，随 `/api/project/start` 与 `PATCH /api/project/{id}/models` 传递）：`video_ratio`、`video_resolution` 既有之外，新增 `video_duration`（会话级时长覆盖，缺省跟随分镜时长）、`video_fps`、`video_short_edge`（缺省不注入）。参数夹取/忽略事实记录在后端日志，沙盒接口响应以 `warnings` 字段透出；任务侧"生成配置 → 高级参数"面板按所选模型能力联动并在切换模型时夹取当前值并提示。
+
 **用户可介入**：
 
 - 取消勾选某些片段（跳过生成/不参与拼接）、修改片段描述（作为提示词）、单片段重生成（`/intervene` → `regenerate_clips`）；
