@@ -275,3 +275,34 @@ self._append_version(item, rewritten, source="agent")             # 再次写入
 **是否可以合并？** **否——修复后可。**
 
 **理由**：整体架构、协议适配、能力夹取、测试脚本质量都在良好水准，OpenSpec 对齐度高，两个“项目已知坑”（status map 过滤、确认按钮状态排除 waiting/stopped）都处理正确。但 **C1 路径穿越漏洞**是零鉴权本地服务下的**任意文件读取 + 静态目录扩散**，属于阻断级安全问题；同时 I1/I2 会在运维真实场景（停用开关 / 网络抖动）造成会话卡死与句柄泄漏。修完 C1、I1、I2 即可放行；I3、I4 建议同批处理，M1-M3 可后续跟进。
+
+> ⚠️ 本结论为 2026-09-28 时点快照。区间后新增提交与两个 OpenSpec 变更的归档改变了部分条目的处置，**最新判定见 §五（2026-09-29 复核与处置）**；上文正文与核对记录保留作历史留档，不再就地修改。
+
+---
+
+## 五、复核与处置（2026-09-29，基于 HEAD `bfea86d`）
+
+本节记录区间 `08502d5..cdea2a1` 之后发生的事实，并对上文条目逐条给出处置。关键背景：
+
+1. **区间后有 3 个后续提交**：`441d18c`（沙盒媒体参考路径白名单、多能力 AND 过滤、sync 直出标识加固）、`5a0052a`（配置/验证脚本加固）、`bfea86d`（Handoff 交接文档）。
+2. **两个 OpenSpec 变更已于 2026-09-29 归档**（`openspec/changes/archive/`）：
+   - `embed-openharness-h3-prompt-writer`——OpenHarness 运行时方案**未被采纳**，改走原生资产内嵌；其知识资产已搬入 `prompts/prompt_rewrite/references/`（逐字节一致 + `VERSION`）；
+   - `minimax-h3-prompt-rewrite-stage`——外部 `design_agent` 数据源方案**作废**（Design_Agent_Platform 已剥离该能力），`prompt_rewrite` 阶段产品形态保留，数据源由活跃变更 **`native-h3-prompt-rewriter`** 以内嵌本地 LLM 调用替换。
+3. 上述原生变更为"换数据源"，引擎阶段注入、产物/版本记录、前端导航三块逻辑不变——因此评审加固项按是否依赖外部会话链路来判定去留。
+
+### 条目处置表（2026-09-29）
+
+| 条目 | 最新状态 | 处置 |
+| --- | --- | --- |
+| C1 | **已修复** | commit `441d18c`：`sandbox.py::_resolve_media_reference_url` 加 `os.path.realpath` + CODE_DIR/TEMP_DIR 白名单校验，越界即抛错；验证 `tmp_verify/verify_sandbox_path_guard.py` |
+| I1 | **承接至 native（未修）** | 逻辑未变，`prompt_rewrite` 仍可经 `h3_rewrite.enable` 关闭 → 死锁风险仍成立。落 `native-h3-prompt-rewriter` tasks **9.1**；细节见 `docs/Handoff 4：…评审加固承接（I1·I4·M1）.md` |
+| I2 | **作废（不再修）** | 数据源内嵌删除了 `DesignAgentClient`/`_ensure_session`/`submit_turn` 整条外部会话链路，无外部句柄可泄漏；`prompt_rewrite_agent.py` 已无相关符号 |
+| I3 | **已修复** | commit `441d18c`：`Sandbox.tsx` 改多能力 AND 过滤（`requiredAbilities` → `fetchVideoModelGroupsByAbility(a,b)`）；验证 `tmp_verify/verify_multi_ability_filter.py` |
+| I4 | **承接至 native（未修）** | `_make_item`（现约 L410）仍直接引用旧 list，版本记录逻辑未变 → 风险仍成立。落 native tasks **9.2** |
+| M1 | **承接至 native（未修）** | 前端 `TopBar.tsx fetchEnabledStages`（L39/L45 两分支）仍不写负缓存，阶段过滤逻辑未变。落 native tasks **9.3** |
+| M2 | **已修复** | commit `441d18c`：sync 直出不再返回指向 POST 端点的伪 URL，改为内容摘要标识 `sync://<sha1>`（读失败回退文件名）；验证 `tmp_verify/verify_sync_remote_id.py` |
+| M3 | **仍未处理（纯洁性）** | `.env.example` 结尾换行缺失，工作树中 `.env.example` 有未提交改动，收尾时一并处理即可 |
+
+### 最新合并判定
+
+**区间内阻断级安全问题（C1）已在 `441d18c` 修复；I2 因架构收敛而作废。** 剩余 **I1 / I4 / M1** 为非阻断健壮性项，已承接进活跃变更 `native-h3-prompt-rewriter`（tasks §9，验收见 Handoff 4），随该变更数据源内嵌工作同批收尾。就本评审区间 `08502d5..cdea2a1` 而言：**安全阻断解除，可合并**；I1/I4/M1 的闭合以 `native-h3-prompt-rewriter` 的 §9 为准，不再挂在已归档的 `minimax-h3-prompt-rewrite-stage` 上。

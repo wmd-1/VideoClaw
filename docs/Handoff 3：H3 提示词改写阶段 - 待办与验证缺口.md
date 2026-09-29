@@ -74,3 +74,11 @@ docker exec video-claw-backend grep -n "{[a-z_]*}" /app/prompts/prompt_rewrite/r
 
 - 本会话**不会**改动 `prompt_rewrite_agent.py`、`orchestrator.py`、`api/routers/stages.py`、`prompts/prompt_rewrite/**`、`frontend/app/settings/page.tsx`、`config.py`、`.env.example`——这些文件当前工作树中混有你们的未提交改动（`h3_rewrite` 重构），为避免打断你们的在途工作，本次提交只包含本会话的独立文件（提交 `5a0052a`）。
 - 待你们收尾后，`config.py` / `config.yaml.example` 中还有一份**本会话的未提交改动**需要一并入库：`DEFAULT_CONFIG["models"]` 与模板 `models` 段改为全空（默认模型必须由用户在设置页或 `.env VC_MODEL_*` 指定，未指定时 start 明确 400），配套文案见已提交的 `api/routers/workflow.py`。
+
+---
+
+## 7. 处置更新（2026-09-29）
+
+- 本文 §5 提到的 `openspec/changes/minimax-h3-prompt-rewrite-stage/tasks.md` 路径**已失效**：该变更连同 `embed-openharness-h3-prompt-writer` 已于 2026-09-29 移入 `openspec/changes/archive/`（外部 `design_agent` 数据源方案作废，产品形态保留）。因此其中"在 minimax 勾选真实部署项"不再适用。
+- 本文缺陷 A/B/C 属**外部数据源收尾遗留**，其验证语义应转由活跃变更 **`native-h3-prompt-rewriter`** 承接（本地 LLM 调用下的失败注入/条目级隔离/模板一致性），断言键名以 `h3_rewrite` 为准。
+- 评审加固项的去留与承接见 `docs/Handoff 4：H3 原生改写器 - 评审加固承接（I1·I4·M1）.md` 与 `native-h3-prompt-rewriter` tasks §9。
