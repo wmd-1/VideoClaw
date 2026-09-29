@@ -34,6 +34,28 @@ def _path_size(path: str) -> int:
     return total
 
 
+def get_allowed_media_roots() -> list[str]:
+    """媒体参考允许引用的根目录（均已 realpath）：CODE_DIR 与 TEMP_DIR。
+
+    上传接口（/api/upload_media）将本地件落在 TEMP_DIR，适配层再将位于 TEMP_DIR 的合法
+    上传件复制到 CODE_DIR 下的静态可访问目录；两者之外的路径均视为越界。
+    """
+    return [os.path.realpath(settings.CODE_DIR), os.path.realpath(settings.TEMP_DIR)]
+
+
+def resolve_within_allowed_dirs(path: str) -> Optional[str]:
+    """将候选路径 realpath 规范化，若落在允许目录（CODE_DIR/TEMP_DIR）内则返回规范化
+    绝对路径，否则返回 None。用于阻断任意文件读取与 `..`/符号链接逃逸（C1）。
+    """
+    if not path:
+        return None
+    real = os.path.realpath(path)
+    for root in get_allowed_media_roots():
+        if real == root or real.startswith(root + os.sep):
+            return real
+    return None
+
+
 @router.post("/api/upload_file")
 async def upload_file(file: UploadFile = File(...)):
     allowed_exts = [".docx", ".doc", ".txt", ".md", ".pdf"]

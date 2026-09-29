@@ -24,6 +24,17 @@ from pipelines.utils import TEMPLATE_FIELD_DEFAULTS, template_custom_fields, tem
 
 router = APIRouter(tags=["Pipelines"])
 
+
+def _split_abilities(ability: Optional[str]) -> Optional[list[str]]:
+    """将 ability 查询参数解析为能力列表（支持逗号分隔的多能力 AND 过滤）。
+
+    单能力与旧行为完全等价；空值返回 None（不过滤）。
+    """
+    if not ability:
+        return None
+    items = [item.strip() for item in ability.split(",") if item.strip()]
+    return items or None
+
 TEMPLATE_DIR = os.path.join(str(BASE_DIR), "templates")
 DEMO_IMAGE_PATH = os.path.join(TEMPLATE_DIR, "demo", "default_image.png")
 TEMPLATE_SIZES = {
@@ -137,7 +148,7 @@ async def get_api_workflows(
     ability: Optional[str] = Query(None),
     verified_only: bool = False,
 ):
-    required = [ability] if ability else None
+    required = _split_abilities(ability)
     return {
         "workflows": list_api_workflows(
             media_type=media_type,
@@ -186,7 +197,7 @@ async def get_api_models(
             "models": models
         }
 
-    required = [ability] if ability else None
+    required = _split_abilities(ability)
     workflows = [
         workflow
         for workflow in list_api_workflows(

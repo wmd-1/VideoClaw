@@ -607,18 +607,18 @@ export default function SandboxPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // 入口过滤：附加音频参考 → audio_reference；附加参考视频 → video_reference。
-  // 未声明对应能力的模型不出现在模型列表（spec: 未声明能力则不可见）
+  // 入口过滤：附加音频参考 → audio_reference；附加参考视频 → video_reference；
+  // 两者同时附加时按多能力 AND 交集过滤，未声明全部所需能力的模型不出现在列表（spec）
   useEffect(() => {
     let cancelled = false;
-    const requiredAbility = activeTool === 'video'
-      ? (audioRefUrl ? 'audio_reference' : videoRefPaths.length > 0 ? 'video_reference' : '')
-      : '';
-    if (!requiredAbility) {
+    const requiredAbilities = activeTool === 'video'
+      ? [audioRefUrl ? 'audio_reference' : null, videoRefPaths.length > 0 ? 'video_reference' : null].filter(Boolean) as string[]
+      : [];
+    if (requiredAbilities.length === 0) {
       setFilteredVideoGroups(null);
       return;
     }
-    fetchVideoModelGroupsByAbility(requiredAbility)
+    fetchVideoModelGroupsByAbility(requiredAbilities.join(','))
       .then(groups => { if (!cancelled) setFilteredVideoGroups(groups); })
       .catch(() => { if (!cancelled) setFilteredVideoGroups(null); });
     return () => { cancelled = true; };

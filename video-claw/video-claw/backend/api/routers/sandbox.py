@@ -18,6 +18,7 @@ from api.schemas.sandbox import (
     SandboxVideoRequest,
 )
 from config import settings
+from api.routers.files import resolve_within_allowed_dirs
 
 router = APIRouter(tags=["Sandbox"])
 logger = logging.getLogger(__name__)
@@ -170,9 +171,10 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     """将音频参考转换为推理服务端可访问的资源地址（D1，不得静默丢弃）。
 
     - 已是 HTTP(S)/data: URL 时原样返回；
-    - 本地文件：位于 /code 静态目录内则直接组装绝对 URL；否则（如 TEMP_DIR 上传件）
+    - 本地文件：先经 realpath 规范化并校验位于 CODE_DIR/TEMP_DIR 白名单内（C1），
+      否则拒绝；位于 CODE_DIR 静态目录内则直接组装绝对 URL；位于 TEMP_DIR 的合法上传件
       先复制到 result/sandbox/uploads，再按 backend 对外基址（request.base_url）+ /code 组装；
-    - 无法定位文件时抛错（明确报错而非退化为无参考请求）。
+    - 越界路径（任意绝对路径 / `..` 逃逸 / 符号链接逃逸）与无法定位文件时抛错（明确报错而非退化）。
 
     注意：跨机部署时该 URL 必须能被推理服务端访问（防火墙/同网段），否则请改填 data: URL。
     """
@@ -181,22 +183,28 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
         raise ValueError("音频参考为空（audio_url 不能为空字符串）")
     if value.startswith(("http://", "https://", "data:")):
         return value
-    code_dir = os.path.abspath(settings.CODE_DIR)
+    code_dir = os.path.realpath(settings.CODE_DIR)
     candidates = []
     if os.path.isabs(value):
-        candidates.append(os.path.abspath(value))
+        candidates.append(value)
     else:
         candidates.append(os.path.join(code_dir, value))
         candidates.append(os.path.join(code_dir, "result", value))
     source = next((path for path in candidates if os.path.isfile(path)), None)
     if not source:
         raise ValueError(f"音频参考文件不存在: {value}")
-    if not source.startswith(code_dir + os.sep):
-        os.makedirs(SANDBOX_MEDIA_UPLOAD_DIR, exist_ok=True)
-        target = os.path.join(SANDBOX_MEDIA_UPLOAD_DIR, f"{uuid.uuid4().hex[:8]}_{os.path.basename(source)}")
-        shutil.copy2(source, target)
-        source = target
-    relative = os.path.relpath(source, code_dir).replace(os.sep, "/")
+    # C1 白名单校验：realpath 规范化后必须位于 CODE_DIR/TEMP_DIR 内，阻断越界/`..`/符号链接逃逸
+    safe_source = resolve_within_allowed_dirs(source)
+    if not safe_source:
+        raise ValueError(f"音频参考路径越界（仅允许 code/temp 目录内的文件）: {value}")
+    if not safe_source.startswith(code_dir + os.sep):
+        # 位于 TEMP_DIR 的合法上传件 → 复制到 /code 静态可访问目录供推理端拉取
+        upload_dir = os.path.realpath(SANDBOX_MEDIA_UPLOAD_DIR)
+        os.makedirs(upload_dir, exist_ok=True)
+        target = os.path.join(upload_dir, f"{uuid.uuid4().hex[:8]}_{os.path.basename(safe_source)}")
+        shutil.copy2(safe_source, target)
+        safe_source = target
+    relative = os.path.relpath(safe_source, code_dir).replace(os.sep, "/")
     return base_url.rstrip("/") + "/code/" + relative
 
 

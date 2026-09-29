@@ -966,7 +966,8 @@ def list_api_models(
     if verified_only:
         records = [record for record in records if record.get("api_contract_verified", True)]
     if required:
-        records = [record for record in records if required.intersection(model_ability_tags(record))]
+        # 多能力 AND 交集：模型必须声明全部所需能力才入选（单能力时与旧的命中行为等价）
+        records = [record for record in records if required.issubset(model_ability_tags(record))]
     return records
 
 

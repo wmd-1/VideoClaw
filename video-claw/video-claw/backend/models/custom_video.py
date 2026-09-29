@@ -7,6 +7,7 @@
 轮询有超时上限；失败时尽力取消任务。
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -112,6 +113,7 @@ class CustomVideoClient:
             resolution=resolution,
             fps=fps,
             short_edge=short_edge,
+            has_image=bool(image_path or last_image_path or reference_image_paths),
         )
         # vllm-omni：优先 /videos/sync（一次请求直出视频字节，官方 recipes 主形态）；
         # 端点不可用（404/405/非视频响应）时回退异步三段式。
@@ -132,7 +134,7 @@ class CustomVideoClient:
                 drop_size=drop_size,
             )
             if sync_error is None:
-                return f"{self._base_url}/videos/sync"
+                return self._sync_remote_identifier(save_path)
             logger.info("vllm-omni sync unavailable (%s); falling back to async job flow", sync_error)
         job = self._create_job(
             prompt=prompt,
@@ -168,6 +170,22 @@ class CustomVideoClient:
         return remote_url
 
     # ── 参数与创建 ──
+
+    @staticmethod
+    def _sync_remote_identifier(save_path: str) -> str:
+        """vllm-omni sync 直出成功后的本地标识（M2）。
+
+        同步直出已一次写入完整字节、无远端可重取地址，因此不返回指向 POST 端点的伪 URL；
+        以内容摘要构成可解释的本地标识 `sync://<sha1>`（读取失败时退回文件名）。
+        """
+        try:
+            digest = hashlib.sha1()
+            with open(save_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+            return f"sync://{digest.hexdigest()[:16]}"
+        except OSError:
+            return f"sync://{os.path.basename(save_path)}"
 
     def _capabilities(self) -> Dict[str, Any]:
         caps = self._meta.get("capabilities")
@@ -250,6 +268,7 @@ class CustomVideoClient:
         resolution: Optional[str],
         fps: Optional[int],
         short_edge: Optional[int],
+        has_image: bool = False,
     ) -> Tuple[Dict[str, str], Dict[str, Any], bool]:
         """统一参数 → 协议字段（单点映射构造器，D1 映射矩阵）。
 
@@ -281,9 +300,9 @@ class CustomVideoClient:
             if fps_value is not None:
                 protocol_fields["fps"] = str(fps_value)
         elif self._protocol == "sglang":
-            target = self._sglang_target(duration, video_ratio, short_edge)
-            if target is not None:
-                json_fields["target"] = target
+            # MiniMax-H3 服务端将 target 视为必填对象（缺失即 400），因此无条件注入
+            target = self._sglang_target(duration, video_ratio, short_edge, resolution, has_image)
+            json_fields["target"] = target
         # openai 兼容：沿用 size/seconds，不注入新字段
         return protocol_fields, json_fields, drop_size
 
@@ -292,18 +311,25 @@ class CustomVideoClient:
         duration: int,
         video_ratio: str,
         short_edge: Optional[int],
-    ) -> Optional[Dict[str, Any]]:
+        resolution: Optional[str],
+        has_image: bool = False,
+    ) -> Dict[str, Any]:
         """sglang 官方 cookbook 的 target 结构：short_edge/aspect_ratio/duration_seconds。
 
-        仅在 short_edge 可用（模型声明或用户显式指定）时注入；duration_seconds 与
-        顶层 seconds 由同一 clamped duration 派生，保证一致（D3）。
+        short_edge 优先取模型声明/用户显式值，否则由 ratio+resolution 推导的短边兜底
+        （服务端必填，不可省略）；aspect_ratio 在有参考图时用 auto（服务端按帧推导）。
+        duration_seconds 与顶层 seconds 由同一 clamped duration 派生，保证一致（D3）。
         """
         short_edge_value = self._short_edge_value(short_edge)
         if short_edge_value is None:
-            return None
+            try:
+                width_str, height_str = video_size(video_ratio, resolution).split("x", 1)
+                short_edge_value = min(int(width_str), int(height_str))
+            except (ValueError, AttributeError):
+                short_edge_value = 768
         return {
             "short_edge": int(short_edge_value),
-            "aspect_ratio": video_ratio or "16:9",
+            "aspect_ratio": "auto" if has_image else (video_ratio or "16:9"),
             "duration_seconds": int(duration),
         }
 

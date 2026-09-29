@@ -108,7 +108,7 @@ check("vllm-omni 含 extra_params 且 task=fl2va", '"task": "fl2va"' in text, te
 check("vllm-omni 含 frame_indices [0, -1]", "[0, -1]" in text, "")
 check("vllm-omni 两个同名 input_references 文件字段", text.count('name="input_references"') == 2, str(text.count('name="input_references"')))
 check("vllm-omni 产物落盘", os.path.exists(save1) and os.path.getsize(save1) > 0, f"{os.path.getsize(save1) if os.path.exists(save1) else 0}B")
-check("vllm-omni 返回远端标识", remote1.startswith(f"http://127.0.0.1:{port}"), remote1)
+check("vllm-omni sync 直出返回本地 sync 标识", remote1.startswith("sync://") and not remote1.startswith("http"), remote1)
 
 # 2) sglang 文生：真实 JSON 请求（task 必填）
 save2 = "/tmp/h3_e2e_t2v.mp4"
@@ -140,7 +140,7 @@ check("sync 端点为 /videos/sync", rec3["path"].endswith("/videos/sync"), rec3
 check("sync 含 extra_params task=fl2va", '"task": "fl2va"' in sync_text, "")
 check("sync 流程仅一次请求（无异步创建）", len(RECORDS) == 3, str(len(RECORDS)))
 check("sync 产物落盘", os.path.exists(save3) and os.path.getsize(save3) > 0, f"{os.path.getsize(save3) if os.path.exists(save3) else 0}B")
-check("sync 返回远端标识为 sync 端点", remote3.endswith("/videos/sync"), remote3)
+check("sync 返回本地内容摘要标识（非伪端点 URL）", remote3.startswith("sync://") and "/videos/sync" not in remote3, remote3)
 
 # ── 媒体参考场景（vllm-omni ref2va 音视频参考） ──
 v1, v2 = "/tmp/h3_e2e_v1.mp4", "/tmp/h3_e2e_v2.mp4"
