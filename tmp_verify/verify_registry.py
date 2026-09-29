@@ -56,7 +56,11 @@ check(
     kind == "custom" and meta["protocol"] == "openai" and meta["request_model"] == "Qwen3-32B",
     str(meta)[:120],
 )
-check("1.5 provider_label 取供应商显示名", meta.get("provider_label") == "本地 OpenAI 兼容")
+check(
+    "1.5 provider_label 恒为供应商 key（显示名已移除）",
+    meta.get("provider_label") == "mock-openai",
+    str(meta.get("provider_label")),
+)
 check("1.5 resolve 内置精确", cm.resolve_model_entry("wan2.7-image")[0] == "builtin")
 check("1.5 resolve 未注册", cm.resolve_model_entry("no-such-model-xyz")[0] == "unknown")
 

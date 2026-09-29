@@ -121,6 +121,20 @@ check(
 v = sg._create_variants([[]], "t2va", 5)
 check("sglang 文生：JSON 含 conditions=[]", v[0][2].get("conditions") == [], str(v[0][2]))
 
+# sglang target 为服务端必填：未声明 short_edge 也必须注入（由分辨率推导短边）
+cap = {"id": "m", "request_model": "x", "base_url": "http://127.0.0.1:1/v1", "protocol": "sglang", "api_key": ""}
+sg_no_cap = CustomVideoClient(cap)
+target_plain = sg_no_cap._sglang_target(5, "16:9", None, "720P", False)
+check(
+    "sglang target 无条件注入（未声明 short_edge 时由分辨率推导）",
+    target_plain["short_edge"] == 720 and target_plain["aspect_ratio"] == "16:9" and target_plain["duration_seconds"] == 5,
+    str(target_plain),
+)
+target_img = sg_no_cap._sglang_target(5, "16:9", None, "720P", True)
+check("sglang 含参考图时 aspect_ratio=auto", target_img["aspect_ratio"] == "auto", str(target_img))
+_fields, _json_fields, _drop = sg_no_cap._map_protocol_params(5, "16:9", "720P", None, None)
+check("map_protocol_params 为 sglang 注入 target", _json_fields.get("target") is not None, str(_json_fields))
+
 # ── openai：保持原形态（无 task/extra_params） ──
 op = make_client("openai")
 

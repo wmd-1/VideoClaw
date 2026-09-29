@@ -3,6 +3,7 @@
 运行：docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_prune.py
 """
 import json
+import os
 import sys
 import urllib.request
 
@@ -10,6 +11,7 @@ sys.path.insert(0, "/app")
 import yaml  # noqa: E402
 import config as config_module  # noqa: E402
 from config import CONFIG_PATH  # noqa: E402
+from models.config_model import resolve_model_entry  # noqa: E402
 
 BUILTINS = {"openai", "gemini", "deepseek", "dashscope", "ark", "kling"}
 LOCALS = {"local_llm", "local_vlm", "local_image_t2i", "local_image_it2i", "local_video"}
@@ -35,15 +37,16 @@ with CONFIG_PATH.open("r", encoding="utf-8") as f:
     raw = yaml.safe_load(f) or {}
 raw_keys = set((raw.get("api_providers") or {}).keys())
 check("配置文件无内置供应商键", not (raw_keys & BUILTINS), str(sorted(raw_keys)))
-check("配置文件含 local_* 供应商", LOCALS <= raw_keys)
-check("默认模型指向 local-*",
-      raw["models"]["llm"] == "local-llm" and raw["models"]["image_it2i"] == "local-image-it2i"
-      and raw["models"]["video_first_frame"] == "local-video")
-check("custom_models 共 5 条", len(raw.get("custom_models") or []) == 5,
-      str([m.get("id") for m in raw.get("custom_models") or []]))
+custom_file_providers = raw_keys - BUILTINS - {"common"}
+check("配置文件含自定义供应商", bool(custom_file_providers), str(sorted(custom_file_providers)))
+model_ids = {m.get("id") for m in raw.get("custom_models", [])}
+check("默认模型无悬空引用（models.* 均可解析）",
+      all(resolve_model_entry(str(v))[0] != "unknown" for v in (raw.get("models") or {}).values() if v),
+      str(raw.get("models")))
+check("custom_models 非空", bool(model_ids), str(sorted(model_ids)))
 
 # 3) API 级：模拟设置页保存（载荷=有效配置，含内置 stub）→ 文件不得写回内置
-BASE = "http://127.0.0.1:8000"
+BASE = f"http://127.0.0.1:{os.environ.get('BACKEND_PORT', '8000')}"  # 容器内外同端口
 
 
 def req(method, path, payload=None):
@@ -62,8 +65,8 @@ with CONFIG_PATH.open("r", encoding="utf-8") as f:
     after_raw = yaml.safe_load(f) or {}
 after_keys = set((after_raw.get("api_providers") or {}).keys())
 check("保存后文件仍无内置供应商", not (after_keys & BUILTINS), str(sorted(after_keys)))
-check("保存后 local_* 保留", LOCALS <= after_keys)
-check("保存后默认模型仍为 local-*", saved["config"]["models"]["llm"] == "local-llm")
+check("保存后自定义供应商保留", custom_file_providers <= after_keys, str(sorted(after_keys)))
+check("保存后默认模型不变", saved["config"]["models"] == raw.get("models"), str(saved["config"]["models"]))
 
 print(f"\n{'ALL PASS' if not failures else 'FAILED: ' + ', '.join(failures)}")
 sys.exit(0 if not failures else 1)

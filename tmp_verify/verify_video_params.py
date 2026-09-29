@@ -129,7 +129,13 @@ check("1.1 vllm-omni 默认 extra_params.duration=5.0", '"duration": 5.0' in f.g
 RECORDS.clear()
 make("sglang", {"duration": {"min": 2, "max": 10}}).generate_video(prompt="t", image_path=None, save_path="/tmp/vp_s.mp4", duration=5)
 payload = json.loads(last_record()["body"])
-check("1.1 sglang 默认无 target", "target" not in payload, str(sorted(payload)))
+check(
+    "1.1 sglang 默认也含 target（服务端必填，缺失即 400）",
+    isinstance(payload.get("target"), dict)
+    and payload["target"].get("short_edge") == 720
+    and payload["target"].get("duration_seconds") == 5,
+    str(payload.get("target")),
+)
 check("1.1 sglang 默认 seconds=5", payload.get("seconds") == "5", str(payload.get("seconds")))
 
 # ═══ 1.1 触发路径：vllm-omni width/height + fps ═══

@@ -1,5 +1,6 @@
 """验证 /api/models 仅返回可用模型（未配置的内置模型被过滤，补齐凭据后自动回归）。"""
 import json
+import os
 import sys
 import urllib.request
 
@@ -7,7 +8,7 @@ sys.path.insert(0, "/app")
 import config as config_module  # noqa: E402
 from models.config_model import model_availability  # noqa: E402
 
-BASE = "http://127.0.0.1:8000"
+BASE = f"http://127.0.0.1:{os.environ.get('BACKEND_PORT', '8000')}"  # 容器内外同端口
 failures = []
 
 
@@ -22,21 +23,20 @@ def get(path):
         return json.loads(r.read().decode())
 
 
-for mt, expect in (
-    ("llm", {"local-llm"}),
-    ("vlm", {"local-vlm"}),
-    ("t2i", {"local-image-t2i"}),
-    ("i2i", {"local-image-it2i"}),
-    ("video", {"local-video"}),
-):
+custom_ids = {m["id"] for m in get("/api/config")["config"]["custom_models"]}
+for mt in ("llm", "vlm", "t2i", "i2i", "video"):
     ids = {m["id"] for m in get(f"/api/models?model_type={mt}")["models"]}
-    check(f"model_type={mt} 仅返回可用 local 模型", ids == expect, str(sorted(ids)))
+    check(
+        f"model_type={mt} 仅返回可用模型（无凭据的内置被过滤）",
+        bool(ids) and ids <= custom_ids,
+        str(sorted(ids))[:140],
+    )
 
 ids = {m["id"] for m in get("/api/models")["models"]}
-check("媒体工作流列表仅 local-*", ids and ids <= {"local-image-t2i", "local-image-it2i", "local-video"}, str(sorted(ids)))
+check("媒体工作流列表为可用模型子集", bool(ids) and ids <= custom_ids, str(sorted(ids))[:140])
 
 ids = {m["id"] for m in get("/api/models?media_type=video&ability=first_frame_i2v&verified_only=true")["models"]}
-check("Pipeline 查询（first_frame_i2v）含 local-video", ids == {"local-video"}, str(sorted(ids)))
+check("Pipeline 查询（first_frame_i2v）返回可用视频模型子集", bool(ids) and ids <= custom_ids, str(sorted(ids))[:140])
 
 # 联动：补齐内置凭据后自动回归列表（进程内模拟，不影响运行中的服务）
 before = model_availability("qwen3.5-plus")

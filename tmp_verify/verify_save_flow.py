@@ -3,10 +3,11 @@
 运行：docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_save_flow.py
 """
 import json
+import os
 import sys
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
+BASE = f"http://127.0.0.1:{os.environ.get('BACKEND_PORT', '8000')}"  # 容器内外同端口
 
 
 def req(method, path, payload=None):
@@ -59,7 +60,11 @@ check("删除后恢复内置集合", final_keys == before_keys, str(final_keys))
 check("custom_models 未受影响", [m.get("id") for m in restored["config"].get("custom_models", [])] == before_models)
 
 final = req("GET", "/api/config")["config"]
-check("终态干净（无 local_llm）", "local_llm" not in final.get("api_providers", {}))
+check(
+    "终态回到基线（供应商集合与初始一致）",
+    sorted(final.get("api_providers", {}).keys()) == sorted(current.get("api_providers", {}).keys()),
+    str(sorted(set(final.get("api_providers", {})) ^ set(current.get("api_providers", {})))),
+)
 
 print(f"\n{'ALL PASS' if not failures else 'FAILED: ' + ', '.join(failures)}")
 sys.exit(0 if not failures else 1)

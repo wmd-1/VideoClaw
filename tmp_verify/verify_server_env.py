@@ -3,6 +3,7 @@
 运行：docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_server_env.py
 """
 import copy
+import os
 import sys
 
 sys.path.insert(0, "/app")
@@ -64,7 +65,12 @@ check("非法 server.port 被忽略", eff4["server"]["port"] == 8000)
 # 3) 容器进程环境实际收集与运行配置
 real_env = config_module._load_env_sources()
 check("进程环境收集 BACKEND_PORT", "BACKEND_PORT" in real_env, str(real_env.get("BACKEND_PORT")))
-check("运行中 Config server.port 对齐 .env", int(Config.CONFIG["server"]["port"]) == 8000, f"={Config.CONFIG['server']['port']}")
+_running_port = int(os.environ.get("BACKEND_PORT", "8000"))
+check(
+    "运行中 Config server.port 对齐 .env",
+    int(Config.CONFIG["server"]["port"]) == _running_port,
+    f"config={Config.CONFIG['server']['port']} expect={_running_port}",
+)
 
 # 4) 适配层错误信息携带目标地址与容器网络提示
 from models.custom_common import connection_hint  # noqa: E402

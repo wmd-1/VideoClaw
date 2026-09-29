@@ -48,7 +48,10 @@ def _require_model_fields(values: dict) -> None:
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Missing required model configuration: {', '.join(missing)}",
+            detail=(
+                f"Missing required model configuration: {', '.join(missing)}"
+                "（默认模型未配置：请在「设置 → Default Models」选择，或在开始生成页重新指定）"
+            ),
         )
 
 
