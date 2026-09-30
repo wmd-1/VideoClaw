@@ -73,13 +73,13 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
   {
     title: 'H3 提示词改写',
     description:
-      '主流程「提示词改写」阶段（原生实现：知识资产内嵌，本地 LLM 调用）。enable=false（默认）时主流程保持基础六阶段，该阶段不出现在流程与导航中；enable=true 后在参考图与视频生成之间生效。grounding_enable 独立控制 VLM 参考图看图（关闭后退化为纯文本输入，模式不变）。',
+      '主流程「提示词改写」阶段（原生实现：知识资产内嵌，本地 LLM 调用）。enable=false（默认）时主流程保持基础六阶段，该阶段不出现在流程与导航中；enable=true 后在参考图与视频生成之间生效。grounding_enable 独立控制 VLM 参考图看图（关闭后退化为纯文本输入，模式不变；未配置可用 VLM 或看图失败时同样条目级降级，阶段完成日志汇总降级数）。',
     fields: [
       { path: 'h3_rewrite.enable', label: 'enable 启用提示词改写阶段', type: 'boolean' },
       { path: 'h3_rewrite.grounding_enable', label: 'grounding_enable VLM 参考图看图（独立开关）', type: 'boolean' },
       { path: 'h3_rewrite.llm_model', label: 'llm_model 改写用模型（留空回退会话 llm）', type: 'text' },
       { path: 'h3_rewrite.vlm_model', label: 'vlm_model 看图用 VLM 模型（留空回退会话 vlm）', type: 'text' },
-      { path: 'h3_rewrite.temperature', label: 'temperature 采样温度（预留字段）', type: 'text' },
+      { path: 'h3_rewrite.temperature', label: 'temperature 采样温度（当前未生效，预留）', type: 'text' },
     ],
   },
 ];

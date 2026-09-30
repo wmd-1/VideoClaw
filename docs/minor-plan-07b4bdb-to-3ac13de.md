@@ -2,6 +2,8 @@
 
 > 日期：2026-09-30　基线：HEAD `3ac13de`（C-1/I-A 已修复）
 > 本方案先经确认再实施；各项均已核实当前代码现状（含行号）。
+>
+> **实施状态（2026-09-30）**：按推荐组合（M-c=采纳现状、M-d=仅加汇总日志、M-e=维持预留）全部落地：M-a ✅ / M-b ✅ / M-c ✅（design.md 修订）/ M-d ✅（5c4/5c5 断言）/ M-e ✅（文案）/ M-f ✅（动态精确断言+灵敏度抽测）；容器内 7 套验证全绿，前端 tsc 零错误。实施中发现并修复一处验证脚本自身问题（捕获 handler 未设 logger 级别导致 INFO 被滤，属测试环境默认 WARNING 所致，应用自身日志已配 INFO）。openspec 落点：native-h3-prompt-rewriter tasks 10.1-10.4、video-audio-video-references tasks 7.5、video-generation-parameter-system tasks 6.1。
 
 ## 总览
 

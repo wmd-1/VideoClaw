@@ -193,21 +193,42 @@ result5b = asyncio.run(agent5.process(make_input(REF_ART), intervention={"regene
 check("5b1 重生成只返回目标条目", [i["id"] for i in result5b["payload"]["items"]] == ["seg_01_01"])
 check("5b2 缓存命中零 VLM 调用", agent5._vlm.calls == 2, f"calls={agent5._vlm.calls}")
 
-# 5c VLM 失败回退：模式不变 + text_only
+# 5c VLM 失败回退：模式不变 + text_only +（M-d）阶段完成汇总降级日志
 class BoomVLM:
     def query(self, *a, **k):
         raise RuntimeError("vlm down")
 
 
-agent5c = PromptRewriteAgent()
-agent5c.set_progress_callback(lambda *a, **k: None)
-agent5c._llm = FakeLLM([GOOD_LLM_OUT])
-agent5c._vlm = BoomVLM()
-result5c = asyncio.run(agent5c.process(make_input(REF_ART)))
-item5c = result5c["payload"]["items"][0]
-check("5c1 VLM 失败不阻塞（改写成功）", item5c["status"] == "done", item5c.get("error", ""))
-check("5c2 模式保持 I2VA 不降级", item5c["input_mode"] == "I2VA")
-check("5c3 text_only 标记", item5c.get("grounding", {}).get("text_only") is True)
+import logging as _logging
+_captured: list = []
+
+
+class _CapHandler(_logging.Handler):
+    def emit(self, record):
+        _captured.append(record.getMessage())
+
+
+_agent_logger = _logging.getLogger("core.agents.prompt_rewrite_agent")
+_agent_logger.setLevel(_logging.DEBUG)  # 脚本环境根 logger 默认 WARNING，不设级别会过滤掉 INFO 汇总（容器内应用自身已配 INFO）
+_handler = _CapHandler()
+_agent_logger.addHandler(_handler)
+try:
+    agent5c = PromptRewriteAgent()
+    agent5c.set_progress_callback(lambda *a, **k: None)
+    agent5c._llm = FakeLLM([GOOD_LLM_OUT, GOOD_LLM_OUT])
+    agent5c._vlm = BoomVLM()
+    result5c = asyncio.run(agent5c.process(make_input(REF_ART)))
+    items5c = result5c["payload"]["items"]
+    item5c = items5c[0]
+    check("5c1 VLM 失败不阻塞（改写成功）", item5c["status"] == "done", item5c.get("error", ""))
+    check("5c2 模式保持 I2VA 不降级", item5c["input_mode"] == "I2VA")
+    check("5c3 text_only 标记", item5c.get("grounding", {}).get("text_only") is True)
+    check("5c4 全分镜降级标记（M-d）", all(i.get("grounding", {}).get("text_only") for i in items5c),
+          str([i.get("grounding") for i in items5c])[:120])
+    check("5c5 阶段完成汇总降级日志（M-d）",
+          any("grounding 降级 2/2" in m for m in _captured), str(_captured)[-160:])
+finally:
+    _agent_logger.removeHandler(_handler)
 
 # 5d grounding 开关关闭 → 零 VLM 调用、模式不变
 config.Config.H3_REWRITE_GROUNDING_ENABLED = False

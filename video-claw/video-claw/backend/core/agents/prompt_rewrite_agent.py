@@ -485,6 +485,7 @@ class PromptRewriteAgent(AgentInterface):
         continuity_summaries: List[str] = list(continuity_seeds or [])
         results: Dict[str, Dict[str, Any]] = {}
         total = len(segments)
+        grounding_degraded = 0  # M-d：text_only 降级条目计数，阶段完成时汇总可见
         for i, segment in enumerate(segments):
             self._check_cancel()
             prev_item = prev_items_by_id.get(segment["id"])
@@ -516,6 +517,7 @@ class PromptRewriteAgent(AgentInterface):
                                   "described": bool(grounding_desc)}
             elif mode in ("I2VA", "FL2VA", "Ref2VA"):
                 grounding_meta = {"described": False, "text_only": True}
+                grounding_degraded += 1
             else:
                 grounding_meta = None
 
@@ -561,6 +563,12 @@ class PromptRewriteAgent(AgentInterface):
                         "error": item.get("error"),
                     }
                 },
+            )
+        if grounding_degraded:
+            logger.info(
+                "prompt_rewrite: grounding 降级 %d/%d 条目（text_only，H3 模式不变；检查 VLM 配置或看图服务）",
+                grounding_degraded,
+                total,
             )
         return results
 
