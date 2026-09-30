@@ -31,17 +31,25 @@ export type StageId = typeof STAGES[number]['id'];
 export const DEFAULT_ENABLED_STAGES: string[] = STAGES.map(s => s.id).filter(id => id !== 'prompt_rewrite');
 
 let cachedEnabledStages: string[] | null = null;
+// 负缓存：后端停机/异常时避免组件随重挂反复打 /api/stages（短 TTL 后允许重试）
+let negativeCacheUntil = 0;
+const NEGATIVE_CACHE_TTL_MS = 60_000;
 
 async function fetchEnabledStages(): Promise<string[]> {
   if (cachedEnabledStages) return cachedEnabledStages;
+  if (Date.now() < negativeCacheUntil) return DEFAULT_ENABLED_STAGES;
   try {
     const resp = await fetch('/api/stages');
-    if (!resp.ok) return DEFAULT_ENABLED_STAGES;
+    if (!resp.ok) {
+      negativeCacheUntil = Date.now() + NEGATIVE_CACHE_TTL_MS;
+      return DEFAULT_ENABLED_STAGES;
+    }
     const data = await resp.json();
     const ids: string[] = (data?.stages || []).map((s: any) => s?.id).filter(Boolean);
     const valid = ids.filter(id => STAGES.some(s => s.id === id));
     cachedEnabledStages = valid.length ? valid : DEFAULT_ENABLED_STAGES;
   } catch {
+    negativeCacheUntil = Date.now() + NEGATIVE_CACHE_TTL_MS;
     return DEFAULT_ENABLED_STAGES;
   }
   return cachedEnabledStages;

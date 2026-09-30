@@ -75,15 +75,19 @@ api_providers:
   #   api_key: ''
   #   enable_proxy: false
 
+# 默认模型：留空表示未配置。请在 WebUI「设置 → Default Models」选择，
+# 或在 .env 用 VC_MODEL_LLM / VC_MODEL_VLM / VC_MODEL_IMAGE_T2I / VC_MODEL_IMAGE_IT2I /
+# VC_MODEL_VIDEO_FIRST_FRAME|VIDEO_START_END|VIDEO_REFERENCE 指定。
+# 未选择时启动工作流会被校验拦下（Missing required model configuration），避免悬空引用隐式失败。
 models:
-  llm: local-llm
-  vlm: local-vlm
-  image_it2i: local-image-it2i
-  image_t2i: local-image-t2i
-  video: local-video
-  video_first_frame: local-video
-  video_start_end: local-video
-  video_reference: local-video   # 参考图生视频需模型支持 reference_to_video 能力
+  llm: ''
+  vlm: ''
+  image_it2i: ''
+  image_t2i: ''
+  video: ''
+  video_first_frame: ''
+  video_start_end: ''
+  video_reference: ''
 
 generation:
   style: realistic
@@ -91,15 +95,20 @@ generation:
   video_resolution: 720P
   video_generation_mode: first_frame
 
-# 提示词改写服务（Design Agent Platform）：enable=false（默认）时主流程保持原六阶段，
+# 原生 H3 提示词改写：enable=false（默认）时主流程保持基础六阶段，
 # 该阶段不出现在工作流引擎 / GET /api/stages / 前端导航中。
-# enable=true 时在「参考图」与「视频」之间注入「提示词改写」阶段，
-# base_url 填 Design Agent Platform 服务地址（如 http://host:8001，自动拼接 /design_agent 前缀）。
-design_agent:
+# enable=true 时在「参考图」与「视频」之间注入「提示词改写」阶段（本地 LLM 调用，
+# 知识资产内嵌于 prompts/prompt_rewrite/，无外部服务依赖）。
+h3_rewrite:
   enable: false
-  base_url: ''
-  api_key: ''
-  login_name: videoclaw   # 外部平台身份头 X-User-Login-Name 取值
+  # VLM 参考图 grounding 独立开关（与 enable 正交；关闭时改写退化为纯文本输入，模式不变）
+  grounding_enable: true
+  # 改写用 LLM 模型（留空回退会话 llm 模型）
+  llm_model: ''
+  # grounding 用 VLM 模型（留空回退会话 vlm 模型）
+  vlm_model: ''
+  # 采样温度（预留字段）
+  temperature: 0.3
 
 # 自定义模型注册：通过 provider 引用上面的供应商；types 取值 llm/vlm/t2i/i2i/video；
 # concurrency 缺省 1（本地单卡服务最保守）；model 为实际请求的模型名，按部署修改。

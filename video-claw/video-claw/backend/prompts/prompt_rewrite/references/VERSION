@@ -1,0 +1,11 @@
+# H3 Prompt Writing 知识资产来源清单
+# 官方 Skill 更新时 diff 此清单判断是否需要同步
+source: MiniMax-AI/MiniMax-H3 skills/h3-prompt-writing
+via: Design_Agent_Platform skills/h3-prompt-writing（openspec/changes/embed-openharness-h3-prompt-writer/assets/ 交接）
+skill: h3-prompt-writing
+imported_at: 2026-09-28
+# 内容 hash（sha256，逐字节原样保留，不做任何改写）
+base-en.txt: 2cfebc096a6e08370f288d468d90b60f7f9bcb938f94bf090816e910e48e75fc
+ref-en.txt: 1e574f356716ad55612247ffb7bbccbcdb484ad96599d63c7dca1af186b1fab7
+# 说明：SKILL.md（40 行）不作为运行时文件加载——其工作流语义与输出规范经提炼
+# 进入 ../system_zh.txt；运行时消费的是 system_zh.txt + 本目录两份指南原文。

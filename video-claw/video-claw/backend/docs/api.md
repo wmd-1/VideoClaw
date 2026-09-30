@@ -318,7 +318,7 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
 
 ### 10. 获取阶段列表
 
-获取当前启用的阶段列表。`prompt_rewrite`（提示词改写）阶段仅在 `design_agent.enable=true`（config.yaml 或 `.env` 的 `VC_DESIGN_AGENT__ENABLE`）时出现于 `reference_generation` 与 `video_generation` 之间；默认禁用时返回原六阶段。
+获取当前启用的阶段列表。`prompt_rewrite`（提示词改写）阶段仅在 `h3_rewrite.enable=true`（config.yaml 或 `.env` 的 `VC_H3_REWRITE__ENABLE`）时出现于 `reference_generation` 与 `video_generation` 之间；默认禁用时返回基础六阶段。
 
 **接口**: `GET /api/stages`
 
@@ -339,7 +339,7 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
 ```
 
 **提示词改写阶段说明**：
-- 执行：与其他阶段一致，`POST /api/project/{session_id}/execute/prompt_rewrite`（要求分镜阶段已完成；未启用或未配置 `design_agent.base_url` 时返回明确错误）。
+- 执行：与其他阶段一致，`POST /api/project/{session_id}/execute/prompt_rewrite`（要求分镜阶段已完成；未启用 `h3_rewrite.enable` 时返回明确错误）。改写为本地 LLM 调用（知识资产内嵌），正常路径每分镜 1 次 LLM 调用，结构校验失败最多追加 2 次修订调用。
 - 停点：执行完成后进入 waiting，等待用户确认或干预。
 - 干预（`POST /api/project/{session_id}/intervene`，stage=prompt_rewrite）：
   - `{"regenerate_items": ["seg_01_01", ...]}`：单条目重生成（后台执行，复用外部改写会话）；

@@ -39,7 +39,7 @@ Session 数据存储在 `code/data/sessions/{session_id}.json`，包含完整的
 
 ## Stages Completed 阶段列表
 
-按顺序完成的所有阶段（`design_agent.enable=true` 时含 `prompt_rewrite`，默认禁用时不含）：
+按顺序完成的所有阶段（`h3_rewrite.enable=true` 时含 `prompt_rewrite`，默认禁用时不含）：
 ```
 script_generation → character_design → storyboard → reference_generation → [prompt_rewrite] → video_generation → post_production
 ```
@@ -196,11 +196,10 @@ script_generation → character_design → storyboard → reference_generation �
 
 > **注意**：`clips[].id` = `storyboard.episodes[].segments[].segment_id`
 
-### 6. prompt_rewrite（提示词改写，仅 `design_agent.enable=true` 时存在）
+### 6. prompt_rewrite（提示词改写，仅 `h3_rewrite.enable=true` 时存在）
 
 ```json
 {
-  "session_id": "...（外部 Design Agent Platform 会话 ID，用于复用/追加轮次）",
   "items": [
     {
       "id": "seg_01_01",
@@ -211,6 +210,8 @@ script_generation → character_design → storyboard → reference_generation �
       "input_mode": "T2VA",
       "duration": 8,
       "selected": "",
+      "continuity": "主体与风格连续性摘要（供后续分镜注入）",
+      "grounding": {"image_hash": "参考图内容指纹", "described": true},
       "versions": [
         {"content": "历史版本文本", "source": "agent/user/superseded", "created_at": "ISO 时间"}
       ],
@@ -220,6 +221,11 @@ script_generation → character_design → storyboard → reference_generation �
   ]
 }
 ```
+
+> **注意**：改写为本地 LLM 调用（知识资产内嵌于 `prompts/prompt_rewrite/`），无外部会话；
+> `input_mode` 由 mode resolver 从 `video_generation_mode` 与素材角色推导（两级模式契约见
+> `openspec/changes/native-h3-prompt-rewriter/` 引用的决策文档 §5.2）；`grounding.text_only=true`
+> 表示该条目在无 VLM 描述的情况下完成改写（模式不变）。
 
 > **注意**：
 > - `items[].id` = `storyboard.episodes[].segments[].segment_id`，跨阶段关联

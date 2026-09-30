@@ -64,15 +64,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "enable_proxy": False,
         },
     },
+    # 默认模型留空：必须由用户在设置页选择（或 .env 用 VC_MODEL_* 指定）后才能启动工作流。
+    # 写死内置默认会造成“引用未配置的供应商/悬空模型”的隐式失败。
     "models": {
-        "llm": "qwen3.5-plus",
-        "vlm": "qwen3.5-plus",
-        "image_it2i": "doubao-seedream-5-0-260128",
-        "image_t2i": "doubao-seedream-5-0-260128",
-        "video": "wan2.7-i2v",
-        "video_first_frame": "wan2.7-i2v",
-        "video_start_end": "wan2.7-i2v",
-        "video_reference": "wan2.7-r2v",
+        "llm": "",
+        "vlm": "",
+        "image_it2i": "",
+        "image_t2i": "",
+        "video": "",
+        "video_first_frame": "",
+        "video_start_end": "",
+        "video_reference": "",
     },
     "generation": {
         "style": "realistic",
@@ -80,13 +82,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "video_resolution": "720P",
         "video_generation_mode": "first_frame",
     },
-    # 提示词改写外部服务（Design Agent Platform，session_type=minimax-h3-prompt-writing）
-    # enable 默认关闭：禁用时主流程保持原六阶段（阶段不注入流程）
-    "design_agent": {
+    # 原生 H3 提示词改写（知识资产内嵌，本地 LLM 调用）
+    # enable 默认关闭：禁用时主流程保持基础六阶段（阶段不注入流程）
+    "h3_rewrite": {
         "enable": False,
-        "base_url": "",
-        "api_key": "",
-        "login_name": "videoclaw",
+        # VLM 参考图 grounding 独立开关（与 enable 正交；关闭时改写退化为纯文本输入，模式不变）
+        "grounding_enable": True,
+        # 改写用 LLM 模型（留空回退会话 llm 模型）
+        "llm_model": "",
+        # grounding 用 VLM 模型（留空回退会话 vlm 模型）
+        "vlm_model": "",
+        # 采样温度（预留：当前 provider 客户端未透传 temperature，字段先行入库）
+        "temperature": 0.3,
     },
     "custom_models": [],
 }
@@ -164,13 +171,25 @@ def _coerce_config(data: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in clean["generation"].items():
         clean["generation"][key] = "" if value is None else str(value)
 
-    design_agent = clean.get("design_agent")
-    if not isinstance(design_agent, dict):
-        design_agent = copy.deepcopy(DEFAULT_CONFIG["design_agent"])
-        clean["design_agent"] = design_agent
-    design_agent["enable"] = _as_bool(design_agent.get("enable"))
-    for key in ("base_url", "api_key", "login_name"):
-        design_agent[key] = "" if design_agent.get(key) is None else str(design_agent[key])
+    h3_rewrite = clean.get("h3_rewrite")
+    if not isinstance(h3_rewrite, dict):
+        h3_rewrite = copy.deepcopy(DEFAULT_CONFIG["h3_rewrite"])
+        clean["h3_rewrite"] = h3_rewrite
+    for bool_key in ("enable", "grounding_enable"):
+        h3_rewrite[bool_key] = _as_bool(h3_rewrite.get(bool_key))
+    for key in ("llm_model", "vlm_model"):
+        h3_rewrite[key] = "" if h3_rewrite.get(key) is None else str(h3_rewrite[key])
+    try:
+        h3_rewrite["temperature"] = float(h3_rewrite.get("temperature", 0.3))
+    except (TypeError, ValueError):
+        h3_rewrite["temperature"] = 0.3
+    # 旧配置段迁移提示（design_agent 已被 h3_rewrite 取代）
+    if "design_agent" in clean:
+        logger.warning(
+            "配置段 design_agent 已废弃并由 h3_rewrite 取代（原生 H3 提示词改写），"
+            "请改用 h3_rewrite.enable / VC_H3_REWRITE__ENABLE；旧段将被忽略"
+        )
+        clean.pop("design_agent", None)
 
     for provider, values in clean["api_providers"].items():
         if provider == "common":
@@ -256,8 +275,8 @@ ENV_PROVIDER_PATTERN = re.compile(
 ENV_CUSTOM_MODEL_PATTERN = re.compile(
     r"^VC_CUSTOM_MODEL_([A-Za-z0-9]+)__(ID|PROVIDER|MODEL|NAME|TYPES|ABILITIES|CONCURRENCY)$"
 )
-ENV_DESIGN_AGENT_PATTERN = re.compile(
-    r"^VC_DESIGN_AGENT__(ENABLE|BASE_URL|API_KEY|LOGIN_NAME)$"
+ENV_H3_REWRITE_PATTERN = re.compile(
+    r"^VC_H3_REWRITE__(ENABLE|GROUNDING_ENABLE|LLM_MODEL|VLM_MODEL|TEMPERATURE)$"
 )
 ENV_MODEL_KEYS = {
     "VC_MODEL_LLM": "llm",
@@ -380,7 +399,8 @@ def _apply_env_overrides(
     custom_fields: Dict[str, Dict[str, str]] = {}
     server_fields: Dict[str, Any] = {}
     common_fields: Dict[str, Any] = {}
-    design_agent_fields: Dict[str, str] = {}
+    design_agent_fields: Dict[str, str] = {}  # 旧 VC_DESIGN_AGENT__*（仅迁移提示，不生效）
+    h3_rewrite_fields: Dict[str, str] = {}
     for key, value in env.items():
         match = ENV_PROVIDER_PATTERN.match(key)
         if match:
@@ -399,12 +419,15 @@ def _apply_env_overrides(
         if key in ENV_COMMON_KEYS:
             common_fields[ENV_COMMON_KEYS[key]] = value
             continue
-        match = ENV_DESIGN_AGENT_PATTERN.match(key)
+        match = ENV_H3_REWRITE_PATTERN.match(key)
         if match:
-            design_agent_fields[match.group(1).lower()] = value
+            h3_rewrite_fields[match.group(1).lower()] = value
+            continue
+        if key.startswith("VC_DESIGN_AGENT_"):
+            design_agent_fields[key] = value
             continue
         if key.startswith(
-            ("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_", "VC_SERVER_", "VC_COMMON_", "VC_DESIGN_AGENT_")
+            ("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_", "VC_SERVER_", "VC_COMMON_", "VC_H3_REWRITE_")
         ):
             logger.warning("Unrecognized VC_* variable ignored: %s", key)
         # 其他 VC_* 变量不属于本次支持的覆盖范围，静默忽略
@@ -471,15 +494,27 @@ def _apply_env_overrides(
                 common_section[field_name] = "" if raw is None else str(raw)
             env_fields.append(f"api_providers.common.{field_name}")
 
-    # 提示词改写服务（Design Agent Platform）：VC_DESIGN_AGENT__* 字段级覆盖
+    # 旧键一次性迁移提示（VC_DESIGN_AGENT__* 已废弃，不生效）
     if design_agent_fields:
-        design_agent_section = effective.setdefault("design_agent", {})
-        for field_name, raw in design_agent_fields.items():
-            if field_name == "enable":
-                design_agent_section[field_name] = _as_bool(raw)
+        logger.warning(
+            "环境变量 %s 已废弃：提示词改写已改为原生实现，请改用 VC_H3_REWRITE__*（ENABLE/GROUNDING_ENABLE/LLM_MODEL/VLM_MODEL/TEMPERATURE）；旧变量将被忽略",
+            ", ".join(sorted(design_agent_fields)),
+        )
+
+    # 原生 H3 提示词改写：VC_H3_REWRITE__* 字段级覆盖
+    if h3_rewrite_fields:
+        h3_section = effective.setdefault("h3_rewrite", {})
+        for field_name, raw in h3_rewrite_fields.items():
+            if field_name in ("enable", "grounding_enable"):
+                h3_section[field_name] = _as_bool(raw)
+            elif field_name == "temperature":
+                try:
+                    h3_section[field_name] = float(raw)
+                except (TypeError, ValueError):
+                    h3_section[field_name] = 0.3
             else:
-                design_agent_section[field_name] = "" if raw is None else str(raw)
-            env_fields.append(f"design_agent.{field_name}")
+                h3_section[field_name] = "" if raw is None else str(raw)
+            env_fields.append(f"h3_rewrite.{field_name}")
 
     custom_list = effective.setdefault("custom_models", [])
     custom_by_id = {
@@ -593,16 +628,16 @@ def _strip_env_overridden(
                 server_view.pop(field_name, None)
             else:
                 server_view[field_name] = copy.deepcopy(file_value)
-        elif field_path.startswith("design_agent."):
-            # 提示词改写服务配置：恢复文件原值，不写入 .env 覆盖值
+        elif field_path.startswith("h3_rewrite."):
+            # 原生 H3 提示词改写配置：恢复文件原值，不写入 .env 覆盖值
             field_name = field_path.split(".", 1)[1]
-            file_design_agent = current_file.get("design_agent", {}) if isinstance(current_file, dict) else {}
-            file_value = file_design_agent.get(field_name) if isinstance(file_design_agent, dict) else None
-            design_agent_view = view.setdefault("design_agent", {})
+            file_h3 = current_file.get("h3_rewrite", {}) if isinstance(current_file, dict) else {}
+            file_value = file_h3.get(field_name) if isinstance(file_h3, dict) else None
+            h3_view = view.setdefault("h3_rewrite", {})
             if file_value is None:
-                design_agent_view.pop(field_name, None)
+                h3_view.pop(field_name, None)
             else:
-                design_agent_view[field_name] = copy.deepcopy(file_value)
+                h3_view[field_name] = copy.deepcopy(file_value)
         else:
             match = custom_pattern.match(field_path)
             if not match:
@@ -786,21 +821,8 @@ def _resolve_generation_timeouts() -> Tuple[float, float]:
     return _pick("VC_TIMEOUT_IMAGE"), _pick("VC_TIMEOUT_VIDEO")
 
 
-def _resolve_design_agent_timeout() -> float:
-    """提示词改写单轮提交超时（秒）：VC_TIMEOUT_DESIGN_AGENT，默认 900（对齐外部平台单轮上限）。"""
-    env = _load_env_sources()
-    default = 900.0
-    try:
-        value = float(str(env.get("VC_TIMEOUT_DESIGN_AGENT") or "").strip())
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
-
-
 # 视频/图像生成超时（自定义模型客户端消费；.env 可覆盖，容器重建后生效）
 _GENERATION_TIMEOUT_IMAGE, _GENERATION_TIMEOUT_VIDEO = _resolve_generation_timeouts()
-# 提示词改写单轮提交超时（design_agent_client 消费；.env 可覆盖）
-_GENERATION_TIMEOUT_DESIGN_AGENT = _resolve_design_agent_timeout()
 
 
 class Config:
@@ -812,8 +834,6 @@ class Config:
     # 生成超时（.env：VC_TIMEOUT_IMAGE / VC_TIMEOUT_VIDEO，默认 3 小时）
     TIMEOUT_IMAGE = _GENERATION_TIMEOUT_IMAGE
     TIMEOUT_VIDEO = _GENERATION_TIMEOUT_VIDEO
-    # 提示词改写单轮提交超时（.env：VC_TIMEOUT_DESIGN_AGENT，默认 900）
-    TIMEOUT_DESIGN_AGENT = _GENERATION_TIMEOUT_DESIGN_AGENT
     LOG_LEVEL = _get(CONFIG, "server.log_level")
     DEBUG = LOG_LEVEL == "DEBUG"
     ACCESS_LOG = _get(CONFIG, "server.access_log")
@@ -855,11 +875,12 @@ class Config:
     VIDEO_GENERATION_MODE = _get(CONFIG, "generation.video_generation_mode")
     STYLE = _get(CONFIG, "generation.style")
 
-    # 提示词改写服务（Design Agent Platform）
-    DESIGN_AGENT_ENABLED = _get(CONFIG, "design_agent.enable", False)
-    DESIGN_AGENT_BASE_URL = _get(CONFIG, "design_agent.base_url", "")
-    DESIGN_AGENT_API_KEY = _get(CONFIG, "design_agent.api_key", "")
-    DESIGN_AGENT_LOGIN_NAME = _get(CONFIG, "design_agent.login_name", "videoclaw")
+    # 原生 H3 提示词改写
+    H3_REWRITE_ENABLED = _get(CONFIG, "h3_rewrite.enable", False)
+    H3_REWRITE_GROUNDING_ENABLED = _get(CONFIG, "h3_rewrite.grounding_enable", True)
+    H3_REWRITE_LLM_MODEL = _get(CONFIG, "h3_rewrite.llm_model", "")
+    H3_REWRITE_VLM_MODEL = _get(CONFIG, "h3_rewrite.vlm_model", "")
+    H3_REWRITE_TEMPERATURE = _get(CONFIG, "h3_rewrite.temperature", 0.3)
 
     BASE_DIR = str(BASE_DIR)
     CODE_DIR = os.path.join(BASE_DIR, "code")
@@ -912,7 +933,6 @@ class Config:
         cls.LOG_LEVEL = _get(clean, "server.log_level")
         cls.DEBUG = cls.LOG_LEVEL == "DEBUG"
         cls.ACCESS_LOG = _get(clean, "server.access_log")
-        cls.TIMEOUT_DESIGN_AGENT = _GENERATION_TIMEOUT_DESIGN_AGENT
 
         cls.PRINT_MODEL_INPUT = _get(clean, "api_providers.common.print_model_input")
         cls.PROXY = _get(clean, "api_providers.common.proxy")
@@ -951,10 +971,11 @@ class Config:
         cls.VIDEO_GENERATION_MODE = _get(clean, "generation.video_generation_mode")
         cls.STYLE = _get(clean, "generation.style")
 
-        cls.DESIGN_AGENT_ENABLED = _get(clean, "design_agent.enable", False)
-        cls.DESIGN_AGENT_BASE_URL = _get(clean, "design_agent.base_url", "")
-        cls.DESIGN_AGENT_API_KEY = _get(clean, "design_agent.api_key", "")
-        cls.DESIGN_AGENT_LOGIN_NAME = _get(clean, "design_agent.login_name", "videoclaw")
+        cls.H3_REWRITE_ENABLED = _get(clean, "h3_rewrite.enable", False)
+        cls.H3_REWRITE_GROUNDING_ENABLED = _get(clean, "h3_rewrite.grounding_enable", True)
+        cls.H3_REWRITE_LLM_MODEL = _get(clean, "h3_rewrite.llm_model", "")
+        cls.H3_REWRITE_VLM_MODEL = _get(clean, "h3_rewrite.vlm_model", "")
+        cls.H3_REWRITE_TEMPERATURE = _get(clean, "h3_rewrite.temperature", 0.3)
         return cls.as_dict()
 
     @classmethod

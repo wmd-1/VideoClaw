@@ -63,8 +63,9 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 
 ## 阶段与停点（含停点0，默认共7个停点；启用提示词改写阶段后为8个）
 
-> 提示词改写（prompt_rewrite）为可选阶段：仅当 `design_agent.enable=true`（config.yaml 或 `.env` 的
-> `VC_DESIGN_AGENT__ENABLE`）时出现在参考图与视频生成之间；默认禁用时主流程保持六阶段。
+> 提示词改写（prompt_rewrite）为可选阶段：仅当 `h3_rewrite.enable=true`（config.yaml 或 `.env` 的
+> `VC_H3_REWRITE__ENABLE`）时出现在参考图与视频生成之间；默认禁用时主流程保持六阶段。
+> 改写为本地 LLM 调用（知识资产内嵌），按 `video_generation_mode` 推导 T2VA/I2VA/FL2VA/Ref2VA 模式。
 
 | 停点 | 阶段 | phase 值 | 描述 | 操作 |
 |------|------|----------|------|------|

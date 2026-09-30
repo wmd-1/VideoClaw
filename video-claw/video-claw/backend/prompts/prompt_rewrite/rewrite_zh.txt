@@ -1,11 +1,10 @@
-请把以下视频镜头描述改写为符合 MiniMax H3 视频生成模型规范的提示词（T2VA 文本模式）。
+【任务】请把以下分镜改写为符合 MiniMax H3 规范的提示词。
 
-目标视频时长：{duration} 秒。
-镜头编号：{segment_id}
-镜头描述：
-{shot_content}
-
-要求：
-1. 改写正文使用英文（对话、歌词、画面内文字保留原语言）。
-2. 描述总时长与目标视频时长（{duration} 秒）保持一致。
-3. 只输出改写后的完整提示词，不要附加解释。
+- 输入模式：{input_mode}
+- 目标视频时长：{duration} 秒
+- 镜头编号：{segment_id}
+{authoritative_section}{current_section}{user_section}{continuity_section}{grounding_section}
+改写要求：
+1. 按上述输入模式遵循随附指南的结构与字段规范。
+2. 描述总时长与目标时长一致；关键帧任务写明与首帧/尾帧的对齐关系。
+3. 只输出：一行模式判定说明 + 纯文本代码块内的完整提示词，不要其他解释。

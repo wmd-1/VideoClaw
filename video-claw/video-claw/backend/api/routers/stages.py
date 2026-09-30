@@ -4,7 +4,7 @@ from config import Config
 
 router = APIRouter(tags=["Stages"])
 
-# 全量阶段定义；prompt_rewrite 仅在 design_agent.enable=true 时返回
+# 全量阶段定义；prompt_rewrite 仅在 h3_rewrite.enable=true 时返回
 _ALL_STAGES = [
     {"id": "script_generation", "name": "剧本生成", "order": 1, "description": "将灵感转化为结构化剧本"},
     {"id": "character_design", "name": "角色/场景设计", "order": 2, "description": "生成角色设计图和场景背景"},
@@ -18,8 +18,8 @@ _PROMPT_REWRITE_ID = "prompt_rewrite"
 
 
 def _enabled_stages() -> list:
-    """按 design_agent.enable 过滤并重排 order：禁用时返回原六阶段。"""
-    stages = [dict(stage) for stage in _ALL_STAGES if stage["id"] != _PROMPT_REWRITE_ID or Config.DESIGN_AGENT_ENABLED]
+    """按 h3_rewrite.enable 过滤并重排 order：禁用时返回原六阶段。"""
+    stages = [dict(stage) for stage in _ALL_STAGES if stage["id"] != _PROMPT_REWRITE_ID or Config.H3_REWRITE_ENABLED]
     for index, stage in enumerate(stages, start=1):
         stage["order"] = index
     return stages
@@ -27,4 +27,4 @@ def _enabled_stages() -> list:
 
 @router.get("/api/stages")
 async def list_stages():
-    return {"stages": _enabled_stages(), "prompt_rewrite_enabled": bool(Config.DESIGN_AGENT_ENABLED)}
+    return {"stages": _enabled_stages(), "prompt_rewrite_enabled": bool(Config.H3_REWRITE_ENABLED)}

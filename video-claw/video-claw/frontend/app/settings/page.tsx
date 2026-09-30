@@ -71,14 +71,15 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
     ],
   },
   {
-    title: '提示词改写服务',
+    title: 'H3 提示词改写',
     description:
-      '主流程「提示词改写」阶段的外部服务（Design Agent Platform）。enable=false（默认）时主流程保持原六阶段，该阶段不出现在流程与导航中；enable=true 但 base_url 为空时，该阶段执行会明确失败。',
+      '主流程「提示词改写」阶段（原生实现：知识资产内嵌，本地 LLM 调用）。enable=false（默认）时主流程保持基础六阶段，该阶段不出现在流程与导航中；enable=true 后在参考图与视频生成之间生效。grounding_enable 独立控制 VLM 参考图看图（关闭后退化为纯文本输入，模式不变）。',
     fields: [
-      { path: 'design_agent.enable', label: 'enable 启用提示词改写阶段', type: 'boolean' },
-      { path: 'design_agent.base_url', label: 'base_url 服务地址（如 http://host:8001）', type: 'text' },
-      { path: 'design_agent.api_key', label: 'api_key 密钥（预留，可留空）', type: 'password' },
-      { path: 'design_agent.login_name', label: 'login_name 外部平台身份登录名（X-User-Login-Name）', type: 'text' },
+      { path: 'h3_rewrite.enable', label: 'enable 启用提示词改写阶段', type: 'boolean' },
+      { path: 'h3_rewrite.grounding_enable', label: 'grounding_enable VLM 参考图看图（独立开关）', type: 'boolean' },
+      { path: 'h3_rewrite.llm_model', label: 'llm_model 改写用模型（留空回退会话 llm）', type: 'text' },
+      { path: 'h3_rewrite.vlm_model', label: 'vlm_model 看图用 VLM 模型（留空回退会话 vlm）', type: 'text' },
+      { path: 'h3_rewrite.temperature', label: 'temperature 采样温度（预留字段）', type: 'text' },
     ],
   },
 ];
@@ -335,14 +336,20 @@ export default function SettingsPage() {
                             className={`h-10 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 outline-none focus:border-blue-300 ${overridden ? 'bg-gray-100 text-gray-400' : 'bg-white'}`}
                           >
                             {isProviderOptions(field.options) ? (
-                              field.options.map(group => (
-                                <optgroup key={group.provider} label={group.label}>
-                                  {group.models.map(model => (
-                                    // 自定义模型的 label 即 id；内置模型保留友好显示名
-                                    <option key={model.id} value={model.id}>{model.label}</option>
-                                  ))}
-                                </optgroup>
-                              ))
+                              <>
+                                {!String(value ?? '') && (
+                                  // 默认模型未配置时给空值一个可见项，避免看起来像已选中第一个模型
+                                  <option value="">— 未选择（必需在下方或开始页指定）—</option>
+                                )}
+                                {field.options.map(group => (
+                                  <optgroup key={group.provider} label={group.label}>
+                                    {group.models.map(model => (
+                                      // 自定义模型的 label 即 id；内置模型保留友好显示名
+                                      <option key={model.id} value={model.id}>{model.label}</option>
+                                    ))}
+                                  </optgroup>
+                                ))}
+                              </>
                             ) : (
                               (field.options || []).map(option => (
                                 <option key={option.id} value={option.id}>{option.label}</option>

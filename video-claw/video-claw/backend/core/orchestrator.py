@@ -46,7 +46,7 @@ class WorkflowStage(str, Enum):
 def get_stage_order() -> List[WorkflowStage]:
     """按配置组装阶段顺序。
 
-    design_agent.enable=true 时在「参考图」与「视频」之间注入「提示词改写」（七阶段）；
+    h3_rewrite.enable=true 时在「参考图」与「视频」之间注入「提示词改写」（七阶段）；
     默认禁用时保持原六阶段（阶段不注入流程，而非注册后跳过）。
     """
     from config import Config  # 惰性导入，避免循环依赖
@@ -59,9 +59,23 @@ def get_stage_order() -> List[WorkflowStage]:
         WorkflowStage.VIDEO_GENERATION,
         WorkflowStage.POST_PRODUCTION,
     ]
-    if Config.DESIGN_AGENT_ENABLED:
+    if Config.H3_REWRITE_ENABLED:
         order.insert(order.index(WorkflowStage.REFERENCE_GENERATION) + 1, WorkflowStage.PROMPT_REWRITE)
     return order
+
+
+# 固定全序（含全部可选阶段）：_get_next_stage 在 current 因开关关闭而从启用序列
+# 消失时（如会话停留在 prompt_rewrite 停点后 h3_rewrite.enable 被关闭），按此全序
+# 回退到下一个仍启用的阶段，保证会话恢复/继续不死锁。
+_FULL_STAGE_ORDER = [
+    WorkflowStage.SCRIPT_GENERATION,
+    WorkflowStage.CHARACTER_DESIGN,
+    WorkflowStage.STORYBOARD,
+    WorkflowStage.REFERENCE_GENERATION,
+    WorkflowStage.PROMPT_REWRITE,
+    WorkflowStage.VIDEO_GENERATION,
+    WorkflowStage.POST_PRODUCTION,
+]
 
 SESSION_META_KEYS = (
     "idea",
@@ -484,9 +498,19 @@ class WorkflowEngine:
             idx = order.index(current)
             if idx + 1 < len(order):
                 return order[idx + 1]
+            return None
         except ValueError:
-            pass
-        return None
+            # current 不在启用序列（可选阶段被开关移除，如 prompt_rewrite 停点后禁用）：
+            # 按固定全序回退到下一个仍启用的阶段，避免会话恢复时死锁
+            full_idx = _FULL_STAGE_ORDER.index(current)
+            for stage in _FULL_STAGE_ORDER[full_idx + 1:]:
+                if stage in order:
+                    logger.warning(
+                        "阶段 %s 已被禁用（不在启用序列），继续时跳过至 %s",
+                        current.value, stage.value,
+                    )
+                    return stage
+            return None
 
     # ──────────── 跨阶段同步逻辑 ────────────
     def _sync_artifacts_cross_stages(self, state: WorkflowState, stage: WorkflowStage, payload: Dict):
@@ -710,6 +734,10 @@ class WorkflowEngine:
         """
         for stage in WorkflowStage:
             if stage in [WorkflowStage.INIT, WorkflowStage.COMPLETED]:
+                continue
+            # 可选阶段被开关禁用时（不在启用序列）不参与重算：状态冻结，
+            # 重新启用后恢复；避免禁用后历史停点状态被打回 pending 导致会话无法继续
+            if stage not in get_stage_order():
                 continue
             s_val = stage.value
             # 如果当前阶段正在运行，不自动覆盖其为 completed/waiting (除非它目前是空)
