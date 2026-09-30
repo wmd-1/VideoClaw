@@ -46,7 +46,7 @@ CASES = {
         {"segment_id": "g_i2va", "total_duration": 8, "characters": ["林夏"],
          "shots": [{"content": "林夏在雨夜霓虹小巷中缓慢前行", "duration": 8}]},
     ], {"g_i2va": IMG1}),
-    "FL2VA": ("start_end", [
+    "FL2VA": ("start_end_frame", [
         {"segment_id": "g_fl2va_a", "total_duration": 8,
          "shots": [{"content": "A cat starts walking under a streetlight", "duration": 8}]},
         {"segment_id": "g_fl2va_b", "total_duration": 8,
@@ -84,7 +84,7 @@ for mode, (vgm, segments, selected_map) in CASES.items():
     expected_mode = resolve_h3_mode(
         vgm,
         has_first_frame=bool(selected_map.get(seg["segment_id"])),
-        has_last_frame=(vgm == "start_end" and len(segments) > 1),
+        has_last_frame=(vgm == "start_end_frame" and len(segments) > 1),
         has_reference_set=(vgm == "reference"),
     )
     check(f"{mode} 金标 validator 硬门槛", item["status"] == "done" and not violations,

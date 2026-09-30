@@ -471,7 +471,7 @@ class PromptRewriteAgent(AgentInterface):
         )
         video_generation_mode = str(
             input_data.get("video_generation_mode") or session_meta.get("video_generation_mode") or "first_frame"
-        )
+        ).strip().lower()
         artifacts = self._session_artifacts(input_data)
         character_artifact = artifacts.get("character_design", {})
         scene_map = {
@@ -488,11 +488,11 @@ class PromptRewriteAgent(AgentInterface):
         for i, segment in enumerate(segments):
             self._check_cancel()
             prev_item = prev_items_by_id.get(segment["id"])
-            # mode resolver：素材角色来自参考图阶段产物（start_end 的尾帧 = 下一分镜选中图，
+            # mode resolver：素材角色来自参考图阶段产物（start_end_frame 的尾帧 = 下一分镜选中图，
             # 与 video_agent 的首尾帧取图逻辑一致；尾帧缺失时 resolver 落 I2VA，与传输层回退一致）
             selected = str((scene_map.get(segment["id"]) or {}).get("selected") or "").strip()
             next_selected = ""
-            if video_generation_mode == "start_end" and i < len(segments) - 1:
+            if video_generation_mode == "start_end_frame" and i < len(segments) - 1:
                 next_selected = str((scene_map.get(segments[i + 1]["id"]) or {}).get("selected") or "").strip()
             mode = resolve_h3_mode(
                 video_generation_mode,

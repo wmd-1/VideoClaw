@@ -1,11 +1,10 @@
-"""验证沙盒媒体参考路径白名单校验（C1，评审加固）。
+"""验证沙盒媒体参考路径白名单校验（C1 + I-A，评审加固）。
 
-覆盖 _resolve_media_reference_url 的越界防护：
-- 绝对路径指向 CODE_DIR/TEMP_DIR 之外：明确拒绝，不复制到静态可访问目录；
-- 相对路径 `..` 逃逸：规范化后越界 → 拒绝，不组装 /code/../ URL；
-- TEMP_DIR 内符号链接指向外部文件：realpath 解析越界 → 拒绝；
-- 合法 TEMP_DIR 上传件：仍可转换为 /code 绝对 URL（回归，防护不误伤正常链路）；
-- 拒绝用例执行后 uploads 目录无新增（无落地扩散）。
+覆盖：
+- C1（audio_url，经 _resolve_media_reference_url）：绝对路径越界/相对 `..` 逃逸/符号链接 → 拒绝，
+  不复制到静态可访问目录；合法 TEMP_DIR 上传件仍可转换为 /code 绝对 URL；拒绝后 uploads 无新增；
+- I-A（image / reference_videos，经 _guard_local_media）：白名单外绝对路径/`..` 逃逸/符号链接 →
+  发起生成前拒绝，文件不被适配层打开与外传；合法 TEMP_DIR 上传件透传规范化绝对路径。
 
 运行：docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_sandbox_path_guard.py
 """
@@ -121,6 +120,68 @@ try:
     after = uploads_snapshot()
     added = after - before
     check("越界路径未造成落地扩散", len(added) <= 1, f"added={sorted(added)}")
+
+    # ===== I-A：image / reference_videos 统一守卫 =====
+    outside_img = os.path.join("/tmp", f"vc_outside_img_{uuid.uuid4().hex}.png")
+    with open(outside_img, "wb") as f:
+        f.write(b"\x89PNG" + b"p" * 64)
+    outside_vid = os.path.join("/tmp", f"vc_outside_vid_{uuid.uuid4().hex}.mp4")
+    with open(outside_vid, "wb") as f:
+        f.write(SAVE_BYTES)
+    try:
+        # 6) 绝对路径越界的 image：拒绝且无生成
+        CAPTURED.clear()
+        r6 = client.post("/api/sandbox/video", json={
+            "model": "local-video", "prompt": "image escape", "image": outside_img,
+        }).json()
+        check("image 绝对路径越界被拒绝", r6.get("success") is False and "越界" in (r6.get("error") or ""), str(r6)[:160])
+        check("image 越界拒绝时不发起生成", not CAPTURED, str(CAPTURED)[:120])
+
+        # 7) 绝对路径越界的 reference_videos：拒绝且无生成（不得进入 open+外传链路）
+        CAPTURED.clear()
+        r7 = client.post("/api/sandbox/video", json={
+            "model": "local-video", "prompt": "video escape", "reference_videos": [outside_vid],
+        }).json()
+        check("reference_videos 越界被拒绝", r7.get("success") is False and "越界" in (r7.get("error") or ""), str(r7)[:160])
+        check("reference_videos 越界拒绝时不发起生成", not CAPTURED, str(CAPTURED)[:120])
+
+        # 8) `..` 逃逸的 image：拒绝
+        CAPTURED.clear()
+        r8 = client.post("/api/sandbox/video", json={
+            "model": "local-video", "prompt": "image dotdot",
+            "image": os.path.relpath(outside_img, settings.CODE_DIR),
+        }).json()
+        check("image 相对 `..` 逃逸被拒绝", r8.get("success") is False and "越界" in (r8.get("error") or ""), str(r8)[:160])
+
+        # 9) TEMP_DIR 内符号链接作 image：realpath 解析越界 → 拒绝
+        link_img = os.path.join(settings.TEMP_DIR, f"vc_img_link_{uuid.uuid4().hex}.png")
+        os.symlink(outside_img, link_img)
+        try:
+            CAPTURED.clear()
+            r9 = client.post("/api/sandbox/video", json={
+                "model": "local-video", "prompt": "image symlink", "image": link_img,
+            }).json()
+            check("image 符号链接逃逸被拒绝", r9.get("success") is False and "越界" in (r9.get("error") or ""), str(r9)[:160])
+        finally:
+            if os.path.islink(link_img):
+                os.remove(link_img)
+
+        # 10) 合法 TEMP_DIR 上传件：image/视频参考正常透传（规范化绝对路径）
+        img_up = client.post("/api/upload_media", files={"file": ("ok.png", io.BytesIO(b"\x89PNG" + b"q" * 64), "image/png")}).json()
+        vid_up = client.post("/api/upload_media", files={"file": ("ok.mp4", io.BytesIO(SAVE_BYTES), "video/mp4")}).json()
+        CAPTURED.clear()
+        r10 = client.post("/api/sandbox/video", json={
+            "model": "local-video", "prompt": "legit refs",
+            "image": img_up["file_path"], "reference_videos": [vid_up["file_path"]],
+        }).json()
+        check("合法上传件 image 透传", r10.get("success") and CAPTURED.get("image_path") == os.path.realpath(img_up["file_path"]),
+              f"image_path={CAPTURED.get('image_path')}")
+        check("合法上传件 reference_videos 透传", CAPTURED.get("reference_video_paths") == [os.path.realpath(vid_up["file_path"])],
+              str(CAPTURED.get("reference_video_paths")))
+    finally:
+        for p in (outside_img, outside_vid):
+            if os.path.exists(p):
+                os.remove(p)
 finally:
     import models.video_client as vc_module
 

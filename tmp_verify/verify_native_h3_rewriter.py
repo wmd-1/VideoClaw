@@ -25,10 +25,10 @@ from core.agents.prompt_rewrite_agent import (
 # ═══ 1. mode resolver 契约（决策文档 §5.2 表） ═══
 check("1a reference 模式→Ref2VA", resolve_h3_mode("reference") == "Ref2VA")
 check("1b 首帧→I2VA", resolve_h3_mode("first_frame", has_first_frame=True) == "I2VA")
-check("1c 首尾帧→FL2VA", resolve_h3_mode("start_end", has_first_frame=True, has_last_frame=True) == "FL2VA")
-check("1d 仅尾帧→L2VA", resolve_h3_mode("start_end", has_last_frame=True) == "L2VA")
-check("1e start_end 缺尾帧回退 I2VA（与传输层回退一致）",
-      resolve_h3_mode("start_end", has_first_frame=True, has_last_frame=False) == "I2VA")
+check("1c 首尾帧→FL2VA", resolve_h3_mode("start_end_frame", has_first_frame=True, has_last_frame=True) == "FL2VA")
+check("1d 仅尾帧→L2VA", resolve_h3_mode("start_end_frame", has_last_frame=True) == "L2VA")
+check("1e start_end_frame 缺尾帧回退 I2VA（与传输层回退一致）",
+      resolve_h3_mode("start_end_frame", has_first_frame=True, has_last_frame=False) == "I2VA")
 check("1f 无图→T2VA", resolve_h3_mode("first_frame") == "T2VA")
 check("1g reference 优先于帧", resolve_h3_mode("reference", has_first_frame=True) == "Ref2VA")
 # 传输层归类契约（_task_for_input 逻辑映射，代码已核实）
@@ -82,11 +82,11 @@ STORYBOARD = {"episodes": [{"episode_number": 1, "segments": [
 CHARACTERS = {"characters": [{"name": "林夏", "description": "短发女孩，穿黑色风衣，左眉有疤"}]}
 
 
-def make_input(artifacts_extra=None):
+def make_input(artifacts_extra=None, video_mode="first_frame"):
     arts = {"storyboard": copy.deepcopy(STORYBOARD), "character_design": CHARACTERS}
     arts.update(artifacts_extra or {})
     return {"session_id": "s1", "llm_model": "stub-llm", "vlm_model": "stub-vlm",
-            "video_generation_mode": "first_frame",
+            "video_generation_mode": video_mode,
             "_session_artifacts": arts, "_session_meta": {}}
 
 
@@ -219,6 +219,28 @@ result5d = asyncio.run(agent5d.process(make_input(REF_ART)))
 check("5d1 开关关闭零 VLM 调用", agent5d._vlm.calls == 0)
 check("5d2 模式仍 I2VA", result5d["payload"]["items"][0]["input_mode"] == "I2VA")
 config.Config.H3_REWRITE_GROUNDING_ENABLED = True
+
+# 5e 接线级（C-1 回归）：真实会话配置 start_end_frame 经 process() 入口必须产出 FL2VA
+# （尾帧 = 下一分镜选中图；历史缺陷：接线层误用非规范值 "start_end" 致 FL2VA/L2VA 永不触发，纯函数单测无法拦截）
+agent5e = PromptRewriteAgent()
+agent5e.set_progress_callback(lambda *a, **k: None)
+agent5e._llm = FakeLLM([GOOD_LLM_OUT, GOOD_LLM_OUT])
+agent5e._vlm = FakeVLM()
+result5e = asyncio.run(agent5e.process(make_input(REF_ART, video_mode="start_end_frame")))
+items5e = result5e["payload"]["items"]
+check("5e1 start_end_frame 接线产出 FL2VA（C-1）", items5e[0]["input_mode"] == "FL2VA",
+      f"got {items5e[0]['input_mode']}")
+check("5e2 末分镜无下一选中图 → I2VA", items5e[1]["input_mode"] == "I2VA",
+      f"got {items5e[1]['input_mode']}")
+
+# 5f 非规范值 "start_end" 不属于生产输入空间：接线层不触发尾帧（与规范判定互斥，防回归到旧字面量）
+agent5f = PromptRewriteAgent()
+agent5f.set_progress_callback(lambda *a, **k: None)
+agent5f._llm = FakeLLM([GOOD_LLM_OUT, GOOD_LLM_OUT])
+agent5f._vlm = FakeVLM()
+result5f = asyncio.run(agent5f.process(make_input(REF_ART, video_mode="start_end")))
+check("5f 非规范值不触发 FL2VA（仅规范值生效）", result5f["payload"]["items"][0]["input_mode"] == "I2VA",
+      f"got {result5f['payload']['items'][0]['input_mode']}")
 
 # ═══ 6. 修订流程（用户修改意见进「用户修改」区） ═══
 agent6 = PromptRewriteAgent()

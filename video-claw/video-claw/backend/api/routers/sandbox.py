@@ -208,6 +208,28 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     return base_url.rstrip("/") + "/code/" + relative
 
 
+def _guard_local_media(value: str, field: str) -> str:
+    """沙盒本地媒体入参统一守卫（I-A）：realpath 规范化后限定 CODE_DIR/TEMP_DIR 白名单。
+
+    适配层会直接 open 这些路径并上传到远端推理服务，零鉴权下越界路径即任意文件读取+外传；
+    因此发起生成前必须拒绝越界/符号链接逃逸/不存在的文件。相对路径按 CODE_DIR 解析（与音频一致）。
+    """
+    value = (value or "").strip()
+    if not value:
+        return value
+    candidates = [value] if os.path.isabs(value) else [
+        os.path.join(os.path.realpath(settings.CODE_DIR), value),
+        os.path.join(os.path.realpath(settings.CODE_DIR), "result", value),
+    ]
+    source = next((path for path in candidates if os.path.isfile(path)), None)
+    if source is None:
+        raise ValueError(f"{field} 文件不存在: {value}")
+    safe = resolve_within_allowed_dirs(source)
+    if not safe:
+        raise ValueError(f"{field} 路径越界（仅允许 code/temp 目录内的文件）: {value}")
+    return safe
+
+
 # 请求模型
 @router.get("/api/sandbox/history")
 async def sandbox_get_history():
@@ -429,17 +451,21 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
     from models.video_client import VideoClient
     client = VideoClient()
     duration = int(req.duration or 5)
-    # 音频参考：本地文件 → 服务端可访问 URL（失败即报错，不静默降级）
+    # 音频参考：本地文件 → 服务端可访问 URL；图片/视频参考：本地路径白名单校验（失败即报错，不静默降级）
     try:
         audio_reference_url = (
             _resolve_media_reference_url(str(request.base_url), req.audio_url) if req.audio_url else None
         )
+        image_path = _guard_local_media(req.image or "", "参考图片")
+        reference_video_paths = [
+            _guard_local_media(item, "参考视频") for item in (req.reference_videos or []) if (item or "").strip()
+        ]
     except ValueError as e:
-        logger.warning("Sandbox video audio reference rejected: model=%s %s", req.model, e)
+        logger.warning("Sandbox video media reference rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
     input_data = {
         "prompt": req.prompt,
-        "reference_image": req.image,
+        "reference_image": image_path,
         "audio_url": audio_reference_url,
         "reference_videos": req.reference_videos,
         "ratio": req.ratio,
@@ -459,7 +485,7 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
         logger.info(
             "Sandbox video started: model=%s image=%s audio_ref=%s video_refs=%d ratio=%s resolution=%s duration=%ss fps=%s short_edge=%s",
             req.model,
-            bool(req.image),
+            bool(image_path),
             bool(audio_reference_url),
             len(req.reference_videos or []),
             req.ratio,
@@ -472,7 +498,7 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
         result = await run_in_threadpool(
             client.generate_video,
             prompt=req.prompt,
-            image_path=req.image or "",
+            image_path=image_path or "",
             save_path=save_path,
             model=req.model,
             duration=duration,
@@ -482,7 +508,7 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
             fps=req.fps,
             short_edge=req.short_edge,
             audio_reference_url=audio_reference_url,
-            reference_video_paths=req.reference_videos,
+            reference_video_paths=reference_video_paths or None,
             adjustments=adjustments,
         )
         # 保存到历史记录
