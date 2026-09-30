@@ -151,6 +151,7 @@ function ModelSelector({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [videoCaps, setVideoCaps] = useState<VideoModelCapabilities | null>(null);
   const [clampHint, setClampHint] = useState('');
+  const [capsReady, setCapsReady] = useState(false);
   const [llmProviders, setLlmProviders] = useState<ProviderGroup[]>([]);
   const [vlmProviders, setVlmProviders] = useState<ProviderGroup[]>([]);
   const [t2iProviders, setT2iProviders] = useState<ProviderGroup[]>([]);
@@ -226,11 +227,17 @@ function ModelSelector({
   useEffect(() => {
     let cancelled = false;
     setClampHint('');
-    if (!activeVideoModel) return;
+    setCapsReady(false);
+    if (!activeVideoModel) {
+      setVideoCaps(null);
+      setCapsReady(true);
+      return;
+    }
     fetchVideoModelCapabilities(activeVideoModel)
       .then(caps => {
         if (cancelled) return;
         setVideoCaps(caps);
+        setCapsReady(true);
         if (!caps) return;
         const current = configRef.current;
         const hints: string[] = [];
@@ -274,20 +281,26 @@ function ModelSelector({
           setClampHint(`已按模型能力调整：${hints.join('，')}`);
         }
       })
-      .catch(() => {});
+      .catch(() => { if (!cancelled) setCapsReady(true); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeVideoModel]);
 
-  const ratioOptions = videoCaps?.ratios?.length
-    ? VIDEO_RATIOS.filter(r => videoCaps.ratios!.includes(r.id))
-    : VIDEO_RATIOS;
-  const resolutionOptions = videoCaps?.resolutions?.length
-    ? VIDEO_RESOLUTIONS.filter(r => videoCaps.resolutions!.includes(r.id))
-    : VIDEO_RESOLUTIONS;
-  const fpsOptions = videoCaps?.fps?.length ? videoCaps.fps : [];
-  const durationMin = Math.max(1, Math.min(videoCaps?.duration?.min ?? 2, videoCaps?.duration?.max ?? 15));
-  const durationMax = Math.max(durationMin, Math.min(videoCaps?.duration?.max ?? 15, durationMin + 19));
+  // 模型能力尚未就绪时不给出具期选项，避免首屏闪现未按能力过滤的默认集（如 11–15s、21:9）
+  const capsLoading = !capsReady;
+  const ratioOptions = capsLoading
+    ? []
+    : videoCaps?.ratios?.length
+      ? VIDEO_RATIOS.filter(r => videoCaps.ratios!.includes(r.id))
+      : VIDEO_RATIOS;
+  const resolutionOptions = capsLoading
+    ? []
+    : videoCaps?.resolutions?.length
+      ? VIDEO_RESOLUTIONS.filter(r => videoCaps.resolutions!.includes(r.id))
+      : VIDEO_RESOLUTIONS;
+  const fpsOptions = capsLoading ? [] : videoCaps?.fps?.length ? videoCaps.fps : [];
+  const durationMin = capsLoading ? 1 : Math.max(1, Math.min(videoCaps?.duration?.min ?? 2, videoCaps?.duration?.max ?? 15));
+  const durationMax = capsLoading ? 0 : Math.max(durationMin, Math.min(videoCaps?.duration?.max ?? 15, durationMin + 19));
   const durationOptions: number[] = [];
   for (let v = durationMin; v <= durationMax; v++) durationOptions.push(v);
 
@@ -363,7 +376,7 @@ function ModelSelector({
             <ProviderSelect value={activeVideoModel} providers={activeVideoProviders} onChange={updateActiveVideoModel} />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-400 font-medium">视频比例</span>
+            <span className="text-[10px] text-gray-400 font-medium">{capsLoading ? '视频比例（加载模型能力中…）' : '视频比例'}</span>
             <div className="flex gap-0.5">
               {ratioOptions.map(r => (
                 <button
@@ -415,9 +428,10 @@ function ModelSelector({
                   <select
                     value={config.video_duration}
                     onChange={e => update('video_duration', e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+                    disabled={capsLoading}
+                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full disabled:opacity-60"
                   >
-                    <option value="">跟随分镜</option>
+                    <option value="">{capsLoading ? '加载模型能力中…' : '跟随分镜'}</option>
                     {durationOptions.map(v => (
                       <option key={v} value={String(v)}>{v}s</option>
                     ))}
@@ -428,14 +442,15 @@ function ModelSelector({
                   <select
                     value={config.video_fps}
                     onChange={e => update('video_fps', e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+                    disabled={capsLoading}
+                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full disabled:opacity-60"
                   >
                     <option value="">默认（服务端）</option>
                     {fpsOptions.map(v => (
                       <option key={v} value={String(v)}>{v}</option>
                     ))}
                   </select>
-                  {!fpsOptions.length && (
+                  {!capsLoading && !fpsOptions.length && (
                     <span className="text-[9px] text-gray-300">当前模型未声明 FPS 能力，设置后将被忽略</span>
                   )}
                 </label>
@@ -444,8 +459,10 @@ function ModelSelector({
                   <select
                     value={config.video_resolution}
                     onChange={e => update('video_resolution', e.target.value)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
+                    disabled={capsLoading}
+                    className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full disabled:opacity-60"
                   >
+                    {capsLoading && <option value="">加载模型能力中…</option>}
                     {resolutionOptions.map(item => (
                       <option key={item.id} value={item.id}>{item.label}</option>
                     ))}
