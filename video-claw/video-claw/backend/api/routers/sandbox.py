@@ -5,7 +5,7 @@ import shutil
 import threading
 import uuid
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
@@ -208,14 +208,21 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     return base_url.rstrip("/") + "/code/" + relative
 
 
-def _guard_local_media(value: str, field: str) -> str:
-    """沙盒本地媒体入参统一守卫（I-A）：realpath 规范化后限定 CODE_DIR/TEMP_DIR 白名单。
+# 远程媒体形态：不经本地 open，交由适配层按各自协议消费（与 audio_url 口径一致）
+_REMOTE_MEDIA_PREFIXES = ("http://", "https://", "data:", "file://", "oss://")
 
-    适配层会直接 open 这些路径并上传到远端推理服务，零鉴权下越界路径即任意文件读取+外传；
-    因此发起生成前必须拒绝越界/符号链接逃逸/不存在的文件。相对路径按 CODE_DIR 解析（与音频一致）。
+
+def _guard_media_input(value: str, field: str) -> str:
+    """沙盒媒体入参统一守卫（I-A）：远程形态原样透传，本地路径限定 CODE_DIR/TEMP_DIR 白名单。
+
+    适配层会直接 open 本地路径并上传到远端推理服务，零鉴权下越界路径即任意文件读取+外传；
+    因此发起生成前必须拒绝越界/符号链接逃逸/不存在的本地文件。相对路径按 CODE_DIR 解析（与音频一致）。
+    http(s)/data:/file://oss:// 形态不读本地盘，原样交给适配层（图片/视频参考的 URL 输入模式依赖此路径）。
     """
     value = (value or "").strip()
     if not value:
+        return value
+    if value.startswith(_REMOTE_MEDIA_PREFIXES):
         return value
     candidates = [value] if os.path.isabs(value) else [
         os.path.join(os.path.realpath(settings.CODE_DIR), value),
@@ -228,6 +235,11 @@ def _guard_local_media(value: str, field: str) -> str:
     if not safe:
         raise ValueError(f"{field} 路径越界（仅允许 code/temp 目录内的文件）: {value}")
     return safe
+
+
+def _guard_media_inputs(values: Optional[List[str]], field: str) -> List[str]:
+    """逐条套用统一守卫，保留输入顺序；空值项直接丢弃。"""
+    return [_guard_media_input(item, field) for item in (values or []) if (item or "").strip()]
 
 
 # 请求模型
@@ -331,14 +343,20 @@ async def sandbox_vlm(req: SandboxVLMRequest):
     """临时工作台 - VLM 图片理解"""
     from models.vlm_client import VLM
     client = VLM()
-    input_data = {"prompt": req.prompt, "images": req.images}
+    # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起请求前拒绝
+    try:
+        image_paths = _guard_media_inputs(req.images, "图片")
+    except ValueError as e:
+        logger.warning("Sandbox VLM media input rejected: model=%s %s", req.model, e)
+        return {"success": False, "error": str(e)}
+    input_data = {"prompt": req.prompt, "images": image_paths}
     task_id = _start_active_task("vlm", req.model, input_data)
     try:
-        logger.info("Sandbox VLM started: model=%s images=%d", req.model, len(req.images or []))
+        logger.info("Sandbox VLM started: model=%s images=%d", req.model, len(image_paths))
         result = await run_in_threadpool(
             client.query,
             req.prompt,
-            image_paths=req.images,
+            image_paths=image_paths,
             model=req.model,
         )
         # 保存到历史记录
@@ -407,14 +425,20 @@ async def sandbox_i2i(req: SandboxI2IRequest):
     """临时工作台 - 图生图"""
     from models.image_client import ImageClient
     client = ImageClient()
-    input_data = {"prompt": req.prompt, "reference_image": req.image}
+    # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起生成前拒绝
+    try:
+        image_path = _guard_media_input(req.image or "", "参考图片")
+    except ValueError as e:
+        logger.warning("Sandbox I2I media input rejected: model=%s %s", req.model, e)
+        return {"success": False, "error": str(e)}
+    input_data = {"prompt": req.prompt, "reference_image": image_path}
     task_id = _start_active_task("i2i", req.model, input_data)
     try:
         logger.info("Sandbox I2I started: model=%s ratio=%s", req.model, req.ratio)
         result = await run_in_threadpool(
             client.generate_image,
             req.prompt,
-            image_paths=[req.image],
+            image_paths=[image_path],
             model=req.model,
             video_ratio=req.ratio,
         )
@@ -456,10 +480,8 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
         audio_reference_url = (
             _resolve_media_reference_url(str(request.base_url), req.audio_url) if req.audio_url else None
         )
-        image_path = _guard_local_media(req.image or "", "参考图片")
-        reference_video_paths = [
-            _guard_local_media(item, "参考视频") for item in (req.reference_videos or []) if (item or "").strip()
-        ]
+        image_path = _guard_media_input(req.image or "", "参考图片")
+        reference_video_paths = _guard_media_inputs(req.reference_videos, "参考视频")
     except ValueError as e:
         logger.warning("Sandbox video media reference rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
@@ -467,7 +489,7 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
         "prompt": req.prompt,
         "reference_image": image_path,
         "audio_url": audio_reference_url,
-        "reference_videos": req.reference_videos,
+        "reference_videos": reference_video_paths,
         "ratio": req.ratio,
         "resolution": req.resolution,
         "duration": duration,
