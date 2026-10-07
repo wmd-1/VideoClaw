@@ -83,7 +83,7 @@ if str(video_generation_mode).strip().lower() == "start_end_frame" and i < len(s
 
 #### I-A　沙盒 `image`/`reference_videos` 未走路径白名单——C1 加固只堵了音频一支
 
-> **状态（2026-09-30）：已修复 ✅** 新增 `_guard_local_media`（复用共享 helper `resolve_within_allowed_dirs`），`image`/`reference_videos` 与 `audio_url` 三支统一守卫，越界在发起生成前拒绝，生成调用改传规范化绝对路径；`verify_sandbox_path_guard.py` 扩展至 17 项断言 ALL PASS。以下为原始发现，保留存档。
+> **状态（2026-09-30）：部分修复 ⚠️ → 2026-10-07 已全部修复 ✅** 本轮（`8d02e47`）新增 `_guard_local_media`（复用共享 helper `resolve_within_allowed_dirs`），但**只接在 `/api/sandbox/video`**；同一文件的 i2i（`req.image`）与 vlm（`req.images`）仍是原样透传，该缺口在第三轮评审登记为 I-1，并另发现本地路径守卫误拒了远程 URL 输入（第三轮 I-2）。两者已于 2026-10-07 收口：守卫改名 `_guard_media_input`（+ 列表版 `_guard_media_inputs`），video/i2i/vlm 三端统一套用，并对 `http(s)/data:/file://oss://` 远程形态原样透传；`verify_sandbox_path_guard.py` 由 17 项扩至 27 项 ALL PASS。详见 `docs/code-review-3ac13de-to-eaa012a.md`。以下为原始发现，保留存档。
 
 **位置**：`video-claw/video-claw/backend/api/routers/sandbox.py#L475、L485`；消费端 `models/custom_video.py#L600、L721`
 
