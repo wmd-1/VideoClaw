@@ -20,7 +20,7 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/prompt_rewr
   -d '{"session_id": "xxx"}'
 ```
 
-> ⚠️ 每个分镜需向外部改写服务串行提交一轮请求，阶段耗时为分钟级；请耐心等待 SSE 进度事件。
+> ⚠️ 每个分镜串行发起一次本地 LLM 调用（结构校验失败时最多追加 2 次带违规清单的修订调用），阶段耗时为分钟级；请耐心等待 SSE 进度事件。
 
 ## 停点说明
 

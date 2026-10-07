@@ -98,7 +98,7 @@ export default function PromptRewriteStage({
           <h3 className="text-sm font-semibold text-gray-700 mb-1">提示词改写</h3>
           <p className="text-xs text-gray-500">
             {state.status === 'pending'
-              ? '本阶段会把每个分镜的镜头描述改写为 MiniMax H3 规范的提示词（通过 Design Agent Platform）。请先完成分镜与参考图阶段，然后执行本阶段。'
+              ? '本阶段会把每个分镜的镜头描述改写为 MiniMax H3 规范的提示词（原生实现：知识资产内嵌 + 本地 LLM 调用，输入模式由视频生成方式与素材角色推导）。请先完成分镜与参考图阶段，然后执行本阶段。'
               : state.status === 'error'
                 ? `执行失败：${state.error || '未知错误'}`
                 : '暂无改写结果'}

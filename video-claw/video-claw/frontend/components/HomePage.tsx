@@ -481,7 +481,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                     ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
                     : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                 )}
-                title="自动执行全部六个阶段，无需手动确认"
+                title={`自动执行全部 ${enabledStages.length} 个阶段，无需手动确认`}
               >
                 <Zap className="w-4 h-4" />
                 一键生成

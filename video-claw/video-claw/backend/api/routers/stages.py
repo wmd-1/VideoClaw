@@ -10,7 +10,7 @@ _ALL_STAGES = [
     {"id": "character_design", "name": "角色/场景设计", "order": 2, "description": "生成角色设计图和场景背景"},
     {"id": "storyboard", "name": "分镜设计", "order": 3, "description": "设计镜头语言和分镜脚本"},
     {"id": "reference_generation", "name": "参考图生成", "order": 4, "description": "生成高精度参考图"},
-    {"id": "prompt_rewrite", "name": "提示词改写", "order": 5, "description": "将分镜描述改写为 MiniMax H3 规范提示词（Design Agent Platform）"},
+    {"id": "prompt_rewrite", "name": "提示词改写", "order": 5, "description": "将分镜描述改写为 MiniMax H3 规范提示词（原生实现，本地 LLM 调用）"},
     {"id": "video_generation", "name": "视频生成", "order": 6, "description": "将参考图/分镜图生成视频"},
     {"id": "post_production", "name": "后期剪辑", "order": 7, "description": "拼接视频片段为最终成片"},
 ]
