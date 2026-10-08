@@ -16,6 +16,8 @@
 
 2026-10-07（本轮）：**I-1、I-2 已修复，M-3 一并收口**，均在既有 `video-claw-backend` 容器内验证通过（见 §五）。M-1/M-2/M-4/M-5 未动，登记为待办（见 §六）。
 
+2026-10-08（承接）：**M-1、M-2、M-4 已实施并在容器内验证通过**；M-5 经拍板 **维持现状**（已接受取舍，不动码，重议条件登记于 openspec）。至此本轮 Critical/Important/Minor 全部关闭，无遗留代码项。
+
 ---
 
 ## 一、优点（Strengths）
@@ -64,11 +66,11 @@
 
 | 编号 | 问题 | 位置 | 状态 |
 |---|---|---|---|
-| M-1 | `ids == expected and bool(ids or True)` 是**永真式**（`ids or True` 恒真），M-f 所称"双保险"的这半为死代码，易被误读为已有额外守卫 | `tmp_verify/verify_models_filter.py` L57 | 待办 |
-| M-2 | `expected` 仅按 `types` 推导，未叠供应商完整性判定；存在"声明但 provider 残缺"的自定义模型时会 false-red（方向安全但不鲁棒） | 同上 L43-52；对照 `models/config_model.py` L851-868 | 待办 |
+| M-1 | `ids == expected and bool(ids or True)` 是**永真式**（`ids or True` 恒真），M-f 所称"双保险"的这半为死代码，易被误读为已有额外守卫 | `tmp_verify/verify_models_filter.py` L57 | **已修 ✅**（2026-10-08，删永真式） |
+| M-2 | `expected` 仅按 `types` 推导，未叠供应商完整性判定；存在"声明但 provider 残缺"的自定义模型时会 false-red（方向安全但不鲁棒） | 同上 L43-52；对照 `models/config_model.py` L851-868 | **已修 ✅**（2026-10-08，新增 `custom_provider_ok` 谓词 + 合成自检 + 与后端逐项漂移校核） |
 | M-3 | 历史记录中 `reference_image` 存守卫后绝对路径、`reference_videos` 存原始输入，回放/审计归一程度不一致 | `sandbox.py` video `input_data` | **已修 ✅**（改存 `reference_video_paths`，并同步 i2i/vlm 存守卫值） |
-| M-4 | `.env.example` 文件末尾仍无换行（前轮 M3 遗留，本轮改该文件未顺手修） | `.env.example` | 待办 |
-| M-5 | `capsReady` 三态未覆盖"fetch 既不 resolve 也不 reject"的悬挂，理论上永久 disabled（概率极低，属"以极小概率禁用换首屏正确"的取舍） | `TopBar.tsx` L236-284 | 待办（建议 `AbortController` + 8~10s 超时） |
+| M-4 | `.env.example` 文件末尾仍无换行（前轮 M3 遗留，本轮改该文件未顺手修） | `.env.example` | **已修 ✅**（2026-10-08，仅补单个终止换行，正文逐字节不变） |
+| M-5 | `capsReady` 三态未覆盖"fetch 既不 resolve 也不 reject"的悬挂，理论上永久 disabled（概率极低，属"以极小概率禁用换首屏正确"的取舍） | `TopBar.tsx` L236-284 | **已接受取舍（2026-10-08 拍板）**，不动码；重议条件登记于 openspec |
 
 ---
 
@@ -112,12 +114,26 @@ docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_na
 
 I-2 的正向验证：新增第 17 组断言覆盖 `https://` 与 `data:` 在 video / i2i / vlm 三端原样透传（此前无任何用例）。
 
+**2026-10-08 追加（M-1/M-2 承接）**：
+
+```bash
+docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_models_filter.py            # 由 10 项增至 22 项 ALL PASS
+docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_multi_ability_filter.py     # ALL PASS（同能力域回归）
+docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_prune.py                    # ALL PASS（同推导法回归）
+```
+
+新增的 22 项包含：5 项「供应商完整性」谓词合成自检（完整/protocol 未注册/base_url 非 http(s)/provider 未定义/CUSTOM_PROTOCOLS 非空防自检空转）与 6 项「谓词与后端 `model_availability` 逐项一致」漂移交叉校核。不依赖本机配置即可验证谓词分支覆盖，避免“声明但 provider 残缺”环境下的 false-red。
+
 ---
 
-## 六、剩余待办
+## 六、待办处置与 openspec 挂接（已于 2026-10-08 全部收口，未新建 change）
 
-- M-1（`verify_models_filter.py` 永真式）、M-2（期望集未叠供应商判定）、M-4（`.env.example` 末行换行）、M-5（`capsReady` 悬挂兜底）
-- openspec 工件本地同步：`video-audio-video-references` tasks §7.4 措辞需从"沙盒视频接口"改为"沙盒媒体入参（video/i2i/vlm）统一守卫 + 远程形态透传"，并补 spec Scenario（工件不入库，本地更新）
+- **M-1**（`verify_models_filter.py#L57` 永真式）→ `video-generation-parameter-system` tasks **7.1**：已实施 ✅（改回 `ids == expected` 并重写该条描述为「类型声明 ∧ 供应商完整」推导集）
+- **M-2**（期望集未叠加供应商完整性谓词）→ 同 change tasks **7.2**：已实施 ✅（新增 `custom_provider_ok`，四处期望集均参与；谓词独立重实现不复用被测 `model_availability`，另加合成自检与逐项漂移交叉校核）
+- **M-4**（`.env.example` 末行换行）→ `video-audio-video-references` tasks **7.7**：已实施 ✅（仅补单个终止换行，`cmp` 确认正文逐字节不变）
+- **M-5**（`capsReady` 悬挂）→ 经拍板 **维持现状、不动码**：登记于 `video-generation-parameter-system` tasks **7.3** 与该 change design 的 Risks/Trade-offs，含重议触发条件（实测首屏长期不可点、或能力拉取引入新来源时再加 `AbortController`+超时并同步 spec Scenario）
+- **openspec 契约同步已完成**（本轮代码 `fa78e83` 先于规格落地，属必要回填）：`video-audio-video-references` 的守卫 Requirement 改名为「沙盒媒体入参统一路径守卫」并覆盖三端（含逐条守卫、列表入参原子拒绝、`input_data` 存规范化值），新增「远程形态原样透传」与「列表入参含越界条目时整请求拒绝」两个 Scenario（后者是 I-2 的契约，缺它下轮加固可能再次误拒 URL 输入）；proposal 修正 I-A 的“全部媒体入参”过宽表述并追加 I-1/I-2 条目；design 新增 D6 记录守卫的三点取舍。两个 change `openspec validate --type change --strict` 均 valid（openspec 工件不入库）。
+- **仍未清的项目（非本轮发现）**：`video-audio-video-references` tasks **6.3**、`video-generation-parameter-system` tasks **5.3** —— 均需真实视频端点/真模型的真机验证，本环境不具备；两个 change 因此**暂不能归档**。
 
 ## 七、结论
 
