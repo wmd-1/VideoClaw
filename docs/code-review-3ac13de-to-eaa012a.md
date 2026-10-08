@@ -18,6 +18,8 @@
 
 2026-10-08（承接）：**M-1、M-2、M-4 已实施并在容器内验证通过**；M-5 经拍板 **维持现状**（已接受取舍，不动码，重议条件登记于 openspec）。至此本轮 Critical/Important/Minor 全部关闭，无遗留代码项。
 
+> **勘误（2026-10-08）**：本报告与 `fa78e83`/`ac437a4` 提交信息中的断言条数当初估错了（写成 guard 17→27、models_filter 10→22）。已以容器内**实际运行时 PASS 行数**为准校正：`verify_sandbox_path_guard.py` **17 → 32**（新增 15）、`verify_models_filter.py` **16 → 27**（新增 11）。已提交的历史 commit message 不回改，以此处为准。
+
 ---
 
 ## 一、优点（Strengths）
@@ -79,7 +81,7 @@
 | 条目 | 状态 | 证据 |
 |---|---|---|
 | **C-1** 首尾帧字面量接线 | **已修，未回归** | `prompt_rewrite_agent.py` L472-474/L496；`h3_golden.py` L49/L87；`verify_native_h3_rewriter.py` L28-33、L244-264；全仓 grep 无残留 |
-| **I-A** 沙盒媒体入参统一守卫 | 本轮复核为**部分修**（仅 video 端）→ 随 I-1 **已修至 i2i/vlm** | `sandbox.py` L211-240（守卫）、L343-352（vlm）、L425-441（i2i）、L480-491（video）；`verify_sandbox_path_guard.py` 17 → 27 项 |
+| **I-A** 沙盒媒体入参统一守卫 | 本轮复核为**部分修**（仅 video 端）→ 随 I-1 **已修至 i2i/vlm** | `sandbox.py` L211-240（守卫）、L343-352（vlm）、L425-441（i2i）、L480-491（video）；`verify_sandbox_path_guard.py` 17 → 32 项 |
 | **M-a** api.md "外部会话"残留 | **已修** | `backend/docs/api.md` L342-346（改本地版本链/continuity 语义，补降级与 temperature 说明） |
 | **M-b** `.env.example` 旧 `VC_DESIGN_AGENT__*` | **已修**（M3 末行换行未顺手处理 → 本报告 M-4） | `.env.example` diff |
 | **M-c** `system_zh.txt` 内联策略 | **按方案"采纳现状"**落地，无实现变更 | `8d02e47`/`076b727` 提交说明；代码未动 |
@@ -102,7 +104,7 @@
 
 ```bash
 # 以下均在项目根，对既有 video-claw-backend 容器执行（代码以只读 bind mount 进 /app）
-docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_sandbox_path_guard.py      # 27 项 ALL PASS（含新增 i2i/vlm 10 项）
+docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_sandbox_path_guard.py      # 32 项 ALL PASS（本轮新增 15 项：i2i/vlm 越界拒绝与三端远程形态透传）
 docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_sandbox_media_refs.py       # ALL PASS（audio/视频参考回归）
 docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_workflow_audio_ref.py      # ALL PASS（工作流侧回归）
 docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_video_params.py             # ALL PASS
@@ -117,12 +119,12 @@ I-2 的正向验证：新增第 17 组断言覆盖 `https://` 与 `data:` 在 vi
 **2026-10-08 追加（M-1/M-2 承接）**：
 
 ```bash
-docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_models_filter.py            # 由 10 项增至 22 项 ALL PASS
+docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_models_filter.py            # 由 16 项增至 27 项 ALL PASS
 docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_multi_ability_filter.py     # ALL PASS（同能力域回归）
 docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_prune.py                    # ALL PASS（同推导法回归）
 ```
 
-新增的 22 项包含：5 项「供应商完整性」谓词合成自检（完整/protocol 未注册/base_url 非 http(s)/provider 未定义/CUSTOM_PROTOCOLS 非空防自检空转）与 6 项「谓词与后端 `model_availability` 逐项一致」漂移交叉校核。不依赖本机配置即可验证谓词分支覆盖，避免“声明但 provider 残缺”环境下的 false-red。
+新增后的 27 项包含：5 项「供应商完整性」谓词合成自检（完整/protocol 未注册/base_url 非 http(s)/provider 未定义/CUSTOM_PROTOCOLS 非空防自检空转）与 6 项「谓词与后端 `model_availability` 逐项一致」漂移交叉校核。不依赖本机配置即可验证谓词分支覆盖，避免“声明但 provider 残缺”环境下的 false-red。
 
 ---
 
