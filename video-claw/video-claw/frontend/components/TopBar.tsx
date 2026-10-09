@@ -318,7 +318,7 @@ function ModelSelector({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-72 bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-50 space-y-2.5">
+        <div className="absolute right-0 top-full mt-1 w-72 max-h-[70vh] overflow-y-auto overscroll-contain bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-50 space-y-2.5">
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">LLM 模型</span>
             <ProviderSelect value={config.llm_model} providers={llmProviders} onChange={v => update('llm_model', v)} className={MODEL_SELECT_CLASS} />

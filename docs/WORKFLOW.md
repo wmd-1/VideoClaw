@@ -239,7 +239,8 @@ flowchart LR
 
 - 支持四种能力：`text_to_video`（文生视频）、`first_frame_i2v`（首帧）、`start_end_frame_i2v`（首尾帧）、`reference_to_video`（参考图）；另含媒体参考扩展能力标签 `audio_reference`（音频参考）与 `video_reference`（参考视频，仅 vllm-omni 协议支持），未声明对应能力的模型不出现在相应选择入口；
 - MiniMax-H3 任务自动推断并携带：纯文本 `t2va`、含首帧/首尾帧 `fl2va`、含参考图 `ref2va`；vllm-omni 以 `extra_params`（task/duration/frame_indices）为首选形态、失败自动回退旧形态；sglang 以 `task` 字段为必填；
-- 多图字段：vllm-omni 多图用 `input_references` 重复（首尾帧附 `frame_indices=[0, -1]`）；sglang 顺序多图用同名 `input_reference` 重复；均保留命名回退候选（`last_frame` / `reference_images` / `image[]` 等）；含图的创建仅走 multipart（避免退化为“无图生成”）；
+- 多图字段：vllm-omni 多图用 `input_references` 重复（首尾帧附 `frame_indices=[0, -1]`）；sglang 顺序多图用同名 `input_reference` 重复；均保留命名回退候选（`last_frame` / `reference_images` / `image[]` 等）；含图的创建仅走 multipart（避免退化为“无图生成”）；分辨率 `768P` 为 MiniMax-H3 默认短边档位（各画幅短边固定 768）；
+- 采样调度参数可在模型 `capabilities` 声明（设置页“高级能力参数”或直接写 YAML）：`num_inference_steps` / `flow_shift` / `audio_flow_shift` / `fast_h3`。未声明时不下发（行为与旧版一致）；声明后 vllm-omni 写顶层表单字段（`audio_flow_shift` 归 `extra_params`），sglang 写 JSON 顶层，且同步/异步两条链路一致。取值需按权重：标准 50、Turbo 4step→5、Turbo 8step→9、FastH3→4（此时不传两个 shift）；
 - **音视频参考**（vllm-omni / MiniMax-H3 ref2va）：音频参考以 `audio_reference={"audio_url": <HTTP(S) 或 data: URL>}` 表单字段携带（本地文件先转为服务端可访问 URL；跨机部署需保证该 URL 可被推理服务访问，否则改填 `data:` URL）；视频参考与图片参考按传入顺序合并进 `input_references` 重复上传（MIME 按文件类型推断：`video/mp4`、`video/quicktime`、`video/webm` 等）；媒体参考提交失败时按既有回退序列处理，最终失败错误包含服务端响应与目标地址，**绝不静默退化为无参考请求**；sync（`/v1/videos/sync`）与异步三段式两条链路行为一致；
 - 采用三段式异步任务：创建（multipart 主形态，含文件时必用）→ 轮询任务状态（`GET /v1/videos/{id}`，失败回退列表）→ 下载内容写入 `save_path`；
 - 与内置客户端约定一致：**既落盘又返回远端标识**；轮询有超时上限，失败/超时会尽力取消任务；`api_key` 为空时不发鉴权头（兼容零鉴权本地服务）。

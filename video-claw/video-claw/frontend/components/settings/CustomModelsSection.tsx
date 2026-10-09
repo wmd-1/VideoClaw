@@ -278,6 +278,8 @@ export function CustomModelsSection({
   const [error, setError] = useState('');
   const [testing, setTesting] = useState<Record<string, boolean>>({});
   const [testResults, setTestResults] = useState<Record<string, ModelTestResult | string>>({});
+  // 高级能力参数（capabilities）折叠区，默认收起以免干扰主流程
+  const [capsOpen, setCapsOpen] = useState<Record<string, boolean>>({});
 
   const models: any[] = Array.isArray(config.custom_models) ? config.custom_models : [];
   const providerKeys = Object.keys(config.api_providers || {}).filter(key => !BUILTIN_PROVIDERS.includes(key));
@@ -316,6 +318,50 @@ export function CustomModelsSection({
       next.custom_models = list;
       return next;
     });
+  };
+
+  /**
+   * 写回 custom_models[].capabilities：留空/取消勾选 = 该维度不下发（保持默认行为）；
+   * 逗号分隔列表解析为数组；duration 以 {min,max} 嵌套结构写入。
+   */
+  const updateCapability = (index: number, key: string, raw: string | boolean) => {
+    setConfig(current => {
+      const next = structuredClone(current || {});
+      const list = Array.isArray(next.custom_models) ? next.custom_models : [];
+      const entry = list[index];
+      if (!entry) return current;
+      const caps: Record<string, any> = { ...(entry.capabilities || {}) };
+      const [group, sub] = key.split('.');
+      if (sub) {
+        const duration = { ...((caps[group as 'duration'] as Record<string, any>) || {}) };
+        if (typeof raw === 'string' && raw.trim() === '') delete duration[sub];
+        else duration[sub] = raw;
+        if (Object.keys(duration).length) caps[group] = duration;
+        else delete caps[group];
+      } else if (typeof raw === 'boolean') {
+        if (raw) caps[group] = true;
+        else delete caps[group];
+      } else if (raw.trim() === '') {
+        delete caps[group];
+      } else if (group === 'fps' || group === 'resolutions' || group === 'ratios') {
+        caps[group] = raw.split(',').map(item => item.trim()).filter(Boolean);
+      } else {
+        caps[group] = raw;
+      }
+      if (Object.keys(caps).length) entry.capabilities = caps;
+      else delete entry.capabilities;
+      list[index] = entry;
+      next.custom_models = list;
+      return next;
+    });
+  };
+
+  const capValue = (entry: any, key: string, sub?: string): string => {
+    const caps = entry?.capabilities || {};
+    if (sub) return String(caps[key]?.[sub] ?? '');
+    const value = caps[key];
+    if (Array.isArray(value)) return value.join(', ');
+    return value === true ? '' : String(value ?? '');
   };
 
   const addModel = () => {
@@ -476,6 +522,68 @@ export function CustomModelsSection({
                   />
                 </label>
               </div>
+
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCapsOpen(prev => ({ ...prev, [String(entry.id || index)]: !prev[String(entry.id || index)] }))}
+                  className="text-[11px] font-medium text-gray-500 hover:text-blue-600"
+                >
+                  {capsOpen[String(entry.id || index)] ? '▾ 收起高级能力参数' : '▸ 高级能力参数（capabilities）'}
+                </button>
+                <span className="text-[10px] text-gray-400">留空即不下发；MiniMax-H3 建议 short_edge=768、时长 4-15</span>
+              </div>
+              {capsOpen[String(entry.id || index)] && (
+                <div className="mt-2 grid grid-cols-1 gap-2 rounded-lg border border-gray-100 bg-white p-2 md:grid-cols-3 lg:grid-cols-4">
+                  <label className="flex flex-col">
+                    <FieldLabel text="short_edge 短边（如 768）" />
+                    <input className={inputClass} type="number" min={1} placeholder="768" value={capValue(entry, 'short_edge')} disabled={envOnly} onChange={e => updateCapability(index, 'short_edge', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="duration.min 时长下限" />
+                    <input className={inputClass} type="number" min={1} placeholder="4" value={capValue(entry, 'duration', 'min')} disabled={envOnly} onChange={e => updateCapability(index, 'duration.min', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="duration.max 时长上限" />
+                    <input className={inputClass} type="number" min={1} placeholder="15" value={capValue(entry, 'duration', 'max')} disabled={envOnly} onChange={e => updateCapability(index, 'duration.max', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="fps（逗号分隔，如 24）" />
+                    <input className={inputClass} placeholder="24" value={capValue(entry, 'fps')} disabled={envOnly} onChange={e => updateCapability(index, 'fps', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="resolutions（如 768P）" />
+                    <input className={inputClass} placeholder="768P" value={capValue(entry, 'resolutions')} disabled={envOnly} onChange={e => updateCapability(index, 'resolutions', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="ratios（逗号分隔）" />
+                    <input className={inputClass} placeholder="16:9, 9:16" value={capValue(entry, 'ratios')} disabled={envOnly} onChange={e => updateCapability(index, 'ratios', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="num_inference_steps 步数" />
+                    <input className={inputClass} type="number" min={1} placeholder="标准 50；Turbo 4step→5" value={capValue(entry, 'num_inference_steps')} disabled={envOnly} onChange={e => updateCapability(index, 'num_inference_steps', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="flow_shift" />
+                    <input className={inputClass} type="number" step="0.1" min={0} placeholder="12 或 6" value={capValue(entry, 'flow_shift')} disabled={envOnly} onChange={e => updateCapability(index, 'flow_shift', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="audio_flow_shift" />
+                    <input className={inputClass} type="number" step="0.1" min={0} placeholder="3.0" value={capValue(entry, 'audio_flow_shift')} disabled={envOnly} onChange={e => updateCapability(index, 'audio_flow_shift', e.target.value)} />
+                  </label>
+                  <label className="flex items-center gap-2 pt-4">
+                    <input
+                      id={`fast-h3-${String(entry.id || index)}`}
+                      type="checkbox"
+                      className="h-3.5 w-3.5 accent-violet-600"
+                      checked={Boolean(entry.capabilities?.fast_h3)}
+                      disabled={envOnly}
+                      onChange={e => updateCapability(index, 'fast_h3', e.target.checked)}
+                    />
+                    <span className="text-[11px] text-gray-500">FastH3（仅 4 步，不下发 shift）</span>
+                  </label>
+                </div>
+              )}
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {selectedTypes.length === 0 && <span className="text-[11px] text-gray-400">选择类型后可测试连通性</span>}

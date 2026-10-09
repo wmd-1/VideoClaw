@@ -50,6 +50,7 @@ export const VIDEO_RATIOS = [
 
 /* ─── 视频分辨率 ─── */
 export const VIDEO_RESOLUTIONS = [
+    { id: '768P', label: '768P（MiniMax-H3 默认短边）' },
     { id: '720P', label: '720P' },
     { id: '1080P', label: '1080P' },
 ];

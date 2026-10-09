@@ -499,7 +499,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
 
           {/* 模型设置折叠面板 */}
           {showSettings && (
-            <div className="mt-4 p-4 bg-gray-50 rounded-xl space-y-4 text-xs">
+            <div className="mt-4 p-4 bg-gray-50 rounded-xl space-y-4 text-xs max-h-[60vh] overflow-y-auto overscroll-contain pr-3">
               <div className="grid grid-cols-1 gap-3">
                 <label className="flex flex-col gap-1">
                   <span className="text-gray-500 font-medium">风格</span>

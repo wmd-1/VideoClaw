@@ -133,18 +133,44 @@ custom_models:
     model: Qwen-Image-Edit
     types: [i2i]
     concurrency: 1
-  - id: local-video
+  - id: MiniMax-H3-sglang
     provider: local_video_sglang
-    model: Wan2.2-T2V-A14B
+    model: MiniMaxAI/MiniMax-H3
     types: [video]
     abilities: [text_to_video, first_frame_i2v, start_end_frame_i2v, reference_to_video]
     concurrency: 1
-  - id: local-video-vllm
+    # MiniMax-H3 两个部署形态均要求 768 短边（sglang target.short_edge=768 / vllm-omni short_edge=768）。
+    # 声明 short_edge 后适配层按 768 下发，即使会话仍选 720P 也不会被服务端 400 拒绝；
+    # duration 4-15s、fps 24 与 resolutions（驱动生成配置面板的可选项）同理。
+    #
+    # 采样调度参数（可选；不声明则不下发，行为与旧版一致）。取值需按加载的权重对齐手册：
+    #   num_inference_steps：标准调度 50；Turbo 4step→5、Turbo 8step→9；FastH3→4
+    #     （请求的 sigma 点数 = 权重前向次数 + 1，所以 4step 权重填 5）
+    #   flow_shift：12 或 6（按 artifact 版本）；audio_flow_shift：固定 3.0
+    #   fast_h3: true 时仅下发 num_inference_steps，不携带两个 shift（adapter 自管 sigma 阶梯）
+    # 注入位置由协议决定：vllm-omni 顶层表单 num_inference_steps/flow_shift + extra_params.audio_flow_shift；
+    # sglang 为 JSON 顶层三字段。也可以在设置页“自定义模型 → 高级能力参数”里填写。
+    capabilities:
+      short_edge: 768
+      resolutions: ['768P']
+      duration: { min: 4, max: 15 }
+      fps: [24]
+      # num_inference_steps: 50
+      # flow_shift: 12
+      # audio_flow_shift: 3.0
+      # fast_h3: false
+  # 若要默认走 H3：把上方 models.video_first_frame / video_start_end / video_reference 指向本条 id。
+  - id: MiniMax-H3-vllm
     provider: local_video_vllm
-    model: Wan2.2-T2V-A14B
+    model: /models/MiniMax-H3
     types: [video]
     abilities: [text_to_video, first_frame_i2v, start_end_frame_i2v, reference_to_video]
     concurrency: 1
+    capabilities:
+      short_edge: 768
+      resolutions: ['768P']
+      duration: { min: 4, max: 15 }
+      fps: [24]
 
 # 补充说明：
 # - 供应商另可用 .env 注册/覆盖：VC_PROVIDER_<名称>__PROTOCOL / __BASE_URL / __API_KEY（见 .env.example）。

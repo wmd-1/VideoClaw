@@ -283,6 +283,15 @@ class CustomVideoClient:
         protocol_fields: Dict[str, str] = {}
         json_fields: Dict[str, Any] = {}
         drop_size = False
+        sampling = self._sampling_decl()
+        steps = sampling.get("num_inference_steps")
+        flow_shift = sampling.get("flow_shift")
+        audio_shift = sampling.get("audio_flow_shift")
+        if sampling.get("fast_h3") and (flow_shift is not None or audio_shift is not None):
+            # FastH3 用自己的 sigma 阶梯，手册明确要求不传 flow_shift / audio_flow_shift
+            logger.info("flow_shift/audio_flow_shift dropped for FastH3 artifact (adapter owns the sigma ladder)")
+            flow_shift = None
+            audio_shift = None
         if self._protocol == "vllm-omni":
             fps_value = self._resolve_fps(fps)
             short_edge_value = self._short_edge_value(short_edge)
@@ -299,10 +308,22 @@ class CustomVideoClient:
                 drop_size = True
             if fps_value is not None:
                 protocol_fields["fps"] = str(fps_value)
+            # 调度参数：vllm-omni 为顶层表单字段（audio_flow_shift 例外，归入 extra_params）
+            if steps is not None:
+                protocol_fields["num_inference_steps"] = str(int(steps))
+            if flow_shift is not None:
+                protocol_fields["flow_shift"] = self._fmt_scalar(flow_shift)
         elif self._protocol == "sglang":
             # MiniMax-H3 服务端将 target 视为必填对象（缺失即 400），因此无条件注入
             target = self._sglang_target(duration, video_ratio, short_edge, resolution, has_image)
             json_fields["target"] = target
+            # 调度参数：sglang 三者均为 JSON 顶层字段
+            if steps is not None:
+                json_fields["num_inference_steps"] = int(steps)
+            if flow_shift is not None:
+                json_fields["flow_shift"] = flow_shift
+            if audio_shift is not None:
+                json_fields["audio_flow_shift"] = audio_shift
         # openai 兼容：沿用 size/seconds，不注入新字段
         return protocol_fields, json_fields, drop_size
 
@@ -369,11 +390,44 @@ class CustomVideoClient:
             return "fl2va"  # 首帧 / 尾帧 / 首尾帧
         return "t2va"
 
+    def _sampling_decl(self) -> Dict[str, Any]:
+        """读取 capabilities 声明的调度参数（D6）；非法/非正值忽略并记录，不影响生成。"""
+        caps = self._capabilities()
+        result: Dict[str, Any] = {}
+        casters = (("num_inference_steps", int), ("flow_shift", float), ("audio_flow_shift", float))
+        for key, caster in casters:
+            raw = caps.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                value = caster(raw)
+            except (TypeError, ValueError):
+                logger.warning("capabilities.%s ignored: invalid value %r", key, raw)
+                continue
+            if value <= 0:
+                logger.warning("capabilities.%s ignored: non-positive value %r", key, raw)
+                continue
+            result[key] = value
+        result["fast_h3"] = bool(caps.get("fast_h3"))
+        return result
+
+    @staticmethod
+    def _fmt_scalar(value: Any) -> str:
+        """表单字段取值：整数值不带小数点（与手册示例 flow_shift=12 一致）。"""
+        number = float(value)
+        return str(int(number)) if number.is_integer() else str(number)
+
     def _extra_params(self, task: str, duration: int, frame_indices: Optional[List[int]] = None) -> str:
-        """vllm-omni 的 extra_params 表单字段（JSON 字符串）。"""
+        """vllm-omni 的 extra_params 表单字段（JSON 字符串）。
+
+        按手册形式，`audio_flow_shift` 归入 extra_params 而非顶层字段；FastH3 不携带调度偏移。
+        """
         payload: Dict[str, Any] = {"task": task, "duration": float(duration)}
         if frame_indices:
             payload["frame_indices"] = frame_indices
+        sampling = self._sampling_decl()
+        if not sampling.get("fast_h3") and sampling.get("audio_flow_shift") is not None:
+            payload["audio_flow_shift"] = float(sampling["audio_flow_shift"])
         return json.dumps(payload)
 
     def _file_uri(self, path: str) -> str:
