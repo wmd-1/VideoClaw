@@ -272,8 +272,10 @@ export default function WorkflowPanel() {
     const sessionParam = searchParams.get('session');
     const stageParam = searchParams.get('stage');
     if (sessionParam) {
-      // 保存目标阶段，等会话加载完成后再设置
-      const targetStage = stageParam && stageOrder.includes(stageParam) ? stageParam : null;
+      // 目标阶段按「已知全量阶段」校验，不能用 stageOrder：冷启动瞬间 /api/stages 尚未
+      // resolve，stageOrder 还是默认六阶段，会把可选注入阶段（prompt_rewrite）误判为非法
+      // 并丢弃 URL 参数（该 effect 之后不会随 stageOrder 更新重跑）。
+      const targetStage = stageParam && ALL_stageOrder.includes(stageParam) ? stageParam : null;
       handleResumeProject(sessionParam, targetStage);
     }
   }, [searchParams]);
@@ -1217,8 +1219,9 @@ export default function WorkflowPanel() {
       const completedStages = allStatusStages.filter(k => ["completed", "session_completed"].includes(stMap[k]));
       setCompletedStagesFromSession(completedStages);
 
-      // 仅处理已知工作流阶段：status map 可能含 init 等内部键（无独立 artifact，直接跳过避免 404）
-      for (const sName of allStatusStages.filter(name => stageOrder.includes(name))) {
+      // 仅处理已知工作流阶段（按全量已知集合，覆盖尚未 resolve 的可选注入阶段；
+      // status map 里的 init 等内部键不在 ALL_stageOrder 中，仍会被跳过避免无谓 404）
+      for (const sName of allStatusStages.filter(name => ALL_stageOrder.includes(name))) {
         const cStatus = stMap[sName];
         if (cStatus === 'pending' || cStatus === 'idle') {
           // 即使是 pending，如果 artifacts 中有数据，也尝试恢复数据（用于初始占位显示）
