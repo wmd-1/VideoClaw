@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle, Loader, RefreshCw, Save, Sparkles, XCircle, Wand2 } from 'lucide-react';
 import clsx from 'clsx';
 import type { StageViewProps } from './types';
+import StageProgress from './StageProgress';
 
 interface RewriteItem {
   id: string;
@@ -42,6 +43,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function PromptRewriteStage({
   state,
+  artifacts,
   onConfirm,
   onIntervene,
   onRegenerate,
@@ -68,6 +70,36 @@ export default function PromptRewriteStage({
   const failedCount = items.filter(i => i.status === 'failed').length;
   const doneCount = items.filter(i => i.status === 'done').length;
 
+  // 逐分镜串行改写：首跑时 items 要等阶段完成才落入产物，故用分镜条数 + SSE percent 换算实时条数
+  const segmentTotal = useMemo(() => {
+    const episodes = artifacts?.storyboard?.episodes;
+    if (!Array.isArray(episodes)) return 0;
+    return episodes.reduce(
+      (sum: number, ep: any) => sum + (Array.isArray(ep?.segments) ? ep.segments.length : 0),
+      0,
+    );
+  }, [artifacts]);
+  const rewrittenCount = segmentTotal
+    ? Math.min(segmentTotal, Math.round((segmentTotal * state.progress) / 100))
+    : doneCount;
+
+  // 进度条：仅在本阶段执行中展示（与其他阶段一致，按 state.status 而非全局 isRunning 判定）
+  const progressNode = state.status === 'running' ? (
+    <div className="mb-2">
+      <StageProgress
+        message={state.progressMessage}
+        fallback="正在逐条改写分镜提示词..."
+        progress={state.progress}
+        color="violet"
+      />
+      {segmentTotal > 0 && (
+        <p className="-mt-3 text-xs text-gray-500">
+          已改写 {rewrittenCount}/{segmentTotal} 条（每个分镜串行一次模型调用，全部完成后逐条展示结果）
+        </p>
+      )}
+    </div>
+  ) : null;
+
   const draftOf = (item: RewriteItem) => drafts[item.id] ?? String(item.rewritten_prompt ?? '');
   const isDirty = (item: RewriteItem) => {
     const draft = drafts[item.id];
@@ -92,16 +124,19 @@ export default function PromptRewriteStage({
   // 阶段尚未执行
   if (items.length === 0) {
     return (
-      <div className="p-6">
+      <div className="h-full overflow-y-auto p-4 sm:p-6 custom-scrollbar">
+        {progressNode}
         <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center">
           <Wand2 className="w-8 h-8 text-purple-400 mx-auto mb-3" />
           <h3 className="text-sm font-semibold text-gray-700 mb-1">提示词改写</h3>
           <p className="text-xs text-gray-500">
-            {state.status === 'pending'
-              ? '本阶段会把每个分镜的镜头描述改写为 MiniMax H3 规范的提示词（原生实现：知识资产内嵌 + 本地 LLM 调用，输入模式由视频生成方式与素材角色推导）。请先完成分镜与参考图阶段，然后执行本阶段。'
-              : state.status === 'error'
-                ? `执行失败：${state.error || '未知错误'}`
-                : '暂无改写结果'}
+            {state.status === 'running'
+              ? `正在串行改写 ${segmentTotal || ''} 个分镜的提示词，请稍候…`
+              : state.status === 'pending'
+                ? '本阶段会把每个分镜的镜头描述改写为 MiniMax H3 规范的提示词（原生实现：知识资产内嵌 + 本地 LLM 调用，输入模式由视频生成方式与素材角色推导）。请先完成分镜与参考图阶段，然后执行本阶段。'
+                : state.status === 'error'
+                  ? `执行失败：${state.error || '未知错误'}`
+                  : '暂无改写结果'}
           </p>
           {state.status === 'error' && !isRunning && (
             <button
@@ -118,7 +153,8 @@ export default function PromptRewriteStage({
   }
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="h-full overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar">
+      {progressNode}
       {/* 汇总条 */}
       <div className="rounded-2xl border border-gray-200 bg-white p-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-500">
         <span className="flex items-center gap-1.5 font-medium text-gray-700">
