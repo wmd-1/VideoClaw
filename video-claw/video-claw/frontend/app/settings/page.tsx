@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, Loader2, Save, Settings, XCircle } from 'lucide-react';
 import BrandHeader from '@/components/BrandHeader';
-import { fetchModelGroupsByType, mergeProviderGroups } from '@/lib/modelRegistry';
+import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, describeSlotIssue, mergeProviderGroups } from '@/lib/modelRegistry';
 import {
   CustomModelsSection,
   CustomProvidersSection,
@@ -143,6 +143,10 @@ export default function SettingsPage() {
   const [error, setError] = useState('');
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
   const [modelSelects, setModelSelects] = useState<Record<ModelSelectKey, ProviderGroup[]>>(EMPTY_MODEL_SELECTS);
+  // 本槽位在首页/运行时会使用的过滤列表（用于计算非阻塞警告），与合并后的 modelSelects 不同
+  const [slotLists, setSlotLists] = useState<Record<ModelSelectKey, ProviderGroup[]>>(EMPTY_MODEL_SELECTS);
+  // 非阻塞黄字提示：key = config 字段路径（如 'models.video_first_frame'）
+  const [modelIssues, setModelIssues] = useState<Record<string, string>>({});
   const [envOverrides, setEnvOverrides] = useState<EnvOverrides>(EMPTY_ENV_OVERRIDES);
   // 已保存配置基线：用于提示“当前编辑值未保存”（工作流实际使用已保存值）
   const [savedConfig, setSavedConfig] = useState<ConfigTree>({});
@@ -171,6 +175,7 @@ export default function SettingsPage() {
 
   // Default Models 各下拉共享同一份「全部可用模型」：不做类型/能力过滤，
   // 任何模型（含 vlm/图像/视频）都可以被任一下拉选中（保持可交叉选择的逻辑）。
+  // 额外并行拉取首页/运行时实际使用的过滤列表，仅用于下游不可用提示，不影响下拉选项。
   const refreshModelSelects = () => {
     Promise.all([
       fetchModelGroupsByType('llm'),
@@ -178,9 +183,12 @@ export default function SettingsPage() {
       fetchModelGroupsByType('i2i'),
       fetchModelGroupsByType('t2i'),
       fetchModelGroupsByType('video'),
+      fetchVideoModelGroupsByAbility('first_frame_i2v'),
+      fetchVideoModelGroupsByAbility('start_end_frame_i2v'),
+      fetchVideoModelGroupsByAbility('reference_to_video'),
     ])
-      .then(groupsList => {
-        const merged = mergeProviderGroups(groupsList);
+      .then(([llm, vlm, i2i, t2i, video, ff, se, ref]) => {
+        const merged = mergeProviderGroups([llm, vlm, i2i, t2i, video]);
         setModelSelects({
           llm: merged,
           vlm: merged,
@@ -190,6 +198,16 @@ export default function SettingsPage() {
           video_start_end: merged,
           video_reference: merged,
         });
+        // 下游过滤列表（与首页/运行时取数一致）
+        setSlotLists({
+          llm,
+          vlm,
+          image_it2i: i2i,
+          image_t2i: t2i,
+          video_first_frame: ff,
+          video_start_end: se,
+          video_reference: ref,
+        });
       })
       .catch(() => {});
   };
@@ -197,6 +215,34 @@ export default function SettingsPage() {
   useEffect(() => {
     refreshModelSelects();
   }, []);
+
+  // 非阻塞黄字警告：当前保存值在本槽位对应的首页/运行时过滤列表中不存在时，
+  // 异步拉取不可用原因并展示；不阻止保存、不禁用下拉。
+  const MODEL_FIELD_PATHS: Array<{ path: string; key: ModelSelectKey }> = [
+    { path: 'models.llm', key: 'llm' },
+    { path: 'models.vlm', key: 'vlm' },
+    { path: 'models.image_it2i', key: 'image_it2i' },
+    { path: 'models.image_t2i', key: 'image_t2i' },
+    { path: 'models.video_first_frame', key: 'video_first_frame' },
+    { path: 'models.video_start_end', key: 'video_start_end' },
+    { path: 'models.video_reference', key: 'video_reference' },
+  ];
+  useEffect(() => {
+    let cancelled = false;
+    const tasks = MODEL_FIELD_PATHS.map(({ path, key }) => {
+      const value = getValue(config, path);
+      return describeSlotIssue(slotLists[key], String(value ?? '')).then(text => ({ path, text }));
+    });
+    Promise.all(tasks)
+      .then(results => {
+        if (cancelled) return;
+        const next: Record<string, string> = {};
+        for (const r of results) if (r.text) next[r.path] = r.text;
+        setModelIssues(next);
+      })
+      .catch(() => { /* 无警告降级 */ });
+    return () => { cancelled = true; };
+  }, [slotLists, config]);
 
   const groups = GROUPS.map(group => {
     if (group.title !== 'Default Models') return group;
@@ -374,6 +420,9 @@ export default function SettingsPage() {
                             onChange={event => updateField(field, event.target.value)}
                             className={`h-10 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 outline-none focus:border-blue-300 ${overridden ? 'bg-gray-100 text-gray-400' : 'bg-white'}`}
                           />
+                        )}
+                        {modelIssues[field.path] && (
+                          <span className="text-[11px] text-amber-600">{modelIssues[field.path]}</span>
                         )}
                       </label>
                     );

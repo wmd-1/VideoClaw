@@ -1,5 +1,5 @@
 import type { ProviderGroup, VideoModelCapabilities } from '@/config/models';
-import { fetchApiModels } from '@/lib/workflowApi';
+import { fetchApiModels, fetchModelAvailability } from '@/lib/workflowApi';
 
 const PROVIDER_LABELS: Record<string, string> = {
   dashscope: 'DashScope',
@@ -60,6 +60,70 @@ export async function fetchVideoModelCapabilities(modelId: string): Promise<Vide
     videoCapsCache = { at: now, map };
   }
   return videoCapsCache.map.get(modelId) ?? null;
+}
+
+/**
+ * 首页/运行时选择器兵底：当当前已保存值不在按类型/能力过滤后的列表时，
+ * 仍作为置顶、可选的占位项保留，并附不可用原因，避免静默丢值。
+ * 未命中任何过滤时，行为与传入 groups 完全一致（不放宽既有过滤）。
+ */
+export async function withSlotPlaceholder(
+  groups: ProviderGroup[],
+  value: string | null | undefined,
+): Promise<ProviderGroup[]> {
+  const id = String(value ?? '').trim();
+  if (!id) return groups;
+  const exists = groups.some(group => group.models.some(model => model.id === id));
+  if (exists) return groups;
+
+  let label = `${id}（不可用）`;
+  try {
+    const av = await fetchModelAvailability(id);
+    if (!av.available) {
+      if (av.code === 'not_registered') {
+        label = `${id}（未注册）`;
+      } else if (av.reason) {
+        label = `${id}（不可用：${av.reason}）`;
+      } else {
+        label = `${id}（不可用）`;
+      }
+    } else {
+      // 已注册且可用，但仍被本槽的能力/类型过滤排除
+      label = `${id}（不适用于此模式）`;
+    }
+  } catch {
+    // 接口异常下仍保留可见占位，不因此洗选项
+    label = `${id}（当前不可用）`;
+  }
+
+  return [
+    { provider: '__unavailable__', label: '不可用', models: [{ id, label }] },
+    ...groups,
+  ];
+}
+
+/**
+ * 设置页非阻塞提示：给定「本槽位下首页/运行时会使用的过滤列表」与当前保存值，
+ * 返回下游不可选的原因文本（无问题返回空字符串）。不阻止保存，仅黄字展示。
+ */
+export async function describeSlotIssue(
+  slotList: ProviderGroup[],
+  value: string | null | undefined,
+): Promise<string> {
+  const id = String(value ?? '').trim();
+  if (!id) return '';
+  if (slotList.some(g => g.models.some(m => m.id === id))) return '';
+  try {
+    const av = await fetchModelAvailability(id);
+    if (!av.available) {
+      if (av.code === 'not_registered') return `${id} 未注册，首页/运行时的本槽位将不出现此选项`;
+      if (av.reason) return `${id} 当前不可用：${av.reason}`;
+      return `${id} 当前不可用`;
+    }
+    return `${id} 已注册但能力/类型不匹配本槽位，首页/运行时的本槽位将不出现此选项`;
+  } catch {
+    return '';
+  }
 }
 
 /**

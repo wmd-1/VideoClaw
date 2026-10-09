@@ -7,11 +7,12 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from config import CUSTOM_MODEL_TYPES, CUSTOM_PROTOCOLS, Config
+from models.config_model import model_availability
 
 router = APIRouter(tags=["Models"])
 logger = logging.getLogger(__name__)
@@ -139,6 +140,19 @@ def _test_video(meta: Dict[str, Any]) -> str:
         raise
     finally:
         client.close()
+
+
+@router.get("/api/models/availability")
+async def get_model_availability(model: Optional[str] = Query(None)):
+    """只读返回指定模型的当前可用性判定 {available, code, reason}。
+
+    code 取值：not_registered / provider_missing / provider_incomplete /
+    missing_credentials / ""（可用）。目标模型不可用亦返回 200，由 available=False
+    表达；接口不改动配置，不影响 /api/models 既有过滤契约。
+    """
+    if not model or not model.strip():
+        raise HTTPException(400, "model 查询参数不能为空")
+    return model_availability(model.strip())
 
 
 @router.post("/api/models/test")

@@ -268,6 +268,28 @@ export async function fetchApiModels(params: {
   return data.models || [];
 }
 
+/** 模型可用性判定（harden-model-selector-fallback）。
+ * code 与后端 model_availability 对齐：not_registered / provider_missing /
+ * provider_incomplete / missing_credentials / ""。不可用时 HTTP 仍为 200。
+ */
+export interface ModelAvailability {
+  available: boolean;
+  code: string;
+  reason: string;
+}
+
+export async function fetchModelAvailability(model: string): Promise<ModelAvailability> {
+  const search = new URLSearchParams({ model });
+  const resp = await fetch(`/api/models/availability?${search.toString()}`, { cache: 'no-store' });
+  if (!resp.ok) throw new Error('获取模型可用性失败');
+  const data = await resp.json();
+  return {
+    available: Boolean(data?.available),
+    code: String(data?.code ?? ''),
+    reason: String(data?.reason ?? ''),
+  };
+}
+
 export interface ModelTestResult {
   success: boolean;
   model_type: string;

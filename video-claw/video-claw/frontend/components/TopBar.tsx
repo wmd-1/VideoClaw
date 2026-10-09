@@ -12,6 +12,9 @@ import {
   type VideoModelCapabilities,
 } from '@/config/models';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, fetchVideoModelCapabilities } from '@/lib/modelRegistry';
+import ProviderSelect from '@/components/ProviderSelect';
+
+const MODEL_SELECT_CLASS = 'bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full';
 
 export type StageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'error' | 'stopped';
 
@@ -109,33 +112,6 @@ interface TopBarProps {
   onModelConfigChange?: (config: ModelConfig) => void;
   /** 项目状态（如 running, waiting, completed, stopped, idle, error 等） */
   projectStatus?: string;
-}
-
-/* ─── 带 Provider 分组的 <select> ─── */
-function ProviderSelect({
-  value,
-  providers,
-  onChange,
-}: {
-  value: string;
-  providers: ProviderGroup[];
-  onChange: (val: string) => void;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full"
-    >
-      {providers.map(pg => (
-        <optgroup key={pg.provider} label={pg.label}>
-          {pg.models.map(m => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
-  );
 }
 
 /* ─── 模型选择下拉面板 ─── */
@@ -345,19 +321,19 @@ function ModelSelector({
         <div className="absolute right-0 top-full mt-1 w-72 bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-50 space-y-2.5">
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">LLM 模型</span>
-            <ProviderSelect value={config.llm_model} providers={llmProviders} onChange={v => update('llm_model', v)} />
+            <ProviderSelect value={config.llm_model} providers={llmProviders} onChange={v => update('llm_model', v)} className={MODEL_SELECT_CLASS} />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">VLM 评估模型</span>
-            <ProviderSelect value={config.vlm_model} providers={vlmProviders} onChange={v => update('vlm_model', v)} />
+            <ProviderSelect value={config.vlm_model} providers={vlmProviders} onChange={v => update('vlm_model', v)} className={MODEL_SELECT_CLASS} />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">文生图</span>
-            <ProviderSelect value={config.image_t2i_model} providers={t2iProviders} onChange={v => update('image_t2i_model', v)} />
+            <ProviderSelect value={config.image_t2i_model} providers={t2iProviders} onChange={v => update('image_t2i_model', v)} className={MODEL_SELECT_CLASS} />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">图生图</span>
-            <ProviderSelect value={config.image_it2i_model} providers={i2iProviders} onChange={v => update('image_it2i_model', v)} />
+            <ProviderSelect value={config.image_it2i_model} providers={i2iProviders} onChange={v => update('image_it2i_model', v)} className={MODEL_SELECT_CLASS} />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">视频生成方式</span>
@@ -373,7 +349,7 @@ function ModelSelector({
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">{activeVideoLabel}模型</span>
-            <ProviderSelect value={activeVideoModel} providers={activeVideoProviders} onChange={updateActiveVideoModel} />
+            <ProviderSelect value={activeVideoModel} providers={activeVideoProviders} onChange={updateActiveVideoModel} className={MODEL_SELECT_CLASS} />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">{capsLoading ? '视频比例（加载模型能力中…）' : '视频比例'}</span>

@@ -14,6 +14,9 @@ import {
 } from '@/config/models';
 import { STAGES, useEnabledStages } from './TopBar';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
+import ProviderSelect from './ProviderSelect';
+
+const HOME_MODEL_SELECT_CLASS = 'bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none';
 
 export interface ProjectParams {
   idea: string;
@@ -571,67 +574,39 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                 <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1">
                   <span className="text-gray-500 font-medium">LLM 模型</span>
-                  <select
+                  <ProviderSelect
                     value={selectedLLM}
-                    onChange={e => setSelectedLLM(e.target.value)}
-                    className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none"
-                  >
-                    {llmProviders.map(pg => (
-                      <optgroup key={pg.provider} label={pg.label}>
-                        {pg.models.map(m => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
+                    providers={llmProviders}
+                    onChange={v => setSelectedLLM(v)}
+                    className={HOME_MODEL_SELECT_CLASS}
+                  />
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-gray-500 font-medium">VLM 评估模型</span>
-                  <select
+                  <ProviderSelect
                     value={selectedVLM}
-                    onChange={e => setSelectedVLM(e.target.value)}
-                    className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none"
-                  >
-                    {vlmProviders.map(pg => (
-                      <optgroup key={pg.provider} label={pg.label}>
-                        {pg.models.map(m => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
+                    providers={vlmProviders}
+                    onChange={v => setSelectedVLM(v)}
+                    className={HOME_MODEL_SELECT_CLASS}
+                  />
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-gray-500 font-medium">文生图</span>
-                  <select
+                  <ProviderSelect
                     value={selectedT2I}
-                    onChange={e => setSelectedT2I(e.target.value)}
-                    className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none"
-                  >
-                    {t2iProviders.map(pg => (
-                      <optgroup key={pg.provider} label={pg.label}>
-                        {pg.models.map(m => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
+                    providers={t2iProviders}
+                    onChange={v => setSelectedT2I(v)}
+                    className={HOME_MODEL_SELECT_CLASS}
+                  />
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-gray-500 font-medium">图生图</span>
-                  <select
+                  <ProviderSelect
                     value={selectedI2I}
-                    onChange={e => setSelectedI2I(e.target.value)}
-                    className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none"
-                  >
-                    {i2iProviders.map(pg => (
-                      <optgroup key={pg.provider} label={pg.label}>
-                        {pg.models.map(m => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
+                    providers={i2iProviders}
+                    onChange={v => setSelectedI2I(v)}
+                    className={HOME_MODEL_SELECT_CLASS}
+                  />
                 </label>
                 <label className="flex flex-col gap-1 col-span-2">
                   <span className="text-gray-500 font-medium">视频生成方式</span>
@@ -647,19 +622,12 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                 </label>
                 <label className="flex flex-col gap-1 col-span-2">
                   <span className="text-gray-500 font-medium">{selectedVideoModeLabel}模型</span>
-                  <select
+                  <ProviderSelect
                     value={activeVideoModel}
-                    onChange={e => setActiveVideoModel(e.target.value)}
-                    className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none"
-                  >
-                    {activeVideoProviders.map(pg => (
-                      <optgroup key={pg.provider} label={pg.label}>
-                        {pg.models.map(m => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
+                    providers={activeVideoProviders}
+                    onChange={v => setActiveVideoModel(v)}
+                    className={HOME_MODEL_SELECT_CLASS}
+                  />
                 </label>
                 <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
                   <input
