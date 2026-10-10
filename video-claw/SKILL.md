@@ -1,6 +1,6 @@
 ﻿---
 name: video-claw
-description: AI 视频生成全流程：通过 6 个阶段（剧本→角色/场景设计→分镜→参考图→视频生成→后期剪辑）将用户想法转化为完整视频。支持临时工作台（单独调用 LLM、VLM、文生图、图生图、视频生成）和一次性短流程 Pipeline（文艺短视频、动作迁移、数字人口播）。触发词：视频生成、AI视频、AIGC、创作视频、制作视频、AI画图、文艺短视频、静态短视频、动作迁移、数字人口播。
+description: AI 视频生成全流程：通过 6~7 个阶段（剧本→角色/场景设计→分镜→参考图→〔可选：提示词改写〕→视频生成→后期剪辑）将用户想法转化为完整视频。支持临时工作台（单独调用 LLM、VLM、文生图、图生图、视频生成）和一次性短流程 Pipeline（文艺短视频、动作迁移、数字人口播）。触发词：视频生成、AI视频、AIGC、创作视频、制作视频、AI画图、文艺短视频、静态短视频、动作迁移、数字人口播。
 license: MIT License
 metadata:
   author: Lychee
@@ -44,7 +44,7 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 ├── references/                   ← OpenClaw 调用时的参考文档
 │   ├── init_project/             ← 项目初始化
 │   ├── run_project/              ← 服务启动
-│   ├── workflow/                 ← 六阶段工作流 API
+│   ├── workflow/                 ← 主流程工作流 API
 │   ├── sandbox/                  ← 临时工作台 API
 │   ├── pipelines/                ← 一次性短流程 Pipeline API
 │   └── send_message/             ← 消息发送
@@ -75,8 +75,8 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 | 3 | 角色/场景设计 | - | 确认角色/场景图片 | 展示所有人物/场景图片，发送阶段url → 用户确认 |
 | 4 | 分镜设计 | - | 确认分镜列表 | 发送分镜个数、每集时长、总时长信息 → 用户确认 |
 | 5 | 参考图生成 | - | 确认参考图 | 发送阶段url → 用户确认 |
-| 6 | 提示词改写（可选阶段） | prompt_rewrite | 确认 MiniMax H3 规范改写提示词 | 发送阶段url → 用户确认（仅启用时） |
-| 7 | 视频生成 | - | 确认视频片段 | 发送阶段url → 用户确认 |
+| 6 | 提示词改写（可选阶段） | prompt_rewrite | 确认 MiniMax H3 规范改写提示词 | 发送阶段url → 用户确认（仅启用时占 6，**未启用时不占号且其后停点顺延 -1**） |
+| 6 / 7 | 视频生成 | - | 确认视频片段 | 发送阶段url → 用户确认（禁用改写时为 6，启用改写时为 7） |
 | - | 后期剪辑 | post_production | 拼接视频并生成最终成片 | 无需确认，完成后发送阶段url和分集视频 |
 
 > **注意**：原有的部分复杂剧本流程（扩写、模式选择等）由于系统优化已简化，目前直接输出最终的剧本列表，以分集（`episode_number`）为单位。
@@ -102,7 +102,7 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 | 用户说 | 处理 |
 |--------|------|
 | "生成图片" | 临时工作台 (sandbox) |
-| "生成视频" | 必须先询问：长视频(六阶段工作流)、文艺短视频、动作迁移、数字人口播，还是临时工作台视频？ |
+| "生成视频" | 必须先询问：长视频(主流程工作流)、文艺短视频、动作迁移、数字人口播，还是临时工作台视频？ |
 | "文艺短视频" / "静态短视频" / "图文短视频" / "旁白配图视频" | Pipeline：文艺短视频，参考 `references/pipelines/static_short_video.md` |
 | "动作迁移" / "把动作迁到人物上" | Pipeline：动作迁移，参考 `references/pipelines/action_transfer.md` |
 | "数字人口播" / "口播视频" / "商品口播" | Pipeline：数字人口播，参考 `references/pipelines/digital_human.md` |
@@ -121,8 +121,8 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 6. 参考 create_character.md 执行角色设计 → 停点3
 7. 参考 create_storyboard.md 执行分镜设计 → 停点4
 8. 参考 create_reference.md 执行参考图生成 → 停点5
-9. （仅启用提示词改写阶段时）参考 create_prompt_rewrite.md 执行提示词改写 → 停点6
-10. 参考 create_video.md 执行视频生成 → 停点7
+9. （仅启用提示词改写阶段时）参考 create_prompt_rewrite.md 执行提示词改写 → 停点6（未启用时不占号）
+10. 参考 create_video.md 执行视频生成 → 停点6（启用改写时为停点7）
 11. 参考 create_post.md 执行后期剪辑
 12. 完成 → 发送最终视频给用户（若用户在看完成片后希望继续推进故事，参考 smart_continue.md 开始智能续写，然后继续执行新生成片段的后续流程）
 ```
@@ -131,7 +131,7 @@ video-claw/                    ← OpenClaw 调用的 skill 根目录
 
 ### 4. 执行一次性 Pipeline
 
-当用户明确选择文艺短视频、动作迁移或数字人口播时，不走六阶段停点流程，而是创建 Pipeline 任务：
+当用户明确选择文艺短视频、动作迁移或数字人口播时，不走主流程的多阶段停点流程，而是创建 Pipeline 任务：
 
 ```
 1. 检查后端运行状态
@@ -219,7 +219,7 @@ curl "http://localhost:8000/api/project/{session_id}/artifact/{stage}"
 2. 阶段完成停点触发
 收到 completed 停点
 → 获取 artifact 查看产物内容
-→ 展示给用户："第一阶段已完成，生成了剧本内容（x集）..."
+→ 展示给用户："剧本生成阶段已完成，生成了剧本内容（x集）..."
 → 询问："是否继续下一阶段？"
 → 用户回复"继续" → 调用 continue
 ```
@@ -295,15 +295,15 @@ send_to_user(f"📊 查看详情：{frontend_url}")
 | **run_project/** | 项目启动 | |
 | [start_backend.md](references/run_project/start_backend.md) | 启动后端服务 | 服务未运行时 |
 | [start_frontend.md](references/run_project/start_frontend.md) | 启动前端服务 | 服务未运行时 |
-| **workflow/** | 六阶段工作流 | |
+| **workflow/** | 主流程工作流（6~7 阶段，含可选提示词改写） | |
 | [create_project.md](references/workflow/create_project.md) | 创建新项目 API | 开始新视频项目时 |
-| [create_script.md](references/workflow/create_script.md) | 剧本生成 API | 执行第一阶段时 |
-| [create_character.md](references/workflow/create_character.md) | 角色/场景设计 API | 执行第二阶段时 |
-| [create_storyboard.md](references/workflow/create_storyboard.md) | 分镜设计 API/剧情续写 API | 执行第三阶段时/用户提出续写剧情时 |
-| [create_reference.md](references/workflow/create_reference.md) | 参考图生成 API | 执行第四阶段时 |
-| [create_prompt_rewrite.md](references/workflow/create_prompt_rewrite.md) | 提示词改写 API（可选阶段） | 启用提示词改写且执行该阶段时 |
-| [create_video.md](references/workflow/create_video.md) | 视频生成 API | 执行第五阶段时 |
-| [create_post.md](references/workflow/create_post.md) | 后期剪辑 API | 执行第六阶段时 |
+| [create_script.md](references/workflow/create_script.md) | 剧本生成 API | 执行 `script_generation`（剧本生成）阶段时 |
+| [create_character.md](references/workflow/create_character.md) | 角色/场景设计 API | 执行 `character_design`（角色/场景设计）阶段时 |
+| [create_storyboard.md](references/workflow/create_storyboard.md) | 分镜设计 API/剧情续写 API | 执行 `storyboard`（分镜设计）阶段时 / 用户提出续写剧情时 |
+| [create_reference.md](references/workflow/create_reference.md) | 参考图生成 API | 执行 `reference_generation`（参考图生成）阶段时 |
+| [create_prompt_rewrite.md](references/workflow/create_prompt_rewrite.md) | 提示词改写 API（可选阶段） | 启用提示词改写且执行 `prompt_rewrite` 阶段时 |
+| [create_video.md](references/workflow/create_video.md) | 视频生成 API | 执行 `video_generation`（视频生成）阶段时 |
+| [create_post.md](references/workflow/create_post.md) | 后期剪辑 API | 执行 `post_production`（后期剪辑）阶段时 |
 | [modify_character.md](references/workflow/modify_character.md) | 修改角色提示词 | 用户要求修改角色时 |
 | [modify_storyboard.md](references/workflow/modify_storyboard.md) | 修改/续写分镜 | 用户要求修改/续写分镜时 |
 | [modify_reference.md](references/workflow/modify_reference.md) | 修改参考图提示词 | 用户要求修改参考图时 |

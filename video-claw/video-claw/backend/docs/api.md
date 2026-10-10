@@ -364,7 +364,7 @@ SESSION_ID=$(curl -s -X POST http://localhost:8000/api/project/start \
 
 echo "Session ID: $SESSION_ID"
 
-# 2. 执行第一阶段（剧本生成）- 监听 SSE
+# 2. 执行剧本生成阶段（script_generation）- 监听 SSE
 curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/script_generation" \
   -H "Content-Type: application/json" \
   -d '{"style": "anime"}'
@@ -375,7 +375,7 @@ curl -s "http://localhost:8000/api/project/${SESSION_ID}/artifact/script_generat
 # 4. 确认并继续到下一阶段
 curl -s -X POST "http://localhost:8000/api/project/${SESSION_ID}/continue"
 
-# 5. 执行第二阶段（角色设计）
+# 5. 执行角色/场景设计阶段（character_design）
 curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/character_design" \
   -H "Content-Type: application/json" \
   -d '{"style": "anime"}'
@@ -383,7 +383,7 @@ curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/character_
 # 6. 确认并继续
 curl -s -X POST "http://localhost:8000/api/project/${SESSION_ID}/continue"
 
-# 7. 执行第三阶段（分镜设计）
+# 7. 执行分镜设计阶段（storyboard）
 curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/storyboard" \
   -H "Content-Type: application/json" \
   -d '{"style": "anime"}'
@@ -391,7 +391,7 @@ curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/storyboard
 # 8. 确认并继续
 curl -s -X POST "http://localhost:8000/api/project/${SESSION_ID}/continue"
 
-# 9. 执行第四阶段（参考图生成）
+# 9. 执行参考图生成阶段（reference_generation）
 curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/reference_generation" \
   -H "Content-Type: application/json" \
   -d '{"style": "anime"}'
@@ -399,7 +399,7 @@ curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/reference_
 # 10. 确认并继续
 curl -s -X POST "http://localhost:8000/api/project/${SESSION_ID}/continue"
 
-# 11. 执行第五阶段（视频生成）
+# 11. 执行视频生成阶段（video_generation）
 curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/video_generation" \
   -H "Content-Type: application/json" \
   -d '{"style": "anime"}'
@@ -407,7 +407,7 @@ curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/video_gene
 # 12. 确认并继续
 curl -s -X POST "http://localhost:8000/api/project/${SESSION_ID}/continue"
 
-# 13. 执行第六阶段（后期剪辑）
+# 13. 执行后期剪辑阶段（post_production）
 curl -X POST "http://localhost:8000/api/project/${SESSION_ID}/execute/post_production" \
   -H "Content-Type: application/json" \
   -d '{"style": "anime"}'

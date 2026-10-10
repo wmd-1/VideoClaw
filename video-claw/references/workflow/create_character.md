@@ -1,6 +1,6 @@
 # 生成角色与场景
 
-执行第二阶段：角色和场景设计。
+执行角色/场景设计阶段（`character_design`）。
 
 ---
 
@@ -66,7 +66,7 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/character_d
 
 收到此事件后，必须立即下载图片并发送给用户。
 
-## 停点3：角色/场景设计完成，等待用户确认后继续下一阶段
+## 停点3：角色/场景设计（`character_design`）完成，等待用户确认后继续下一阶段
 
 **必须向用户发送消息**，展示完整的角色和场景设计：
 

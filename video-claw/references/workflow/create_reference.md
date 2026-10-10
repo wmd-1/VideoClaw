@@ -1,6 +1,6 @@
 # 生成参考图
 
-执行第四阶段：为每个分镜生成参考图。
+执行参考图生成阶段（`reference_generation`）：为每个分镜生成参考图。
 
 ## 请求
 
@@ -53,7 +53,7 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/reference_g
 
 收到此事件后，必须立即下载图片并发送给用户。
 
-## 停点5：参考图生成完成，等待用户确认后继续下一阶段
+## 停点5：参考图生成（`reference_generation`）完成，等待用户确认后继续下一阶段
 
 **必须向用户发送消息**，展示每个分镜的参考图：
 

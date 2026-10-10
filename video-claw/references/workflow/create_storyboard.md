@@ -1,6 +1,6 @@
 # 生成分镜
 
-执行第三阶段：分镜设计。
+执行分镜设计阶段（`storyboard`）。
 
 ---
 
@@ -41,7 +41,7 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/storyboard"
 }
 ```
 
-## 停点4：分镜设计完成，等待用户确认后继续下一阶段
+## 停点4：分镜设计（`storyboard`）完成，等待用户确认后继续下一阶段
 
 **必须向用户发送消息**，展示完整的分镜列表：
 
