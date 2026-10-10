@@ -159,6 +159,13 @@ custom_models:
       # flow_shift: 12
       # audio_flow_shift: 3.0
       # fast_h3: false
+      #
+      # tasks（可选）：对应推理服务用 `--task-type` 只加载单个 DiT partition 的情形。
+      # vllm-omni 在内存受限 profile 上以 `--task-type fl2va` 或 `ref2va` 启动（只挂一个 DiT），
+      # task 与 partition 不符会被服务端 500（checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'）。
+      # 声明 tasks: ['ref2va'] 后：含图请求自动改按参考图走 ref2va（首/尾帧图并入参考图，不静默丢图）；
+      # 若实例不支持任何含图任务则明确报错而不是去掉图片生成。不声明时行为与旧版一致。
+      # tasks: ['ref2va']
   # 若要默认走 H3：把上方 models.video_first_frame / video_start_end / video_reference 指向本条 id。
   - id: MiniMax-H3-vllm
     provider: local_video_vllm
@@ -171,6 +178,8 @@ custom_models:
       resolutions: ['768P']
       duration: { min: 4, max: 15 }
       fps: [24]
+      # 若该 vllm-omni 实例以 --task-type ref2va 启动，请声明：
+      # tasks: ['ref2va']
 
 # 补充说明：
 # - 供应商另可用 .env 注册/覆盖：VC_PROVIDER_<名称>__PROTOCOL / __BASE_URL / __API_KEY（见 .env.example）。

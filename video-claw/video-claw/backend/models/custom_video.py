@@ -103,6 +103,11 @@ class CustomVideoClient:
         缺省时请求与既有实现完全一致（向后兼容）。
         """
         duration = self._clamp_duration(duration)
+        # 服务实例可能只加载单个 DiT partition（vllm-omni `--task-type fl2va|ref2va`）：
+        # 按能力声明的支持任务收敛输入布局，避免 task 与 partition 不符被服务端 500 拒绝
+        image_path, last_image_path, reference_image_paths = self._align_task_to_partitions(
+            image_path, last_image_path, reference_image_paths, reference_video_paths
+        )
         size = video_size(video_ratio, resolution)
         # 音频参考 → vllm-omni 的 audio_reference 表单字段（URL 形态，D1）
         audio_reference = self._audio_reference_field(audio_reference_url)
@@ -366,6 +371,58 @@ class CustomVideoClient:
             self._record_adjustment("audio_reference 已忽略（协议不支持音频参考）")
             return None
         return json.dumps({"audio_url": audio_reference_url})
+
+    def _supported_tasks(self) -> List[str]:
+        """模型声明的本服务实例支持的任务集合（capabilities.tasks，对应推理服务的 --task-type partition）。未声明返回空。"""
+        raw = self._capabilities().get("tasks")
+        if isinstance(raw, str):
+            items = [part.strip().lower() for part in raw.replace("|", ",").split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            items = [str(part).strip().lower() for part in raw]
+        else:
+            items = []
+        return [item for item in items if item in ("t2va", "fl2va", "ref2va")]
+
+    def _align_task_to_partitions(
+        self,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        reference_image_paths: Optional[List[str]],
+        reference_video_paths: Optional[List[str]],
+    ) -> Tuple[Optional[str], Optional[str], Optional[List[str]]]:
+        """按声明的支持任务收敛输入布局。
+
+        - 未声明 tasks 时零改动（向后兼容）；
+        - 推断出的 task 不在支持集合内且含图时，改走 ref2va：首/尾帧图降级为参考图（图在前、保持传入顺序）；
+        - 含图但服务实例不支持任何含图任务时明确失败，绝不静默去掉图片生成。
+        """
+        supported = self._supported_tasks()
+        if not supported:
+            return image_path, last_image_path, reference_image_paths
+        refs = self._media_reference_paths(reference_image_paths, reference_video_paths)
+        task = self._task_for_input(image_path, last_image_path, refs)
+        target_task = task if task in supported else None
+        if target_task is None:
+            has_media = bool(image_path or last_image_path or refs)
+            if has_media and "ref2va" in supported:
+                target_task = "ref2va"
+                self._record_adjustment(
+                    f"task {task} -> ref2va（服务实例仅加载 {'/'.join(supported)} partition，首/尾帧图改按参考图使用）"
+                )
+            else:
+                raise ValueError(
+                    f"自定义视频模型 {self._meta.get('id')} 任务类型与服务实例不匹配："
+                    f"当前请求为 {task}，而该服务声明仅支持 {'/'.join(supported)}。"
+                    "请修正模型 capabilities.tasks（对应推理服务的 --task-type），"
+                    "或选择支持该模式的其他视频模型（含图请求不会静默去掉图片生成）"
+                )
+        # 最终走 ref2va 时把首/尾帧图统一并入参考图，避免与首帧字段混用导致服务端校验失败
+        if target_task == "ref2va" and (image_path or last_image_path):
+            if task == "ref2va":
+                self._record_adjustment("首/尾帧图并入参考图下发（任务为 ref2va，不混用首帧字段）")
+            frame_paths = [path for path in (image_path, last_image_path) if path]
+            return None, None, frame_paths + list(reference_image_paths or [])
+        return image_path, last_image_path, reference_image_paths
 
     def _media_reference_paths(
         self,

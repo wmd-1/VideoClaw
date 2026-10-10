@@ -126,6 +126,9 @@ custom_models:
       # fast_h3: false
 
   # ── 视频：MiniMax-H3（vllm-omni 形态，当前默认指向它）──
+  # ⚠ 该实例的启动参数带 --task-type ref2va（内存受限 profile 只加载一个 DiT partition），
+  #   所以必须声明 tasks: ['ref2va']；否则含图请求会以 fl2va 发出并被服务端 500 拒绝：
+  #   checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'
   - id: MiniMax-H3-vllm
     provider: local_video_vllm
     model: /models/MiniMax-H3
@@ -137,6 +140,7 @@ custom_models:
       resolutions: ['768P']
       duration: { min: 4, max: 15 }
       fps: [24]
+      tasks: ['ref2va']
 ```
 
 ## 2. 相对你贴出的配置改了什么
@@ -150,6 +154,31 @@ custom_models:
 | 5 | `MiniMax-H3-vllm.abilities` | 缺 `first_frame_i2v`/`start_end_frame_i2v` | 补齐 | 你把三个视频默认模型都指向它，缺标签会导致对应模式入口过滤掉它 |
 | 6 | `local_image_t2i/it2i.base_url` | `192.168.1.10:8091`（模板占位） | 待填真实地址 | 否则第 2/4 阶段图像生成必然失败（只能走上传兜底） |
 | 7 | `server.port` | `8000` | 建议 `8500`（与 `.env BACKEND_PORT` 一致） | 与 vllm-omni 的 8000 同机部署时会冲突；分开后日志/直连端口一致更清晰 |
+| 8 | 两个 H3 模型 | 无 `tasks` | vllm 条目声明 `tasks: ['ref2va']` | 你的 vllm-omni 以 `--task-type ref2va` 启动（只挂一个 DiT partition），task 不符会 500；sglang 侧如也是单 partition 同理声明 |
+
+## 2.5 关于 `checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'`
+
+这不是提示词也不是参数错误，而是**推理服务的部署形态限制**（手册 L18/L80/L257）：内存受限的 profile 下 vllm-omni 用 `--task-type fl2va` 或 `--task-type ref2va` **只加载一个 DiT partition**（“One 950PR holds a single DiT partition, so this profile serves the FL2VA…”），一个实例只服务一种 task。三种处置，任选其一：
+
+| 方式 | 做法 | 适用 |
+| --- | --- | --- |
+| A（推荐，已实现） | 模型 `capabilities` 声明 `tasks: ['ref2va']` | 保持现有服务不动。含图请求会自动改按**参考图**走 ref2va（首/尾帧图并入参考图，图在前），并在日志/响应里记录调整；若实例不支持任何含图任务则**明确报错，不会静默去掉图片** |
+| B | 推理服务改用 `--task-type fl2va` 重启 | 你真正需要“首帧/首尾帧”语义时（ref2va 与 fl2va 不能同一实例同时服务，除非内存足够不传 `--task-type`） |
+| C | 视频默认模型指向 sglang 实例 | sglang 那边支持 t2va/fl2va/ref2va 全三种（本例 `53.192.56.195:30010`）；把 `models.video_first_frame` 等改指 `MiniMax-H3-sglang` 即可 |
+
+声明后自检（容器内）：
+
+```bash
+docker exec -i -w /app -e PYTHONPATH=/app video-claw-backend /app/.venv/bin/python -c "
+from models.config_model import merged_models
+from models.custom_video import CustomVideoClient
+for mid in ('MiniMax-H3-vllm', 'MiniMax-H3-sglang'):
+    meta = merged_models()[mid]
+    print(mid, 'tasks =', CustomVideoClient(meta)._supported_tasks())
+"
+# 任务对齐逻辑的完整回归：
+docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_task_partitions.py
+```
 
 ## 3. 校验与生效
 
@@ -176,6 +205,7 @@ docker compose restart backend
 
 ## 4. 相关能力说明（本版已支持）
 
+- **任务类型与 partition 对齐**：`capabilities.tasks` 可声明本实例支持的任务（对应 `--task-type`）；推断出的 task 不被支持且含图时自动改走 ref2va（首/尾帧图并入参考图）；不支持任何含图任务时明确报错。未声明时零行为变化。
 - **768P 分辨率档位**：16:9→1344x768、9:16→768x1344、1:1→768x768、4:3→1024x768、3:4→768x1024、21:9→1792x768。
 - **sglang `target` 无条件下发**：`short_edge` 优先取声明值，否则由 ratio+resolution 推导；含参考图时 `aspect_ratio=auto`。
 - **调度参数**：`num_inference_steps` / `flow_shift` / `audio_flow_shift` 未声明则完全不下发（与旧行为一致）；声明后 vllm-omni 走顶层表单（`audio_flow_shift` 归 `extra_params`），sglang 走 JSON 顶层，同步端点与异步任务两条链路一致；`fast_h3: true` 时自动丢弃两个 shift。

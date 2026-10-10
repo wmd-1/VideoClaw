@@ -343,7 +343,7 @@ export function CustomModelsSection({
         else delete caps[group];
       } else if (raw.trim() === '') {
         delete caps[group];
-      } else if (group === 'fps' || group === 'resolutions' || group === 'ratios') {
+      } else if (group === 'fps' || group === 'resolutions' || group === 'ratios' || group === 'tasks') {
         caps[group] = raw.split(',').map(item => item.trim()).filter(Boolean);
       } else {
         caps[group] = raw;
@@ -558,6 +558,10 @@ export function CustomModelsSection({
                   <label className="flex flex-col">
                     <FieldLabel text="ratios（逗号分隔）" />
                     <input className={inputClass} placeholder="16:9, 9:16" value={capValue(entry, 'ratios')} disabled={envOnly} onChange={e => updateCapability(index, 'ratios', e.target.value)} />
+                  </label>
+                  <label className="flex flex-col">
+                    <FieldLabel text="tasks 支持的任务（如 ref2va）" />
+                    <input className={inputClass} placeholder="ref2va 或 fl2va, ref2va" value={capValue(entry, 'tasks')} disabled={envOnly} onChange={e => updateCapability(index, 'tasks', e.target.value)} />
                   </label>
                   <label className="flex flex-col">
                     <FieldLabel text="num_inference_steps 步数" />
