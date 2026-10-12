@@ -175,7 +175,7 @@ flowchart LR
 2. 流式逐场上报（`scene_shots_complete`），前端实时渲染；
 3. **跨阶段同步（关键）**：分镜完成后，每个 segment 自动同步为
    - 第 4 阶段的 `scenes` 条目（参考图待生成，字段含 `description=visual_prompt`）；
-   - 第 5 阶段的 `clips` 条目（视频待生成，字段含 `description=plot 汇总`、`duration`、`episode`）；
+   - 视频阶段（`video_generation`）的 `clips` 条目（视频待生成，字段含 `description=plot 汇总`、`duration`、`episode`）；
 4. 阶段进入 `waiting`。
 
 **产物结构**：
@@ -213,11 +213,56 @@ flowchart LR
 - 逐条目**上传自有参考图**（`upload_image`，`item_type=scenes`）——不依赖模型生成；
 - 选择版本、编辑描述、单片段重生成（`/intervene` → `regenerate_scenes`）；
 - 模型不可用兜底弹窗（同第 2 阶段）；
-- 确认后，`selected` 参考图即作为**第 5 阶段的首帧输入**。
+- 确认后，`selected` 参考图即作为**视频阶段（`video_generation`）的首帧输入**。
 
 ---
 
-## 7. 阶段 5：视频生成（video_generation）
+## 7. 可选阶段：提示词改写（prompt_rewrite）
+
+> 本阶段仅在 `h3_rewrite.enable=true`（config.yaml 或 `.env` 的 `VC_H3_REWRITE__ENABLE`）时被注入流程，
+> 位置固定在「参考图生成」与「视频生成」之间；默认禁用时主流程保持 6 个必选阶段，本阶段不出现在
+> `/api/stages`、引擎阶段序列与前端导航中。实现为原生本地 LLM 调用（知识资产内嵌于
+> `prompts/prompt_rewrite/`），无外部服务依赖。
+
+### 7.1 输入与模式推导
+
+- **输入**：`storyboard` 产物按集/片段收集 `segment_id`、镜头正文（`shots[].content` 拼接）、`total_duration`（夹取到 H3 支持的 4~15 秒，非法回退 8 秒）、`characters`、`setting`，按 `segment_id` 排序；`reference_generation` 的 `scenes[].selected` 提供素材角色；`character_design` 的角色描述与场景设定作为**权威事实**注入。
+- **模式 resolver**（纯函数 `resolve_h3_mode`）：以 `video_generation_mode` 为默认依据、素材角色为修正依据，产出 `T2VA / I2VA / FL2VA / L2VA / Ref2VA`。`reference` 优先于帧（→ Ref2VA）；首尾都有图 → FL2VA；仅尾帧 → L2VA；仅首帧 → I2VA；无图 → T2VA。`start_end_frame` 模式的尾帧取**下一分镜的选中图**（与视频阶段的首尾帧取图逻辑一致），末分镜无下一张时落 I2VA。
+- **两级模式契约**：改写层模式与传输层 task 不是同一词汇表。`models/custom_video.py::_task_for_input` 只输出 `t2va / fl2va / ref2va` 三种——I2VA、L2VA、FL2VA 均归并到 `fl2va`，由帧语义参数区分（vllm-omni 的 `extra_params.frame_indices`，sglang 的 `conditions[].role=keyframe` + `frame_index`）。两层必须落同一传输类，否则属于接线缺陷。
+- **指南选路**：`Ref2VA` 读 `references/ref-en.txt`（六段结构 + `<Picture N>` 参考标签），其余四种共用 `references/base-en.txt`（三字段结构）；由 `system_zh.txt` 内联所选指南，单次调用消费，无运行时技能发现。
+
+### 7.2 执行模型与质量保障
+
+- **串行逐分镜**：每个分镜以**一次 LLM 调用为正常路径**；结构校验不通过时，带具体违规清单回喂重试，**最多 2 次**；仍失败则该条目 `status=failed` 并记录违规清单与最后一次被拒输出（`rejected_output`），**不阻塞其他条目**，也不静默放行。
+- **校验器（`_validate_h3_prompt`）**：必填字段存在且顺序正确（基础三字段 / Ref2VA 六段）、时长声明与目标一致、参考标签在全部段落一致且无未定义标签、抽象词黑名单命中、正文语言为英文（对话/歌词/画面文字与引号内内容豁免）。
+- **VLM grounding（独立开关 `h3_rewrite.grounding_enable`，默认 true）**：仅 `I2VA / FL2VA / Ref2VA` 调用；对选中的参考图产出**客观画面描述**并注入改写输入，VLM 不参与写提示词。结果按「绝对路径 + 内容 hash」做会话级缓存，同图重生成不重复调用；失败或开关关闭时回退为无 grounding 的纯文本输入，**模式保持不变**，条目记 `grounding: {described: false, text_only: true}`，阶段末尾输出一条「grounding 降级 N/M 条目」汇总日志（关闭阶段的唯一途径是 `enable`）。
+- **跨分镜连续性**：串行累积前序条目的主体与风格摘要（`continuity` 字段）。优先级为：角色/场景权威事实 > 当前分镜明确要求 > 用户修改意见 > continuity 摘要 > 模型自由补充；continuity 与权威事实冲突时忽略该条，防止前序错误沿链放大。
+- **模型选择与回退**：改写用模型 `h3_rewrite.llm_model` → 会话 `llm_model` → 全局 `Config.LLM_MODEL`；grounding 用 `h3_rewrite.vlm_model` → 会话 `vlm_model` → `Config.VLM_MODEL`。`h3_rewrite.temperature` 目前是**预留字段，未透传到模型调用**（设置页与 api.md 已标注）。
+
+### 7.3 产物与用户介入
+
+```json
+{
+  "items": [
+    {
+      "id": "seg_01_01", "name": "第1集-片段1", "index": 1, "episode": 1,
+      "original_prompt": "分镜正文", "rewritten_prompt": "H3 规范提示词（英文）",
+      "input_mode": "I2VA", "duration": 8,
+      "continuity": "主体与风格摘要", "grounding": {"image_hash": "…", "described": true},
+      "versions": [{"content": "…", "source": "agent", "created_at": "…"}],
+      "status": "done"
+    }
+  ]
+}
+```
+
+- **停点**：阶段完成进入 `waiting`，需用户确认后 `continue`；前端「确认改写结果并继续」。
+- **四种介入**：① 单条重新生成（`regenerate_items`，后台单条，**不携带连续性链**，保留权威事实与 grounding）；② 按修改意见修订（`revise_items`，上一版进「用户修改」优先级区并作为 `superseded` 版本留存）；③ 直接编辑改写结果（更新 artifact）；④ 阶段级重新执行。
+- **实时反馈**：SSE 逐条上报进度（`percent` 按 (i+1)/总数，起始 2%、完成 100%，消息为「分镜 <id> 完成/失败」）与条目完成事件 `asset_complete{type:"items"}`。服务端收到事件时按 id 追加/更新本阶段产物条目并落盘（`orchestrator.merge_progress_artifact`），而**事件另带渲染字段**（`name/original_prompt/input_mode/duration/continuity/grounding/rewritten_prompt/truncated`），因此执行期条目能按完成顺序逐条出现并被检视。注意：改写正文**只走事件、不写入服务端 shell**（避开每条完成全量重写会话文件），所以执行中刷新/断线后条目正文会回落为明示的占位态（不会误报“改写结果为空”），完整正文以阶段完成后的产物为权威；超过上限时 `truncated=true`（上限为集中定义的工程默认值 8000 字符，尚未按真实分布校准）。
+- **下游消费**：视频生成阶段使用改写后的提示词；未产出或失败的条目由视频阶段回退默认拼装。
+- **未启用时的拦截**：任何执行入口调用 `PromptRewriteAgent.check_enabled()` 抛出明确错误（指引设置页 enable 或 `VC_H3_REWRITE__ENABLE`）；前端改写面板在拿到 `/api/stages` 的 `prompt_rewrite_enabled=false` 时显示同源提示，但不替代后端校验。
+
+## 8. 视频生成（video_generation）
 
 **执行**：`VideoDirectorAgent` ｜ **模型**：按 `video_generation_mode` 取 `video_first_frame_model` / `video_start_end_model` / `video_reference_model`
 
@@ -273,7 +318,7 @@ flowchart LR
 
 ---
 
-## 8. 阶段 6：后期剪辑（post_production）
+## 9. 后期剪辑（post_production）
 
 **执行**：`VideoEditorAgent` ｜ **工具**：ffmpeg（无需模型）
 
@@ -294,9 +339,9 @@ flowchart LR
 
 ---
 
-## 9. 贯穿机制
+## 10. 贯穿机制
 
-### 9.1 状态机与"停点"节奏
+### 10.1 状态机与"停点"节奏
 
 ```
 pending → running → waiting →（用户确认 /continue）→ completed → 下一阶段
@@ -306,7 +351,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 - 阶段状态由产物完整性**自动重算**：例如第 4 阶段所有 `scenes` 都有 `selected` 即 `completed`；
 - 前端与 Agent 均可通过 `GET /api/project/{sid}/status` 恢复现场（后端重启/断线重连后可用）。
 
-### 9.2 用户介入的四种形式
+### 10.2 用户介入的四种形式
 
 | 形式 | 接口 | 适用 |
 | --- | --- | --- |
@@ -315,13 +360,13 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 | 上传自定义素材 | `POST .../artifact/{stage}/upload_image` | 第 2 阶段角色/场景图、第 4 阶段参考图 |
 | 部分重做 | `POST /api/project/{sid}/intervene` | 指定条目重生成、单集重拼等（`modifications` 按阶段定义） |
 
-### 9.3 并发与稳定性
+### 10.3 并发与稳定性
 
 - 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；
 - 长时间任务支持 `stop`（`POST /api/project/{sid}/stop`）中断并保留已完成内容；
 - 生成失败的条目可单独重试；模型级失败会携带 `error_type=model_unavailable` 供前端弹窗引导。
 
-### 9.4 数据落盘位置
+### 10.4 数据落盘位置
 
 | 内容 | 路径（Docker 下宿主为 `./data/code/`） |
 | --- | --- |
@@ -330,7 +375,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 | 视频片段与成片 | `data/code/result/video/<sid>/…` 与 `output/…` |
 | 一次性 Pipeline 任务 | `data/code/data/tasks/` + `data/code/result/task/<task_id>/` |
 
-### 9.5 与 Pipeline / 沙盒的关系
+### 10.5 与 Pipeline / 沙盒的关系
 
 - **主流程**（本文档）：6 个必选阶段 + 每阶段停点确认（启用 `h3_rewrite` 时插入提示词改写，共 7 阶段），适合完整叙事视频；
 - **一次性 Pipeline**（文艺短视频 / 动作迁移 / 数字人口播）：单任务直出，无阶段停点，读取各自页面的模型选择；
@@ -340,7 +385,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 ---
 
-## 10. 接口速查
+## 11. 接口速查
 
 | 操作 | 接口 |
 | --- | --- |
@@ -359,7 +404,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 ---
 
-## 11. 常见失败与兜底
+## 12. 常见失败与兜底
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |

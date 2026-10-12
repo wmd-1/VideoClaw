@@ -47,16 +47,26 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/prompt_rewr
 
 ## 实时反馈
 
-SSE 会逐条发送条目完成事件：
+SSE 会逐条发送条目完成事件（事件已带渲染所需字段，便于阶段完成前就能逐条检视）：
 
 ```json
 {
   "type": "progress",
   "data": {
-    "asset_complete": {"type": "items", "id": "seg_01_01", "status": "done"}
+    "asset_complete": {
+      "type": "items", "id": "seg_01_01", "status": "done", "error": null,
+      "name": "第1集-片段1", "index": 1, "episode": 1,
+      "original_prompt": "…", "input_mode": "I2VA", "duration": 8,
+      "continuity": "…", "grounding": {"described": false, "text_only": true},
+      "rewritten_prompt": "…", "truncated": false
+    }
   }
 }
 ```
+
+说明：改写正文**仅随增量事件传输，不写入服务端持久化的条目 shell**（避免每条完成都全量重写会话文件）。
+因此执行中刷新或断线重连后，已完成条目的正文可能回落为状态占位（界面会明示，不会误报“改写结果为空”）；
+完整正文以阶段完成后的产物为权威，超过事件传输上限（当前工程默认 8000 字符）时 `truncated=true`。
 
 ## 停点：改写完成，等待用户确认后继续下一阶段
 
