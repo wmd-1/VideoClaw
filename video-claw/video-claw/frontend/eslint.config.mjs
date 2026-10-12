@@ -1,11 +1,11 @@
-import nextCoreVitals from "eslint-config-next/core-web-vitals.js";
-import nextTypescript from "eslint-config-next/typescript.js";
+import nextCoreVitals from "eslint-config-next/core-web-vitals";
+import nextTypescript from "eslint-config-next/typescript";
 
 const eslintConfig = [
-  nextCoreVitals,
-  nextTypescript,
+  ...nextCoreVitals,
+  ...nextTypescript,
   {
-    ignores: [".next/**", "out/**", "build/**", "next-env.d.ts"],
+    ignores: [".next/**", ".next-runtime/**", "out/**", "build/**", "next-env.d.ts"],
   },
 ];
 
