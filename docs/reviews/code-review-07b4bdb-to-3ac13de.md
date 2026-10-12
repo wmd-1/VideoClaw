@@ -12,8 +12,8 @@
   - `e676739` docs(h3-rewrite): 承接评审加固至原生改写器并复核代码评审报告
   - `7305eae` docs(h3-rewrite): 决策依据与 Handoff、MiniMax-H3 参考文档
   - `3ac13de` feat(h3-rewrite): 提示词改写器原生内嵌（替换外部 Design Agent Platform 数据源，31 files +2165/-1190）→ openspec `native-h3-prompt-rewriter`（**本轮重点**）
-- **对照规格**：`openspec/changes/native-h3-prompt-rewriter/`（proposal/design/specs/tasks/verification-report）、`docs/决策：H3 提示词改写内嵌化——原生 Skill 集成方案.md`（§5.2 两级模式契约、§5.6 A–D 质量四件套、§8 验收项 = 实现强约束）、其余三个 change 的 specs
-- **前轮报告**：`docs/code-review-6ba2f19-to-cdea2a1.md`（问题编号 C1、I1–I4、M1–M3 沿用其定义）
+- **对照规格**：`openspec/changes/native-h3-prompt-rewriter/`（proposal/design/specs/tasks/verification-report）、`docs/decisions/决策：H3 提示词改写内嵌化——原生 Skill 集成方案.md`（§5.2 两级模式契约、§5.6 A–D 质量四件套、§8 验收项 = 实现强约束）、其余三个 change 的 specs
+- **前轮报告**：`docs/reviews/code-review-6ba2f19-to-cdea2a1.md`（问题编号 C1、I1–I4、M1–M3 沿用其定义）
 - **复核说明**：本报告中 C-1 与 I-A 两项新发现，报告撰写者已对评审者结论逐条独立核对源码证据（字面量、规范值出处、金标脚本、白名单覆盖面），均属实；前轮未修项核实表亦经抽查确认。
 
 ---
@@ -83,7 +83,7 @@ if str(video_generation_mode).strip().lower() == "start_end_frame" and i < len(s
 
 #### I-A　沙盒 `image`/`reference_videos` 未走路径白名单——C1 加固只堵了音频一支
 
-> **状态（2026-09-30）：部分修复 ⚠️ → 2026-10-07 已全部修复 ✅** 本轮（`8d02e47`）新增 `_guard_local_media`（复用共享 helper `resolve_within_allowed_dirs`），但**只接在 `/api/sandbox/video`**；同一文件的 i2i（`req.image`）与 vlm（`req.images`）仍是原样透传，该缺口在第三轮评审登记为 I-1，并另发现本地路径守卫误拒了远程 URL 输入（第三轮 I-2）。两者已于 2026-10-07 收口：守卫改名 `_guard_media_input`（+ 列表版 `_guard_media_inputs`），video/i2i/vlm 三端统一套用，并对 `http(s)/data:/file://oss://` 远程形态原样透传；`verify_sandbox_path_guard.py` 由 17 项扩至 32 项 ALL PASS（新增 15 项）。详见 `docs/code-review-3ac13de-to-eaa012a.md`。以下为原始发现，保留存档。
+> **状态（2026-09-30）：部分修复 ⚠️ → 2026-10-07 已全部修复 ✅** 本轮（`8d02e47`）新增 `_guard_local_media`（复用共享 helper `resolve_within_allowed_dirs`），但**只接在 `/api/sandbox/video`**；同一文件的 i2i（`req.image`）与 vlm（`req.images`）仍是原样透传，该缺口在第三轮评审登记为 I-1，并另发现本地路径守卫误拒了远程 URL 输入（第三轮 I-2）。两者已于 2026-10-07 收口：守卫改名 `_guard_media_input`（+ 列表版 `_guard_media_inputs`），video/i2i/vlm 三端统一套用，并对 `http(s)/data:/file://oss://` 远程形态原样透传；`verify_sandbox_path_guard.py` 由 17 项扩至 32 项 ALL PASS（新增 15 项）。详见 `docs/reviews/code-review-3ac13de-to-eaa012a.md`。以下为原始发现，保留存档。
 
 **位置**：`video-claw/video-claw/backend/api/routers/sandbox.py#L475、L485`；消费端 `models/custom_video.py#L600、L721`
 
@@ -144,7 +144,7 @@ if str(video_generation_mode).strip().lower() == "start_end_frame" and i < len(s
 
 ## 五、结论（Assessment）
 
-**是否可以合并/已可发布？** ~~否——修复后可~~ → **2026-09-30 更新：C-1 与 I-A 已修复并验证，可发布**（M-a~M-f 为文档/措辞/测试精度类，不阻塞，方案另见 `docs/minor-plan-07b4bdb-to-3ac13de.md`）。
+**是否可以合并/已可发布？** ~~否——修复后可~~ → **2026-09-30 更新：C-1 与 I-A 已修复并验证，可发布**（M-a~M-f 为文档/措辞/测试精度类，不阻塞，方案另见 `docs/reviews/minor-plan-07b4bdb-to-3ac13de.md`）。
 
 **理由**：原生改写器的架构迁移、配置治理、质量四件套与 I1/I2/I3/I4/M1/M2 承接都扎实且可验证；但 **C-1**（首尾帧 mode resolver 因错误字面量全程失效、且被金标测试以同样的错误输入掩盖）破坏了 §5.2 强约束契约的实际可用性，**I-A** 把 C1 已确立的任意文件读取防护漏在了同批新增的 `reference_videos`/`image` 入参上。二者修复合入、并补端到端 FL2VA 用例后，即可放行；Minor 项可随后跟进。
 

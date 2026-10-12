@@ -2,7 +2,7 @@
 
 > 面向 `native-h3-prompt-rewriter` 的实施/接手会话。
 > 来源：已归档变更 `minimax-h3-prompt-rewrite-stage` 的 tasks §7（评审加固）与
-> `docs/code-review-6ba2f19-to-cdea2a1.md`。这两个 change（`minimax-h3-prompt-rewrite-stage`、
+> `docs/reviews/code-review-6ba2f19-to-cdea2a1.md`。这两个 change（`minimax-h3-prompt-rewrite-stage`、
 > `embed-openharness-h3-prompt-writer`）已于 2026-09-29 移入 `openspec/changes/archive/`，不再执行。
 > 本文**只交接仍适用于原生实现的加固项**，不复述外部 `design_agent` 方案的其余内容。
 > 所有后端验证必须在既有 `video-claw-backend` 容器内执行（`docker exec -i ... /app/.venv/bin/python - < 脚本`，项目测试规则）。

@@ -8,9 +8,9 @@
   - `ed0b874` docs(tips)：打包迁移 tar 命令与 sudo 残留笔误
   - `eaa012a` fix(h3-rewrite)：外部平台残留文案清理 + 一键生成阶段数动态取数
   - 规模：17 files，+491/−82
-- **对照基准**：`docs/code-review-07b4bdb-to-3ac13de.md`（C-1/I-A/M-a~M-f 定义与修复要求）、`docs/minor-plan-07b4bdb-to-3ac13de.md`（M-c 采纳现状 / M-d 仅加汇总日志 / M-e 维持预留）、openspec `native-h3-prompt-rewriter` tasks §9.4/§10、`video-audio-video-references` tasks §7.4、`video-generation-parameter-system` tasks §6.1（openspec 工件按项目约定不入库）
+- **对照基准**：`docs/reviews/code-review-07b4bdb-to-3ac13de.md`（C-1/I-A/M-a~M-f 定义与修复要求）、`docs/reviews/minor-plan-07b4bdb-to-3ac13de.md`（M-c 采纳现状 / M-d 仅加汇总日志 / M-e 维持预留）、openspec `native-h3-prompt-rewriter` tasks §9.4/§10、`video-audio-video-references` tasks §7.4、`video-generation-parameter-system` tasks §6.1（openspec 工件按项目约定不入库）
 - **评审方式**：单个 Code Reviewer 独立评审（Superpowers `requesting-code-review` 流程，只读、不派发二级评审）；报告撰写者对关键结论逐条以源码 grep / 容器内实测交叉核实，其中**评审者漏判一项回归（本报告 I-2）由核实阶段发现**
-- **前轮报告**：`docs/code-review-07b4bdb-to-3ac13de.md`（第二轮）、`docs/code-review-6ba2f19-to-cdea2a1.md`（第一轮）
+- **前轮报告**：`docs/reviews/code-review-07b4bdb-to-3ac13de.md`（第二轮）、`docs/reviews/code-review-6ba2f19-to-cdea2a1.md`（第一轮）
 
 ## 修复更新
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="video-claw-pics/banner.png" width="100%" />
+  <img src="../video-claw-pics/banner.png" width="100%" />
 </p>
 
 <h1 align="center">
@@ -52,7 +52,7 @@
 # 📖 Overview
 
 <p align="center">
-  <img src="video-claw-pics/workflow.png" width="100%" />
+  <img src="../video-claw-pics/workflow.png" width="100%" />
 </p>
 
 VideoClaw is an AI director system for creative video production. **You only need to provide an idea, a story outline, or even a vague concept. The system will break it down into an executable filmmaking workflow, continuously producing intermediate assets that can be reviewed, confirmed, revised, and delivered, until a complete final video is generated.**
@@ -68,13 +68,13 @@ It is not a one-shot text-to-video tool. It is a full production line covering *
 
 | Stage | Demo | Description |
 |---|---|---|
-| Home | <img src="video-claw-pics/workflow_demo/homepage.png" width="800" /> | Displays the system overview, supports viewing historical projects, creating new projects, and global configuration (API keys and default model settings). This is the starting point of the creation workflow. |
-| Script Planning | <img src="video-claw-pics/workflow_demo/stage-1.png" width="800" /> | Enter a creative title and project synopsis, and the system automatically generates a structured multi-scene script (including narration and dialogue), with support for intelligent continuation of subsequent plots. |
-| Character/Scene Design | <img src="video-claw-pics/workflow_demo/stage-2.png" width="800" /> | Automatically extracts core characteristics of characters and scenes from the script, generating stylistically consistent reference concept art as the visual basis for later storyboard generation. |
-| Storyboard Planning | <img src="video-claw-pics/workflow_demo/stage-3.png" width="800" /> | Breaks each script scene into continuous visual storyboards, specifying camera perspective, action descriptions, and reference content in detail to ensure narrative coherence. |
-| Reference Image Generation | <img src="video-claw-pics/workflow_demo/stage-4.png" width="800" /> | Generates high-quality, high-precision reference base images for each storyboard scene, controlling lighting details and composition as key visual references for video generation. |
-| Video Generation | <img src="video-claw-pics/workflow_demo/stage-5.png" width="800" /> | Calls mainstream high-performance video generation models (such as Wan and Kling) to convert storyboard images into dynamic clips. |
-| Final Editing | <img src="video-claw-pics/workflow_demo/stage-6.png" width="800" /> | Aggregates all generated video clips and exports a publishable final video with one click. |
+| Home | <img src="../video-claw-pics/workflow_demo/homepage.png" width="800" /> | Displays the system overview, supports viewing historical projects, creating new projects, and global configuration (API keys and default model settings). This is the starting point of the creation workflow. |
+| Script Planning | <img src="../video-claw-pics/workflow_demo/stage-1.png" width="800" /> | Enter a creative title and project synopsis, and the system automatically generates a structured multi-scene script (including narration and dialogue), with support for intelligent continuation of subsequent plots. |
+| Character/Scene Design | <img src="../video-claw-pics/workflow_demo/stage-2.png" width="800" /> | Automatically extracts core characteristics of characters and scenes from the script, generating stylistically consistent reference concept art as the visual basis for later storyboard generation. |
+| Storyboard Planning | <img src="../video-claw-pics/workflow_demo/stage-3.png" width="800" /> | Breaks each script scene into continuous visual storyboards, specifying camera perspective, action descriptions, and reference content in detail to ensure narrative coherence. |
+| Reference Image Generation | <img src="../video-claw-pics/workflow_demo/stage-4.png" width="800" /> | Generates high-quality, high-precision reference base images for each storyboard scene, controlling lighting details and composition as key visual references for video generation. |
+| Video Generation | <img src="../video-claw-pics/workflow_demo/stage-5.png" width="800" /> | Calls mainstream high-performance video generation models (such as Wan and Kling) to convert storyboard images into dynamic clips. |
+| Final Editing | <img src="../video-claw-pics/workflow_demo/stage-6.png" width="800" /> | Aggregates all generated video clips and exports a publishable final video with one click. |
 
 </details>
 
@@ -216,7 +216,7 @@ It is not a one-shot text-to-video tool. It is a full production line covering *
 
 | | | | |
 |:---:|:---:|:---:|:---:|
-| ![WeChat 1](video-claw-pics/wechat_demo/wechat_1.jpg) | ![WeChat 2](video-claw-pics/wechat_demo/wechat_2.jpg) | ![WeChat 3](video-claw-pics/wechat_demo/wechat_3.jpg) | ![WeChat 4](video-claw-pics/wechat_demo/wechat_4.jpg) |
+| ![WeChat 1](../video-claw-pics/wechat_demo/wechat_1.jpg) | ![WeChat 2](../video-claw-pics/wechat_demo/wechat_2.jpg) | ![WeChat 3](../video-claw-pics/wechat_demo/wechat_3.jpg) | ![WeChat 4](../video-claw-pics/wechat_demo/wechat_4.jpg) |
 
 </div>
 </details>
@@ -229,7 +229,7 @@ It is not a one-shot text-to-video tool. It is a full production line covering *
 
 | | | | |
 |:---:|:---:|:---:|:---:|
-| ![Feishu 1](video-claw-pics/feishu_demo/feishu_1.jpg) | ![Feishu 2](video-claw-pics/feishu_demo/feishu_2.jpg) | ![Feishu 3](video-claw-pics/feishu_demo/feishu_3.jpg) | ![Feishu 4](video-claw-pics/feishu_demo/feishu_4.jpg) |
+| ![Feishu 1](../video-claw-pics/feishu_demo/feishu_1.jpg) | ![Feishu 2](../video-claw-pics/feishu_demo/feishu_2.jpg) | ![Feishu 3](../video-claw-pics/feishu_demo/feishu_3.jpg) | ![Feishu 4](../video-claw-pics/feishu_demo/feishu_4.jpg) |
 
 </div>
 </details>
@@ -242,9 +242,9 @@ It is not a one-shot text-to-video tool. It is a full production line covering *
 
 | Pipeline | Demo | Frontend Entry | Description |
 |---|---|---|---|
-| Artistic Short Video | <img src="video-claw-pics/pipeline_demo/standard.png" width="600" /> | Sidebar: "Artistic Short Video" | Supports both "Image Montage / Dynamic Video" and "Creative Inspiration / Full Script" modes. The system splits narration by periods, generates an image and voiceover for each segment, then either composes image-based clips or calls an image-to-video model for dynamic segments. Optional title and subtitles are supported. |
-| Action Transfer | <img src="video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | Sidebar: "Action Transfer" | Takes a reference image, an action video, and a prompt, then calls a video model with action-transfer capability to generate the result video. |
-| Digital Human Talking Video | <img src="video-claw-pics/pipeline_demo/digital_human.png" width="600" /> | Sidebar: "Digital Human Talking Video" | Takes a character image and talking script, generates sentence-level speech and digital human video clips, uses the previous clip's tail frame to continue multi-clip generation, and replaces the final video audio with the generated speech. |
+| Artistic Short Video | <img src="../video-claw-pics/pipeline_demo/standard.png" width="600" /> | Sidebar: "Artistic Short Video" | Supports both "Image Montage / Dynamic Video" and "Creative Inspiration / Full Script" modes. The system splits narration by periods, generates an image and voiceover for each segment, then either composes image-based clips or calls an image-to-video model for dynamic segments. Optional title and subtitles are supported. |
+| Action Transfer | <img src="../video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | Sidebar: "Action Transfer" | Takes a reference image, an action video, and a prompt, then calls a video model with action-transfer capability to generate the result video. |
+| Digital Human Talking Video | <img src="../video-claw-pics/pipeline_demo/digital_human.png" width="600" /> | Sidebar: "Digital Human Talking Video" | Takes a character image and talking script, generates sentence-level speech and digital human video clips, uses the previous clip's tail frame to continue multi-clip generation, and replaces the final video audio with the generated speech. |
 
 </details>
 
@@ -557,7 +557,7 @@ The idea and design of Video-Claw were inspired by [Pixelle-Video](https://githu
 
 | Framework | Paper Information |
 |:---:|---|
-| <img src="./FilmAgent-pics/framework.png" width="420" alt="FilmAgent framework"/> | **[SIGGRAPH Asia 2024] FilmAgent: Automating Virtual Film Production Through a Multi-Agent Collaborative Framework**<br>*Zhenran Xu, Jifang Wang, Longyue Wang, Zhouyi Li, Senbao Shi, Baotian Hu, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3681758.3698014)] [[GitHub](https://github.com/HITsz-TMG/Video-Claw/blob/main/FilmAgent.md)] |
+| <img src="../FilmAgent-pics/framework.png" width="420" alt="FilmAgent framework"/> | **[SIGGRAPH Asia 2024] FilmAgent: Automating Virtual Film Production Through a Multi-Agent Collaborative Framework**<br>*Zhenran Xu, Jifang Wang, Longyue Wang, Zhouyi Li, Senbao Shi, Baotian Hu, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3681758.3698014)] [[GitHub](https://github.com/HITsz-TMG/Video-Claw/blob/main/FilmAgent.md)] |
 | <img src="https://github.com/HITsz-TMG/Anim-Director/blob/main/Anim-Director/assets/visualeg.png" width="420" alt="Anim-Director result"/> | **[SIGGRAPH Asia 2024] Anim-Director: A Large Multimodal Model Powered Agent for Controllable Animation Video Generation**<br>*Yunxin Li, Haoyuan Shi, Baotian Hu, Longyue Wang, Jiashun Zhu, Jinyi Xu, Zhen Zhao, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3680528.3687688)] [[GitHub](https://github.com/HITsz-TMG/Anim-Director/tree/main/Anim-Director)] |
 | <img src="https://raw.githubusercontent.com/HITsz-TMG/Anim-Director/main/AniMaker/assets/pipeline.png" width="420" alt="AniMaker pipeline"/> | **[SIGGRAPH Asia 2025] AniMaker: Multi-Agent Animated Storytelling with MCTS-Driven Clip Generation**<br>*Haoyuan Shi, Yunxin Li, Xinyu Chen, Longyue Wang, Baotian Hu, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3757377.3764009)] [[GitHub](https://github.com/HITsz-TMG/Anim-Director/tree/main/AniMaker)] |
 

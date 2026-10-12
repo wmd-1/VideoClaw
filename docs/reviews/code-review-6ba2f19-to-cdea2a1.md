@@ -295,7 +295,7 @@ self._append_version(item, rewritten, source="agent")             # 再次写入
 | 条目 | 最新状态 | 处置 |
 | --- | --- | --- |
 | C1 | **已修复** | commit `441d18c`：`sandbox.py::_resolve_media_reference_url` 加 `os.path.realpath` + CODE_DIR/TEMP_DIR 白名单校验，越界即抛错；验证 `tmp_verify/verify_sandbox_path_guard.py` |
-| I1 | **承接至 native（未修）** | 逻辑未变，`prompt_rewrite` 仍可经 `h3_rewrite.enable` 关闭 → 死锁风险仍成立。落 `native-h3-prompt-rewriter` tasks **9.1**；细节见 `docs/Handoff 4：…评审加固承接（I1·I4·M1）.md` |
+| I1 | **承接至 native（未修）** | 逻辑未变，`prompt_rewrite` 仍可经 `h3_rewrite.enable` 关闭 → 死锁风险仍成立。落 `native-h3-prompt-rewriter` tasks **9.1**；细节见 `docs/handoffs/Handoff 4：…评审加固承接（I1·I4·M1）.md` |
 | I2 | **作废（不再修）** | 数据源内嵌删除了 `DesignAgentClient`/`_ensure_session`/`submit_turn` 整条外部会话链路，无外部句柄可泄漏；`prompt_rewrite_agent.py` 已无相关符号 |
 | I3 | **已修复** | commit `441d18c`：`Sandbox.tsx` 改多能力 AND 过滤（`requiredAbilities` → `fetchVideoModelGroupsByAbility(a,b)`）；验证 `tmp_verify/verify_multi_ability_filter.py` |
 | I4 | **承接至 native（未修）** | `_make_item`（现约 L410）仍直接引用旧 list，版本记录逻辑未变 → 风险仍成立。落 native tasks **9.2** |

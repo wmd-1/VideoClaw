@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="video-claw-pics/banner.png" width="100%" />
+  <img src="../video-claw-pics/banner.png" width="100%" />
 </p>
 
 <h1 align="center">
@@ -51,7 +51,7 @@
 # 📖 项目介绍
 
 <p align="center">
-  <img src="video-claw-pics/workflow_zh.png" width="100%" />
+  <img src="../video-claw-pics/workflow_zh.png" width="100%" />
 </p>
 
 VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要给出一句想法、一个故事梗概，甚至一个模糊概念，系统就会把它拆解为可执行的影视工作流，持续产出可查看、可确认、可修改、可交付的中间资产，最终生成完整成片**。
@@ -67,13 +67,13 @@ VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要�
 
 | 阶段          | 示意图                                                               | 说明                                                                                                                                                     |
 | ------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 首页          | <img src="video-claw-pics/workflow_demo/homepage.png" width="800" /> | 展示系统概览，支持查看历史项目、创建新项目以及全局配置（API Key 和默认模型设置），是创作流程的起点。                                                     |
-| 剧本策划      | <img src="video-claw-pics/workflow_demo/stage-1.png" width="800" />  | 输入创意标题与项目梗概，系统自动生成结构化的多场次剧本（包含旁白与对话），并支持对后续剧情的智能续写。                                                   |
-| 角色/场景设计 | <img src="video-claw-pics/workflow_demo/stage-2.png" width="800" />  | 基于剧本自动提取角色与场景的核心特征，生成风格统一的参考原画，作为后续分镜生成的视觉基础。                                                               |
-| 分镜规划      | <img src="video-claw-pics/workflow_demo/stage-3.png" width="800" />  | 将每一场剧本拆解为连续的视觉分镜，详细制定镜头视角、动作描述及参考内容，确保叙事连贯性。                                                         |
-| 参考图生成    | <img src="video-claw-pics/workflow_demo/stage-4.png" width="800" />  | 为每个分镜场次生成高质量、高精度的参考底图，控制光影细节与画面构图，作为视频生成的关键视觉基准。                                                     |
-| 视频生成      | <img src="video-claw-pics/workflow_demo/stage-5.png" width="800" />  | 调用主流高性能视频生成模型（如 Wan、Kling 等）将分镜图转化为动态片段，支持首帧生视频、首尾帧生视频、参考图生视频三种方式。                                                   |
-| 后期剪辑      | <img src="video-claw-pics/workflow_demo/stage-6.png" width="800" />  | 聚合所有生成的视频片段，最终一键导出可供发布的成片视频。                                                      |
+| 首页          | <img src="../video-claw-pics/workflow_demo/homepage.png" width="800" /> | 展示系统概览，支持查看历史项目、创建新项目以及全局配置（API Key 和默认模型设置），是创作流程的起点。                                                     |
+| 剧本策划      | <img src="../video-claw-pics/workflow_demo/stage-1.png" width="800" />  | 输入创意标题与项目梗概，系统自动生成结构化的多场次剧本（包含旁白与对话），并支持对后续剧情的智能续写。                                                   |
+| 角色/场景设计 | <img src="../video-claw-pics/workflow_demo/stage-2.png" width="800" />  | 基于剧本自动提取角色与场景的核心特征，生成风格统一的参考原画，作为后续分镜生成的视觉基础。                                                               |
+| 分镜规划      | <img src="../video-claw-pics/workflow_demo/stage-3.png" width="800" />  | 将每一场剧本拆解为连续的视觉分镜，详细制定镜头视角、动作描述及参考内容，确保叙事连贯性。                                                         |
+| 参考图生成    | <img src="../video-claw-pics/workflow_demo/stage-4.png" width="800" />  | 为每个分镜场次生成高质量、高精度的参考底图，控制光影细节与画面构图，作为视频生成的关键视觉基准。                                                     |
+| 视频生成      | <img src="../video-claw-pics/workflow_demo/stage-5.png" width="800" />  | 调用主流高性能视频生成模型（如 Wan、Kling 等）将分镜图转化为动态片段，支持首帧生视频、首尾帧生视频、参考图生视频三种方式。                                                   |
+| 后期剪辑      | <img src="../video-claw-pics/workflow_demo/stage-6.png" width="800" />  | 聚合所有生成的视频片段，最终一键导出可供发布的成片视频。                                                      |
 
 </details>
 
@@ -218,7 +218,7 @@ VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要�
 
 |                                                      |                                                      |                                                      |                                                      |
 | :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: |
-| ![WeChat 1](video-claw-pics/wechat_demo/wechat_1.jpg) | ![WeChat 2](video-claw-pics/wechat_demo/wechat_2.jpg) | ![WeChat 3](video-claw-pics/wechat_demo/wechat_3.jpg) | ![WeChat 4](video-claw-pics/wechat_demo/wechat_4.jpg) |
+| ![WeChat 1](../video-claw-pics/wechat_demo/wechat_1.jpg) | ![WeChat 2](../video-claw-pics/wechat_demo/wechat_2.jpg) | ![WeChat 3](../video-claw-pics/wechat_demo/wechat_3.jpg) | ![WeChat 4](../video-claw-pics/wechat_demo/wechat_4.jpg) |
 
 </div>
 </details>
@@ -233,7 +233,7 @@ VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要�
 
 |                                                      |                                                      |                                                      |                                                      |
 | :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: |
-| ![Feishu 1](video-claw-pics/feishu_demo/feishu_1.jpg) | ![Feishu 2](video-claw-pics/feishu_demo/feishu_2.jpg) | ![Feishu 3](video-claw-pics/feishu_demo/feishu_3.jpg) | ![Feishu 4](video-claw-pics/feishu_demo/feishu_4.jpg) |
+| ![Feishu 1](../video-claw-pics/feishu_demo/feishu_1.jpg) | ![Feishu 2](../video-claw-pics/feishu_demo/feishu_2.jpg) | ![Feishu 3](../video-claw-pics/feishu_demo/feishu_3.jpg) | ![Feishu 4](../video-claw-pics/feishu_demo/feishu_4.jpg) |
 
 </div>
 </details>
@@ -246,9 +246,9 @@ VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要�
 
 | Pipeline   | 示意图                                                                            | 前端入口             | 说明                                                                                                                                                                                                   |
 | ---------- | --------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 文艺短视频 | <img src="video-claw-pics/pipeline_demo/standard.png" width="600" />        | 侧边栏「文艺短视频」 | 支持「图片拼接 / 动态视频」和「创作灵感 / 完整文案」两组模式。系统按句号切分旁白，为每个片段生成配图与语音；图片拼接模式合成图文短视频，动态视频模式继续调用图生视频模型生成片段；可选添加标题和字幕。 |
-| 动作迁移   | <img src="video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | 侧边栏「动作迁移」   | 输入参考图片、动作视频和提示词，调用支持动作迁移能力的视频模型生成结果视频。                                                                                                                           |
-| 数字人口播 | <img src="video-claw-pics/pipeline_demo/digital_human.png" width="600" />   | 侧边栏「数字人口播」 | 输入人物图和口播文案，生成分句语音与数字人视频片段；多片段生成时会使用上一段尾帧衔接下一段，并用生成语音替换最终视频音轨。                                                                             |
+| 文艺短视频 | <img src="../video-claw-pics/pipeline_demo/standard.png" width="600" />        | 侧边栏「文艺短视频」 | 支持「图片拼接 / 动态视频」和「创作灵感 / 完整文案」两组模式。系统按句号切分旁白，为每个片段生成配图与语音；图片拼接模式合成图文短视频，动态视频模式继续调用图生视频模型生成片段；可选添加标题和字幕。 |
+| 动作迁移   | <img src="../video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | 侧边栏「动作迁移」   | 输入参考图片、动作视频和提示词，调用支持动作迁移能力的视频模型生成结果视频。                                                                                                                           |
+| 数字人口播 | <img src="../video-claw-pics/pipeline_demo/digital_human.png" width="600" />   | 侧边栏「数字人口播」 | 输入人物图和口播文案，生成分句语音与数字人视频片段；多片段生成时会使用上一段尾帧衔接下一段，并用生成语音替换最终视频音轨。                                                                             |
 
 </details>
 
@@ -577,7 +577,7 @@ Video-Claw 的想法和设计受到了 [Pixelle-Video](https://github.com/AIDC-A
 
 | 框架图 | 论文信息 |
 | :---: | :--- |
-| <img src="./FilmAgent-pics/framework.png" width="420" alt="FilmAgent framework"/> | **[SIGGRAPH Asia 2024] FilmAgent: Automating Virtual Film Production Through a Multi-Agent Collaborative Framework**<br>*Zhenran Xu, Jifang Wang, Longyue Wang, Zhouyi Li, Senbao Shi, Baotian Hu, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3681758.3698014)] [[GitHub](https://github.com/HITsz-TMG/Video-Claw/blob/main/FilmAgent.md)] |
+| <img src="../FilmAgent-pics/framework.png" width="420" alt="FilmAgent framework"/> | **[SIGGRAPH Asia 2024] FilmAgent: Automating Virtual Film Production Through a Multi-Agent Collaborative Framework**<br>*Zhenran Xu, Jifang Wang, Longyue Wang, Zhouyi Li, Senbao Shi, Baotian Hu, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3681758.3698014)] [[GitHub](https://github.com/HITsz-TMG/Video-Claw/blob/main/FilmAgent.md)] |
 | <img src="https://github.com/HITsz-TMG/Anim-Director/blob/main/Anim-Director/assets/visualeg.png" width="420" alt="Anim-Director result"/> | **[SIGGRAPH Asia 2024] Anim-Director: A Large Multimodal Model Powered Agent for Controllable Animation Video Generation**<br>*Yunxin Li, Haoyuan Shi, Baotian Hu, Longyue Wang, Jiashun Zhu, Jinyi Xu, Zhen Zhao, Min Zhang*<br>[[Paper](https://doi.org/10.1145/3680528.3687688)] [[GitHub](https://github.com/HITsz-TMG/Anim-Director/tree/main/Anim-Director)] |
 
 <p align="center">

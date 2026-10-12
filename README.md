@@ -64,7 +64,14 @@ VideoClaw/
 ├── Dockerfile.frontend         # 前端镜像（多阶段 → standalone runner）
 ├── docker-entrypoint.sh        # 后端启动前：生成 config 并软链持久化（server.host/port 由 config.py 环境层对齐）
 ├── .env.example                # 可选：端口、供应商/模型（VC_*）、生成超时等覆盖示例
-├── docs/                       # 展示向 README（README.md / README_EN.md：作品集与演示）
+├── docs/                       # 项目文档（导航入口：docs/INDEX.md）
+│   ├── README.md               # 展示向（中文）：作品集、演示视频、营销向介绍
+│   ├── README_EN.md            # 展示向（英文）
+│   ├── WORKFLOW.md             # 主流程工作流详解（阶段链路 / 产物 / 介入点 / 兜底）
+│   ├── reviews/                # 提交区间代码评审报告 + Minor 处置方案
+│   ├── handoffs/               # 跨会话交接文档（Handoff 1–4）
+│   ├── decisions/              # 方案决策记录（定稿快照）
+│   └── reference/              # 外部与运维参考（MiniMax-H3 手册、迁移机 config、打包 tips）
 ├── video-claw-pics/  FilmAgent-pics/   # 展示图与论文配图
 ├── FilmAgent/                  # 系列工作（SIGGRAPH Asia 2024 论文代码）
 └── video-claw/                 # OpenClaw Agent Skill 根目录

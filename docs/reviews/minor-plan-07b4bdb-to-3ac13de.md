@@ -1,4 +1,4 @@
-# 针对性方案：M-a~M-f（源自 `docs/code-review-07b4bdb-to-3ac13de.md` Minor 项）
+# 针对性方案：M-a~M-f（源自 `docs/reviews/code-review-07b4bdb-to-3ac13de.md` Minor 项）
 
 > 日期：2026-09-30　基线：HEAD `3ac13de`（C-1/I-A 已修复）
 > 本方案先经确认再实施；各项均已核实当前代码现状（含行号）。

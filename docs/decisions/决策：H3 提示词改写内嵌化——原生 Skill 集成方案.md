@@ -6,8 +6,8 @@
 >
 > 输入：三份 handoff 文档
 > - Handoff A（外部平台交接）：`openspec/changes/embed-openharness-h3-prompt-writer/handoff-from-design-agent-platform.md` —— Design_Agent_Platform 已剥离该能力，建议 VideoClaw 内嵌 OpenHarness（`oh -p`）自建
-> - Handoff B（原生集成）：`docs/Handoff 1：VideoClaw + H3 Skill + H3 Adapter.md` —— 不引入 OpenHarness / LangGraph，H3 Skill + Adapter 原生集成
-> - Handoff C（LangGraph 编排）：`docs/Handoff 2：VideoClaw + LangGraph.md` —— 用 LangGraph 接管核心工作流编排
+> - Handoff B（原生集成）：`docs/handoffs/Handoff 1：VideoClaw + H3 Skill + H3 Adapter.md` —— 不引入 OpenHarness / LangGraph，H3 Skill + Adapter 原生集成
+> - Handoff C（LangGraph 编排）：`docs/handoffs/Handoff 2：VideoClaw + LangGraph.md` —— 用 LangGraph 接管核心工作流编排
 >
 > 术语约定：本文的「Skill 内嵌」指 **H3 Prompt 知识资产（SKILL.md + references 指南）内嵌进 `prompts/` 模板体系**，由 prompt loader 静态加载、单次 LLM 调用消费；**不是**实现通用 Skill Runtime、也不在运行时动态加载技能。官方 H3 Skill 本身是纯 Markdown + reference files 的可移植资产（无外部 API / 专有 runtime 依赖），这是本方案成立的前提。
 
