@@ -20,6 +20,10 @@ import {
   type ModelUnavailableDetail,
 } from '@/lib/workflowApi';
 import TopBar, { STAGES, useEnabledStages, type ModelConfig } from './TopBar';
+import {
+  applyAssetUpdateToArtifact,
+  preserveRewriteBodies,
+} from '@/lib/assetMerge';
 import ModelFallbackDialog from './ModelFallbackDialog';
 import HomePage, { type ProjectParams } from './HomePage';
 import {
@@ -78,38 +82,20 @@ function hasDoneArtifactItems(artifact: any): boolean {
   });
 }
 
-function hasRunningArtifactItems(artifact: any): boolean {
+/**
+ * 产物条目里是否存在“正在运行”的条目（用于阶段本身非 running 时的后台单条重生成）。
+ * `items` 是提示词改写阶段专用的列表键（其余阶段的 `items` 只出现在 segment 内部，不是顶层键），
+ * 按阶段限定避免误改动其他阶段的轮询启动条件。
+ */
+function hasRunningArtifactItems(artifact: any, stageId?: string): boolean {
   if (!artifact) return false;
-  return ['clips', 'images', 'scenes', 'characters', 'settings'].some(key => {
+  const keys = stageId === 'prompt_rewrite'
+    ? ['items']
+    : ['clips', 'images', 'scenes', 'characters', 'settings'];
+  return keys.some(key => {
     const items = artifact?.[key];
     return Array.isArray(items) && items.some((item: any) => item?.status === 'running');
   });
-}
-
-function mergeAssetVersions(current?: string[], incoming?: string[]): string[] {
-  const merged: string[] = [];
-  [...(Array.isArray(current) ? current : []), ...(Array.isArray(incoming) ? incoming : [])].forEach(path => {
-    if (path && !merged.includes(path)) merged.push(path);
-  });
-  return merged;
-}
-
-function mergeAssetUpdateItem(item: any, assetUpdate: any): any {
-  const hasExistingSelection = Boolean(item?.selected);
-  const nextStatus = hasExistingSelection && ['done', 'failed'].includes(assetUpdate.status)
-    ? 'done'
-    : (assetUpdate.status ?? item.status);
-  return {
-    ...item,
-    status: nextStatus,
-    selected: hasExistingSelection
-      ? item.selected
-      : (assetUpdate.selected || item.selected),
-    versions: assetUpdate.versions
-      ? mergeAssetVersions(item.versions, assetUpdate.versions)
-      : item.versions,
-    rewrite_result: assetUpdate.rewrite_result ?? item.rewrite_result,
-  };
 }
 
 function getStageProgressSnapshot(status: any, stageId: string): Partial<StageState> {
@@ -185,7 +171,7 @@ export default function WorkflowPanel() {
         const currentStageStatus = status.status?.[stageId] || 'idle';
         const artifacts = status.artifacts || {};
         const currentArtifact = artifacts[stageId];
-        const hasRunningItems = hasRunningArtifactItems(currentArtifact);
+        const hasRunningItems = hasRunningArtifactItems(currentArtifact, stageId);
         if (done.includes(stageId) && !hasRunningItems) {
           const isWait = currentStageStatus === 'waiting' && status.current_stage === stageId;
           let artifact = null;
@@ -304,6 +290,10 @@ export default function WorkflowPanel() {
     setStageStates(prev => {
       const current = prev[stageId];
       const nextUpdate = { ...update };
+      // 改写阶段：轮询/状态回填的整体覆盖不得冲掉已收到的增量正文（仅限定本阶段）
+      if (stageId === 'prompt_rewrite' && update.artifact) {
+        nextUpdate.artifact = preserveRewriteBodies(current?.artifact, update.artifact);
+      }
       if (
         current?.status === 'running' &&
         typeof update.progress === 'number' &&
@@ -439,18 +429,13 @@ export default function WorkflowPanel() {
           if (event.data?.asset_complete) {
             const assetUpdate = event.data.asset_complete;
             setStageStates(prev => {
-              const prevArt = prev[stageId]?.artifact;
-              if (!prevArt) return prev;
-              const key = assetUpdate.type as string;
-              const items = [...(prevArt[key] || [])];
-              const idx = items.findIndex((item: any) => item.id === assetUpdate.id);
-              if (idx >= 0) {
-                items[idx] = mergeAssetUpdateItem(items[idx], assetUpdate);
-              }
-              return {
-                ...prev,
-                [stageId]: { ...prev[stageId], artifact: { ...prevArt, [key]: items } },
-              };
+              const nextArtifact = applyAssetUpdateToArtifact(
+                prev[stageId]?.artifact,
+                assetUpdate,
+                stageId === 'prompt_rewrite',
+              );
+              if (!nextArtifact) return prev;
+              return { ...prev, [stageId]: { ...prev[stageId], artifact: nextArtifact } };
             });
           }
           // 处理剧本逐幕增量事件
@@ -885,18 +870,13 @@ export default function WorkflowPanel() {
           if (event.data?.asset_complete) {
             const assetUpdate = event.data.asset_complete;
             setStageStates(prev => {
-              const prevArt = prev[stageId]?.artifact;
-              if (!prevArt) return prev;
-              const key = assetUpdate.type as string;
-              const items = [...(prevArt[key] || [])];
-              const idx = items.findIndex((item: any) => item.id === assetUpdate.id);
-              if (idx >= 0) {
-                items[idx] = mergeAssetUpdateItem(items[idx], assetUpdate);
-              }
-              return {
-                ...prev,
-                [stageId]: { ...prev[stageId], artifact: { ...prevArt, [key]: items } },
-              };
+              const nextArtifact = applyAssetUpdateToArtifact(
+                prev[stageId]?.artifact,
+                assetUpdate,
+                stageId === 'prompt_rewrite',
+              );
+              if (!nextArtifact) return prev;
+              return { ...prev, [stageId]: { ...prev[stageId], artifact: nextArtifact } };
             });
           }
           // 处理剧本逐幕增量事件 (介入模式)
@@ -1300,8 +1280,12 @@ export default function WorkflowPanel() {
       setStageStates(newStates);
 
       // 轮询正在执行的阶段；后台单卡重生成时阶段可能不是 running，但 item 会是 running。
-      for (const stageId of stageOrder) {
-        if (stMap[stageId] === 'running' || hasRunningArtifactItems(status.artifacts?.[stageId])) {
+      // 遍历必须基于会话状态里实际出现的阶段（用 ALL_stageOrder 过滤 init 等内部键），
+      // 不能用 stageOrder：冷启动恢复时 /api/stages 尚未 resolve，它还是默认六阶段，
+      // 会漏掉可选注入阶段导致其永不轮询。不会误启动已关闭的阶段：引擎只在阶段真正
+      // 执行时置 running（后台重生成走另一分支），禁用时该键只会停留在 pending/waiting。
+      for (const stageId of Object.keys(stMap).filter(name => ALL_stageOrder.includes(name))) {
+        if (stMap[stageId] === 'running' || hasRunningArtifactItems(status.artifacts?.[stageId], stageId)) {
           pollForCompletion(sid, stageId);
         }
       }

@@ -41,6 +41,11 @@ H3_DURATION_DEFAULT = 8
 # 校验失败重试上限（含首次共 1 + MAX 次调用）
 MAX_VALIDATE_RETRIES = 2
 
+# 条目完成事件里改写正文的传输上限（**仅作用于增量事件，不影响也不落入服务端持久化产物**）。
+# 这是集中定义的工程默认值：本仓库尚无真实推理输出的长度分布样本（历史会话中 prompt_rewrite 条目为 0），
+# 未经真实分布验证，不得当成长期契约；超限部分由 truncated 显式标记，完整正文以阶段产物为权威。
+EVENT_BODY_LIMIT = 8000
+
 # 指南与模板文件（相对 backend 运行目录）
 _REFERENCES_DIR = os.path.join("prompts", "prompt_rewrite", "references")
 _BASE_GUIDE_FILE = os.path.join(_REFERENCES_DIR, "base-en.txt")
@@ -69,6 +74,30 @@ _GROUNDING_PROMPT = (
     "请客观描述这张图片的实际画面内容（主体外观、环境、构图、色调与风格），"
     "只描述画面中真实可见的内容，不要写视频生成指令，不要给创作建议。输出一段简洁的中文描述。"
 )
+
+
+def _event_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
+    """条目完成事件的增量载荷：让前端在阶段完成前就能渲染该条。
+
+    只负责“事件多带哪些字段”，不改变服务端产物合并与状态归一语义（shell 仍不落正文）。
+    超长正文截断并置 truncated，完整正文随阶段产物覆盖。
+    """
+    body = str(item.get("rewritten_prompt") or "")
+    summary: Dict[str, Any] = {
+        "name": item.get("name") or item.get("id"),
+        "index": item.get("index"),
+        "episode": item.get("episode"),
+        "original_prompt": item.get("original_prompt") or "",
+        "input_mode": item.get("input_mode") or "",
+        "duration": item.get("duration"),
+        "continuity": item.get("continuity") or "",
+        "truncated": len(body) > EVENT_BODY_LIMIT,
+    }
+    if item.get("grounding") is not None:
+        summary["grounding"] = item["grounding"]
+    if body:
+        summary["rewritten_prompt"] = body[:EVENT_BODY_LIMIT]
+    return summary
 
 
 def _clamp_duration(raw: Any) -> int:
@@ -561,6 +590,7 @@ class PromptRewriteAgent(AgentInterface):
                         "id": segment["id"],
                         "status": item["status"],
                         "error": item.get("error"),
+                        **_event_item_summary(item),
                     }
                 },
             )
