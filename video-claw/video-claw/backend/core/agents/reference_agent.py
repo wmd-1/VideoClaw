@@ -7,17 +7,18 @@
 - 支持逐项实时预览、重新生成、多版本管理
 """
 
-import os
-import re
+import asyncio
 import glob
 import json
-import asyncio
 import logging
-from typing import Any, Optional, Dict, List
+import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
+
+from prompts.loader import load_prompt
 
 from .base_agent import AgentInterface
-from prompts.loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +536,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                 if json_match:
                     eval_result = json.loads(json_match.group())
                     return eval_result
-            except:
+            except Exception:
                 pass
 
             return {

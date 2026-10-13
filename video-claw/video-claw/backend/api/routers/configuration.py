@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api.logging_config import apply_access_log_setting, apply_log_level_setting
-from config import Config, CONFIG_PATH
+from config import CONFIG_PATH, Config
 
 router = APIRouter(tags=["Configuration"])
 

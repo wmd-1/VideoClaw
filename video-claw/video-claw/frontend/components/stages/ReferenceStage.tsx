@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Image as ImageIcon, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Save, X, Upload } from 'lucide-react';
 import type { StageViewProps } from './types';
 import { assetUrl, assetVersionLabel } from './utils';
@@ -20,6 +20,24 @@ interface SceneItem {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';
   rewrite_result?: RewriteResult;
+  /** 后端动态 JSON 附加字段（按消费处声明） */
+  title?: string;
+  episode?: number;
+  episode_title?: string;
+}
+
+/** 本阶段 artifact 的本地结构（后端动态 JSON，按消费字段声明） */
+interface ReferenceStageArtifact {
+  scenes?: SceneItem[];
+  scene_images?: Record<string, string>;
+}
+
+/** 剧集标题条目（scriptArtifact.episodes） */
+interface EpisodeTitleItem {
+  episode_number?: number;
+  episode?: number;
+  act_title?: string;
+  title?: string;
 }
 
 /* ─── 水平滚动图片画廊 ─── */
@@ -183,7 +201,7 @@ function SceneRow({
           <span className="flex items-center justify-center h-6 px-1.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex-shrink-0 whitespace-nowrap">
             {scene.index ?? scene.id.replace('Scene_', '')}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || (scene as any).title || `片段 ${scene.index}`}</span>
+          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index}`}</span>
           {isPending && (
             <span className="text-[10px] bg-gray-50 text-gray-500 px-1.5 py-0.5 rounded">等待中</span>
           )}
@@ -348,6 +366,7 @@ function SceneRow({
 
 /* ─── 主组件 ─── */
 export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact }: StageViewProps) {
+  const artifact = (state.artifact ?? {}) as ReferenceStageArtifact;
   const [editDescs, setEditDescs] = useState<Record<string, string>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
   const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(new Set());
@@ -359,8 +378,9 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
   // 提取剧集标题映射
   const episodeTitleMap = React.useMemo(() => {
     const map: Record<number, string> = {};
-    if (scriptArtifact?.episodes) {
-      scriptArtifact.episodes.forEach((ep: any) => {
+    const episodes = (scriptArtifact as { episodes?: EpisodeTitleItem[] } | undefined)?.episodes;
+    if (episodes) {
+      episodes.forEach(ep => {
         // 关键修复：这里的字段名应该是 episode_number 和 act_title
         const epNum = ep.episode_number || ep.episode;
         const epTitle = ep.act_title || ep.title;
@@ -375,10 +395,14 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
   const getSelected = (scene: SceneItem) => selectedVersions[scene.id] || scene.selected;
 
   // 兼容旧格式: scene_images: {Scene_1: "path"} → scenes: [{id, ...}]
-  const scenes: SceneItem[] = (() => {
-    if (state.artifact?.scenes?.length) return state.artifact.scenes;
-    if (state.artifact?.scene_images) {
-      const si = state.artifact.scene_images as Record<string, string>;
+  // 必须用 useMemo 稳定引用（依赖原始 state.artifact，不能用 `?? {}` 后的对象）：
+  // 兜底分支（空产物/旧格式）每次渲染都会生成新数组，若直接拿它做下方渲染期
+  // 同步块的比较键会无限自渲染，触发 React "Too many re-renders" 卸载整树
+  const scenes: SceneItem[] = useMemo(() => {
+    const art = (state.artifact ?? {}) as ReferenceStageArtifact;
+    if (art.scenes?.length) return art.scenes;
+    if (art.scene_images) {
+      const si = art.scene_images;
       return Object.entries(si)
         .sort(([a], [b]) => {
           const na = parseInt(a.replace(/\D/g, '')) || 0;
@@ -395,12 +419,14 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
         }));
     }
     return [];
-  })();
+  }, [state.artifact]);
 
   const canEdit = state.status === 'waiting' || state.status === 'completed';
 
-  // 当场景数据变化时，初始化编辑描述
-  useEffect(() => {
+  // 当场景数据变化时，初始化编辑描述：渲染期完成（替代 effect 内同步 setState）
+  const [descsSyncKey, setDescsSyncKey] = useState(scenes);
+  if (descsSyncKey !== scenes) {
+    setDescsSyncKey(scenes);
     if (scenes.length > 0) {
       setEditDescs(prev => {
         const next: Record<string, string> = {};
@@ -408,7 +434,7 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
         return next;
       });
     }
-  }, [scenes]);
+  }
 
   // 当对应片段新增版本或失败时，仅清除该片段的重新生成状态，支持多个任务并行。
   useEffect(() => {
@@ -460,8 +486,8 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
         // 更新本地状态，使用保存后的值
         setEditDescs(prev => ({ ...prev, [sceneId]: newPrompt }));
         // 同步更新 artifact 以便后续阶段能获取最新的提示词
-        if (onUpdateArtifact && state.artifact?.scenes) {
-          const updatedScenes = state.artifact.scenes.map((s: SceneItem) =>
+        if (onUpdateArtifact && artifact.scenes) {
+          const updatedScenes = artifact.scenes.map((s: SceneItem) =>
             s.id === sceneId ? { ...s, description: newPrompt } : s
           );
           onUpdateArtifact({ scenes: updatedScenes });
@@ -505,8 +531,9 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
     setUploadingIds(prev => new Set(prev).add(sceneId));
     try {
       const result = await uploadArtifactImage(sessionId, 'reference_generation', 'scenes', sceneId, file);
-      if (result.artifact?.scenes) {
-        onUpdateArtifact?.({ scenes: result.artifact.scenes });
+      const uploaded = result.artifact as ReferenceStageArtifact | undefined;
+      if (uploaded?.scenes) {
+        onUpdateArtifact?.({ scenes: uploaded.scenes });
       }
       setSelectedVersions(prev => ({ ...prev, [sceneId]: result.path }));
     } catch (error) {
@@ -534,8 +561,8 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
   const handleSelectVersion = async (sceneId: string, path: string) => {
     setSelectedVersions(prev => ({ ...prev, [sceneId]: path }));
     // 同步更新 artifact 以便确认时能传递正确的选中图片给阶段5
-    if (onUpdateArtifact && state.artifact?.scenes) {
-      const updatedScenes = state.artifact.scenes.map((s: SceneItem) =>
+    if (onUpdateArtifact && artifact.scenes) {
+      const updatedScenes = artifact.scenes.map((s: SceneItem) =>
         s.id === sceneId ? { ...s, selected: path } : s
       );
       onUpdateArtifact({ scenes: updatedScenes });
@@ -576,14 +603,14 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
               // 按剧集分组
               const episodes: Record<number, SceneItem[]> = {};
               scenes.forEach(s => {
-                const ep = (s as any).episode || 1;
+                const ep = s.episode || 1;
                 if (!episodes[ep]) episodes[ep] = [];
                 episodes[ep].push(s);
               });
 
               return Object.keys(episodes).sort((a, b) => Number(a) - Number(b)).map(epNum => {
                 const epScenes = episodes[Number(epNum)];
-                const fallbackTitle = (epScenes[0] as any).episode_title || `第 ${epNum} 集`;
+                const fallbackTitle = epScenes[0].episode_title || `第 ${epNum} 集`;
                 const scriptTitle = episodeTitleMap[Number(epNum)];
                 const episodeTitle = scriptTitle ? `第 ${epNum} 集：${scriptTitle}` : fallbackTitle;
                 

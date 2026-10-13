@@ -21,12 +21,11 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import httpx
+import httpx  # noqa: E402 - sys.path 引导后导入
 
-from config import Config
-from models.custom_common import (
+from config import Config  # noqa: E402 - sys.path 引导后导入
+from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
     DEFAULT_VIDEO_POLL_INTERVAL,
-    DEFAULT_VIDEO_POLL_TIMEOUT,
     RETRYABLE_STATUS_CODES,
     VIDEO_JOB_FAILURE_STATES,
     VIDEO_JOB_SUCCESS_STATES,

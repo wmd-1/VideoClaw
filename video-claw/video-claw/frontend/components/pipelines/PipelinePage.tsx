@@ -246,8 +246,8 @@ function MediaUploadField({
       const result = await uploadMedia(file);
       setFilename(result.filename);
       onChange(result.file_path);
-    } catch (e: any) {
-      setError(e.message || '上传失败');
+    } catch (e: unknown) {
+      setError((e as Error | null)?.message || '上传失败');
     } finally {
       setUploading(false);
     }
@@ -579,7 +579,9 @@ function PipelineHistory({
   };
 
   useEffect(() => {
-    load().catch(() => {});
+    // 延后到微任务执行：load() 内含同步 setLoading(true)，effect 体内同步 setState
+    // 会触发级联渲染（react-hooks/set-state-in-effect）
+    queueMicrotask(() => { load().catch(() => {}); });
   }, [pipeline]);
 
   if (!tasks.length) return null;
@@ -709,6 +711,21 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
   const [ttsSpeed, setTtsSpeed] = useState(1);
   const [negativePrompt, setNegativePrompt] = useState(pipeline === 'standard' ? DEFAULT_STANDARD_STYLE_CONTROL : '');
 
+  // pipeline 等条件变化即为 standard 流水线补默认负面提示（幂等；渲染期完成，
+  // 替代 effect 内同步 setState）
+  const [negativeSyncKey, setNegativeSyncKey] = useState({ pipeline, standardVideoMode, templateMode, templateMediaKind });
+  if (
+    negativeSyncKey.pipeline !== pipeline ||
+    negativeSyncKey.standardVideoMode !== standardVideoMode ||
+    negativeSyncKey.templateMode !== templateMode ||
+    negativeSyncKey.templateMediaKind !== templateMediaKind
+  ) {
+    setNegativeSyncKey({ pipeline, standardVideoMode, templateMode, templateMediaKind });
+    if (pipeline === 'standard') {
+      setNegativePrompt(current => current || DEFAULT_STANDARD_STYLE_CONTROL);
+    }
+  }
+
   useEffect(() => {
     const imageAbility = pipeline === 'digital_human' ? 'reference_image' : 'text_to_image';
     const videoAbility = pipeline === 'standard'
@@ -716,10 +733,6 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
       : pipeline === 'action_transfer'
         ? 'action_transfer'
         : 'digital_human';
-
-    if (pipeline === 'standard') {
-      setNegativePrompt(current => current || DEFAULT_STANDARD_STYLE_CONTROL);
-    }
 
     fetchApiModels({ mediaType: 'image', ability: imageAbility, verifiedOnly: true })
       .then(models => {
@@ -762,16 +775,25 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
       .catch(() => {});
   }, [pipeline, ratio]);
 
-  useEffect(() => {
-    if (!templateMode) return;
-    setEnableSubtitles(true);
-    setStandardVideoMode('image_concat');
-    setText(current => current || TEMPLATE_TEXT_DEFAULTS.text);
-    setSelectedTemplateId(current => {
-      if (current && templates.some(item => item.id === current && item.ratio === ratio)) return current;
-      return templates.find(item => item.ratio === ratio)?.id || current;
-    });
-  }, [templateMode, ratio, templates]);
+  // 进入模板模式即套用默认项；ratio/templates 变化时重选匹配模板
+  // （渲染期完成，替代 effect 内同步 setState）
+  const [templateSyncKey, setTemplateSyncKey] = useState({ templateMode, ratio, templates });
+  if (
+    templateSyncKey.templateMode !== templateMode ||
+    templateSyncKey.ratio !== ratio ||
+    templateSyncKey.templates !== templates
+  ) {
+    setTemplateSyncKey({ templateMode, ratio, templates });
+    if (templateMode) {
+      setEnableSubtitles(true);
+      setStandardVideoMode('image_concat');
+      setText(current => current || TEMPLATE_TEXT_DEFAULTS.text);
+      setSelectedTemplateId(current => {
+        if (current && templates.some(item => item.id === current && item.ratio === ratio)) return current;
+        return templates.find(item => item.ratio === ratio)?.id || current;
+      });
+    }
+  }
 
   const portraitTemplates = useMemo(
     () => templates.filter(item => item.size === '1080x1920'),
@@ -791,27 +813,40 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
     [selectedTemplate]
   );
 
-  useEffect(() => {
-    if (!templateMode || templateMediaKind !== 'video') return;
-    if (selectedTemplate && !selectedTemplate.supports_video) {
+  // 选中模板不支持视频时回退媒体类型（渲染期完成，替代 effect 内同步 setState）
+  const [mediaKindSyncKey, setMediaKindSyncKey] = useState({ templateMode, templateMediaKind, selectedTemplate });
+  if (
+    mediaKindSyncKey.templateMode !== templateMode ||
+    mediaKindSyncKey.templateMediaKind !== templateMediaKind ||
+    mediaKindSyncKey.selectedTemplate !== selectedTemplate
+  ) {
+    setMediaKindSyncKey({ templateMode, templateMediaKind, selectedTemplate });
+    if (templateMode && templateMediaKind === 'video' && selectedTemplate && !selectedTemplate.supports_video) {
       setTemplateMediaKind('image');
     }
-  }, [templateMode, templateMediaKind, selectedTemplate]);
+  }
 
-  useEffect(() => {
-    if (!templateMode) return;
-    if (!selectedTemplateFields.length) {
-      setTemplateFieldValues({});
-      return;
-    }
-    setTemplateFieldValues(current => {
-      const next: Record<string, string> = {};
-      for (const field of selectedTemplateFields) {
-        next[field.key] = current[field.key] ?? field.default ?? '';
+  // 模板字段变化即重建字段值（渲染期完成，替代 effect 内同步 setState）
+  const [fieldValuesSyncKey, setFieldValuesSyncKey] = useState({ templateMode, selectedTemplateFields });
+  if (
+    fieldValuesSyncKey.templateMode !== templateMode ||
+    fieldValuesSyncKey.selectedTemplateFields !== selectedTemplateFields
+  ) {
+    setFieldValuesSyncKey({ templateMode, selectedTemplateFields });
+    if (templateMode) {
+      if (!selectedTemplateFields.length) {
+        setTemplateFieldValues({});
+      } else {
+        setTemplateFieldValues(current => {
+          const next: Record<string, string> = {};
+          for (const field of selectedTemplateFields) {
+            next[field.key] = current[field.key] ?? field.default ?? '';
+          }
+          return next;
+        });
       }
-      return next;
-    });
-  }, [templateMode, selectedTemplateFields]);
+    }
+  }
 
   const enterTemplateMode = () => {
     setTemplateMode(true);
@@ -942,8 +977,8 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
             });
       const fresh = await fetchPipelineTask(started.task_id);
       setTask(fresh);
-    } catch (e: any) {
-      setError(e.message || '启动失败');
+    } catch (e: unknown) {
+      setError((e as Error | null)?.message || '启动失败');
       setRunning(false);
     }
   };

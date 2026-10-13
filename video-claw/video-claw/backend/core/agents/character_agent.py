@@ -6,17 +6,18 @@
 图片以 character_id / setting_id 命名
 """
 
+import asyncio
+import glob
+import json
+import logging
 import os
 import re
-import json
-import glob
-import asyncio
-import logging
-from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
+
+from prompts.loader import load_prompt
 
 from .base_agent import AgentInterface
-from prompts.loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +360,7 @@ class CharacterDesignerAgent(AgentInterface):
                 if json_match:
                     eval_result = json.loads(json_match.group())
                     return eval_result
-            except:
+            except Exception:
                 pass
 
             return {"score": 5, "issues": ["评估解析失败"], "is_acceptable": True}
@@ -371,8 +372,8 @@ class CharacterDesignerAgent(AgentInterface):
     def _select_best_with_vlm(self, image_paths: List[str], name: str, description: str,
                                asset_type: str, species: str = "", vlm_model: str = "qwen3.5-plus") -> tuple:
         """使用 VLM 从多个版本中选择最好的一张"""
+
         from models.vlm_client import VLM
-        import re
 
         if not image_paths:
             return None, None

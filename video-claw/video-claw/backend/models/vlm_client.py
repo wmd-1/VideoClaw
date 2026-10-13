@@ -6,10 +6,11 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import logging
-import os
-from typing import List, Optional
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+import os  # noqa: E402 - sys.path 引导后导入
+from typing import List, Optional  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 try:
     from models.vlm_dashscope import QwenVLClient
@@ -20,8 +21,8 @@ except ImportError:
     from vlm_gemini import GeminiVLClient
     from vlm_gpt import GPTVLClient
 
-from models.config_model import resolve_model_entry
-from models.custom_common import ModelNotRegisteredError
+from models.config_model import resolve_model_entry  # noqa: E402 - sys.path 引导后导入
+from models.custom_common import ModelNotRegisteredError  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +132,8 @@ class VLM:
         else:
             # DashScope (Qwen/Kimi) - 需要将 base64 保存为临时文件
             file_urls = []
-            import tempfile
             import base64 as b64
+            import tempfile
 
             for p in image_paths or []:
                 if p.startswith("data:"):

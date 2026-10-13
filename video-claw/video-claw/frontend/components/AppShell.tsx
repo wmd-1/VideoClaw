@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { CheckCircle2, ChevronLeft, ChevronRight, Clapperboard, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Repeat2, Settings, Trash2, UserRound } from 'lucide-react';
 import clsx from 'clsx';
 import { useEffect, useState, type CSSProperties } from 'react';
-import { clearTempCache, fetchPipelineTasks, fetchSandboxTasks, fetchSessions, type PipelineTask, type SandboxTask } from '@/lib/workflowApi';
+import { clearTempCache, fetchPipelineTasks, fetchSandboxTasks, fetchSessions, type PipelineTask, type SandboxTask, type SessionSummary } from '@/lib/workflowApi';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Video-Claw', icon: Home },
@@ -59,16 +59,16 @@ const WORKFLOW_STAGE_COUNT = 7;
 const COMPLETED_TASK_DISMISS_KEY = 'video-claw.dismissed-completed-tasks';
 const SIDEBAR_OPEN_KEY = 'video-claw.sidebar-open';
 
-function projectTaskFromSession(session: any): RunningTaskItem | null {
+function projectTaskFromSession(session: SessionSummary): RunningTaskItem | null {
   const statusMap = session.status || {};
   const values = Object.values(statusMap);
   if (!values.includes('running')) return null;
   const completed = values.filter(value => ['completed', 'session_completed'].includes(String(value))).length;
   const runningStage = Object.keys(statusMap).find(key => statusMap[key] === 'running');
   return {
-    id: `project-${session.id}`,
-    href: `/?session=${encodeURIComponent(session.id)}`,
-    title: session.idea || session.id,
+    id: `project-${session.id || ''}`,
+    href: `/?session=${encodeURIComponent(session.id || '')}`,
+    title: session.idea || session.id || '',
     scope: runningStage ? `主流程 · ${runningStage}` : '主流程',
     status: 'running',
     progress: Math.round((completed / WORKFLOW_STAGE_COUNT) * 100),
@@ -77,7 +77,7 @@ function projectTaskFromSession(session: any): RunningTaskItem | null {
 
 const CORE_WORKFLOW_STAGES = ['script_generation', 'character_design', 'storyboard', 'reference_generation', 'video_generation', 'post_production'];
 
-function projectReviewTaskFromSession(session: any): RunningTaskItem | null {
+function projectReviewTaskFromSession(session: SessionSummary): RunningTaskItem | null {
   const statusMap: Record<string, string> = session.status || {};
   const values = Object.values(statusMap).map(String);
   // 执行中 / 出错的会话分别由「进行中任务」与错误提示处理，不进入本面板
@@ -93,9 +93,9 @@ function projectReviewTaskFromSession(session: any): RunningTaskItem | null {
   if (!waitingStage && completedStages.length === 0) return null;
   const targetStage = waitingStage || completedStages[completedStages.length - 1] || '';
   return {
-    id: `project-review-${session.id}-${targetStage || 'completed'}`,
-    href: `/?session=${encodeURIComponent(session.id)}${targetStage ? `&stage=${encodeURIComponent(targetStage)}` : ''}`,
-    title: session.idea || session.title || session.id,
+    id: `project-review-${session.id || ''}-${targetStage || 'completed'}`,
+    href: `/?session=${encodeURIComponent(session.id || '')}${targetStage ? `&stage=${encodeURIComponent(targetStage)}` : ''}`,
+    title: session.idea || session.title || session.id || '',
     scope: waitingStage ? `主流程 · ${waitingStage}` : '主流程',
     status: allDone ? 'completed' : 'waiting',
     progress: allDone ? 100 : Math.round((completedStages.length / CORE_WORKFLOW_STAGES.length) * 100),
@@ -271,7 +271,9 @@ function SidebarTaskPanels({ currentPath }: { currentPath: string }) {
   };
 
   useEffect(() => {
-    load().catch(() => {});
+    // 延后到微任务执行：load() 内含同步 setLoading(true)，effect 体内同步 setState
+    // 会触发级联渲染（react-hooks/set-state-in-effect）；轮询回调不受此限，行为不变
+    queueMicrotask(() => { load().catch(() => {}); });
     const timer = window.setInterval(() => load().catch(() => {}), 3000);
     return () => window.clearInterval(timer);
   }, [dismissedCompleted]);
@@ -320,7 +322,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [clearingCache, setClearingCache] = useState(false);
 
   useEffect(() => {
-    setOpen(loadSidebarOpen());
+    // 延后到微任务执行：effect 体内同步 setState 会触发级联渲染（react-hooks/set-state-in-effect）
+    const stored = loadSidebarOpen();
+    queueMicrotask(() => setOpen(stored));
   }, []);
 
   const setSidebarOpen = (nextOpen: boolean) => {
@@ -334,8 +338,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       const result = await clearTempCache();
       window.alert(`缓存已清空，删除 ${result.deleted} 项，释放 ${Number(result.freed_mb || 0).toFixed(2)} MB。`);
       setSettingsMenuOpen(false);
-    } catch (error: any) {
-      window.alert(error?.message || '清空缓存失败');
+    } catch (error: unknown) {
+      window.alert((error as Error | null)?.message || '清空缓存失败');
     } finally {
       setClearingCache(false);
     }

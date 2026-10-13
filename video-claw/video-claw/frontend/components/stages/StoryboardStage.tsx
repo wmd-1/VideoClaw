@@ -57,8 +57,8 @@ export default function StoryboardStage({
   hasPendingItems,
   hasNextStageStarted
 }: StageViewProps) {
-  const artifactData = state.artifact;
-  
+  const artifactData = (state.artifact ?? {}) as { episodes?: Episode[]; payload?: { episodes?: Episode[] } };
+
   // 获取剧集数据 (新结构)
   const episodes: Episode[] = useMemo(() => {
     if (Array.isArray(artifactData?.episodes)) return artifactData.episodes;
@@ -105,7 +105,7 @@ export default function StoryboardStage({
     setEditMode(mode);
   };
 
-  const updateSegmentField = (epIdx: number, segIdx: number, field: keyof Segment, value: any) => {
+  const updateSegmentField = (epIdx: number, segIdx: number, field: keyof Segment, value: string | number) => {
     setEditEpisodes(prev => prev.map((ep, i) => {
       if (i !== epIdx) return ep;
       const newSegments = ep.segments.map((s, j) => j === segIdx ? { ...s, [field]: value } : s);
@@ -113,7 +113,7 @@ export default function StoryboardStage({
     }));
   };
 
-  const updateShotField = (epIdx: number, segIdx: number, shotIdx: number, field: keyof Shot, value: any) => {
+  const updateShotField = (epIdx: number, segIdx: number, shotIdx: number, field: keyof Shot, value: string | number) => {
     setEditEpisodes(prev => prev.map((ep, i) => {
       if (i !== epIdx) return ep;
       const newSegments = ep.segments.map((seg, j) => {

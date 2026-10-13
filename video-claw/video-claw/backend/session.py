@@ -3,6 +3,7 @@ import json
 import os
 import time
 
+
 class SessionManager:
     """Manages chat sessions persistence"""
     def __init__(self, data_dir="code/data"):

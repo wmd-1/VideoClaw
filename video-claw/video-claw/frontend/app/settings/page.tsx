@@ -17,7 +17,7 @@ import {
   type ProviderGroup,
 } from '@/config/models';
 
-type ConfigTree = Record<string, any>;
+type ConfigTree = Record<string, unknown>;
 
 type Field = {
   path: string;
@@ -84,17 +84,25 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
   },
 ];
 
-function getValue(config: ConfigTree, path: string) {
-  return path.split('.').reduce((current, key) => current?.[key], config);
+function getValue(config: ConfigTree, path: string): unknown {
+  let current: unknown = config;
+  for (const key of path.split('.')) {
+    if (current === null || current === undefined) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
 }
 
-function setValue(config: ConfigTree, path: string, value: any): ConfigTree {
-  const next = structuredClone(config || {});
+function setValue(config: ConfigTree, path: string, value: unknown): ConfigTree {
+  const next = structuredClone(config || {}) as ConfigTree;
   const parts = path.split('.');
   let current = next;
   for (const part of parts.slice(0, -1)) {
-    current[part] = current[part] || {};
-    current = current[part];
+    const existing = current[part];
+    if (!existing || typeof existing !== 'object') {
+      current[part] = {};
+    }
+    current = current[part] as ConfigTree;
   }
   current[parts[parts.length - 1]] = value;
   return next;
@@ -164,8 +172,8 @@ export default function SettingsPage() {
         setSecretDrafts({});
         setEnvOverrides(data.env_overrides || EMPTY_ENV_OVERRIDES);
         setSavedConfig(data.config || {});
-      } catch (e: any) {
-        setError(e.message || '读取配置失败');
+      } catch (e: unknown) {
+        setError((e as Error | null)?.message || '读取配置失败');
       } finally {
         setLoading(false);
       }
@@ -270,8 +278,9 @@ export default function SettingsPage() {
 
   const save = async () => {
     // 保存前预检：自定义模型必须已选类型（types），避免提交后被后端校验拒绝（400）
-    const invalidModels = (Array.isArray(config.custom_models) ? config.custom_models : [])
-      .map((item: any, index: number) => ({ id: String(item?.id || `第 ${index + 1} 条`), types: item?.types }))
+    const customModels = (Array.isArray(config.custom_models) ? config.custom_models : []) as Array<{ id?: unknown; types?: unknown }>;
+    const invalidModels = customModels
+      .map((item, index) => ({ id: String(item?.id || `第 ${index + 1} 条`), types: item?.types }))
       .filter(item => !Array.isArray(item.types) || item.types.length === 0);
     if (invalidModels.length > 0) {
       setSaving(false);
@@ -307,8 +316,8 @@ export default function SettingsPage() {
       setSavedConfig(data.config || {});
       refreshModelSelects();
       setMessage('配置已保存');
-    } catch (e: any) {
-      setError(e.message || '保存配置失败');
+    } catch (e: unknown) {
+      setError((e as Error | null)?.message || '保存配置失败');
     } finally {
       setSaving(false);
     }

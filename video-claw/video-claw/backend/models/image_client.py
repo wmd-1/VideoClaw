@@ -6,26 +6,25 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import re
-import time
-import uuid
-import logging
-from typing import List, Optional
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+import re  # noqa: E402 - sys.path 引导后导入
+from typing import List, Optional  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 try:
     from models.image_dashscope import DashScopeClient
-    from models.image_seedream import SeedreamClient
     from models.image_gpt import ImageGPT
     from models.image_processor import ImageProcessor
+    from models.image_seedream import SeedreamClient
 except ImportError:
     from .image_dashscope import DashScopeClient
-    from .image_seedream import SeedreamClient
     from .image_gpt import ImageGPT
     from .image_processor import ImageProcessor
+    from .image_seedream import SeedreamClient
 
-from models.config_model import resolve_model_entry
-from models.custom_common import ModelNotRegisteredError
+from models.config_model import resolve_model_entry  # noqa: E402 - sys.path 引导后导入
+from models.custom_common import ModelNotRegisteredError  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

@@ -8,9 +8,9 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import logging
-from typing import Optional
-from docx import Document
+import logging  # noqa: E402 - sys.path 引导后导入
+
+from docx import Document  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

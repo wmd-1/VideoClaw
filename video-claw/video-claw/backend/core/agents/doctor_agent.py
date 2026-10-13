@@ -10,9 +10,10 @@ import json
 import logging
 from typing import Any, Dict, Optional, Tuple
 
-from .base_agent import AgentInterface
 from config import Config
 from prompts.loader import load_prompt
+
+from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
 

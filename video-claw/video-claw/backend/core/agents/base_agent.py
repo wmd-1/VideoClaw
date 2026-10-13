@@ -5,7 +5,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Dict, Callable
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 

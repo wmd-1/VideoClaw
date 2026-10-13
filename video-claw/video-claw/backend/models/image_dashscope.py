@@ -6,14 +6,15 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import json
-import logging
-import time
-import uuid
-import dashscope
-from dashscope import MultiModalConversation
-from dashscope.aigc.image_generation import ImageGeneration
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+import uuid  # noqa: E402 - sys.path 引导后导入
+
+import dashscope  # noqa: E402 - sys.path 引导后导入
+from dashscope.aigc.image_generation import ImageGeneration  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
+
 try:
     from models.image_processor import ImageProcessor
 except ImportError:

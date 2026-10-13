@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Film, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, AlertTriangle, Play, Edit2, Save, X } from 'lucide-react';
 import type { StageViewProps } from './types';
 import { assetUrl } from './utils';
@@ -19,6 +19,30 @@ interface ClipItem {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';
   rewrite_result?: RewriteResult;
+  /** 后端动态 JSON 附加字段（按消费处声明） */
+  episode?: number;
+  episode_title?: string;
+}
+
+/** 本阶段 artifact 的本地结构（后端动态 JSON，按消费字段声明） */
+interface VideoStageArtifact {
+  clips?: ClipItem[];
+  video_clips?: Record<string, string>;
+}
+
+/** 剧集标题条目（scriptArtifact.episodes） */
+interface EpisodeTitleItem {
+  episode_number?: number;
+  episode?: number;
+  act_title?: string;
+  title?: string;
+}
+
+/** 参考图场景条目（referenceArtifact.scenes） */
+interface ReferenceSceneItem {
+  id: string;
+  selected?: string;
+  versions?: string[];
 }
 
 /* ─── 水平滚动视频画廊 ─── */
@@ -344,11 +368,13 @@ function ClipRow({
 
 /* ─── 主组件 ─── */
 export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact }: StageViewProps) {
+  const artifact = (state.artifact ?? {}) as VideoStageArtifact;
   // 提取剧集标题映射
   const episodeTitleMap = React.useMemo(() => {
     const map: Record<number, string> = {};
-    if (scriptArtifact?.episodes) {
-      scriptArtifact.episodes.forEach((ep: any) => {
+    const episodes = (scriptArtifact as { episodes?: EpisodeTitleItem[] } | undefined)?.episodes;
+    if (episodes) {
+      episodes.forEach(ep => {
         // 关键修复：兼容剧本阶段的字段名
         const epNum = ep.episode_number || ep.episode;
         const epTitle = ep.act_title || ep.title;
@@ -362,16 +388,21 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
 
   // 检查每个 clip 是否有对应的参考图
   const hasReferenceImage = useCallback((clipId: string): boolean => {
-    if (!referenceArtifact?.scenes) return false;
-    const refScene = referenceArtifact.scenes.find((s: any) => s.id === clipId);
+    const scenes = (referenceArtifact as { scenes?: ReferenceSceneItem[] } | undefined)?.scenes;
+    if (!scenes) return false;
+    const refScene = scenes.find(s => s.id === clipId);
     return !!(refScene?.selected || refScene?.versions?.length);
   }, [referenceArtifact]);
 
   // 兼容旧格式: video_clips: {Scene_1: "path"} → clips: [{id, ...}]
-  const clips: ClipItem[] = (() => {
-    if (state.artifact?.clips?.length) return state.artifact.clips;
-    if (state.artifact?.video_clips) {
-      const vc = state.artifact.video_clips as Record<string, string>;
+  // 必须用 useMemo 稳定引用（依赖原始 state.artifact，不能用 `?? {}` 后的对象）：
+  // 兜底分支（空产物/旧格式）每次渲染都会生成新数组，若直接拿它做下方渲染期
+  // 同步块的比较键会无限自渲染，触发 React "Too many re-renders" 卸载整树
+  const clips: ClipItem[] = useMemo(() => {
+    const art = (state.artifact ?? {}) as VideoStageArtifact;
+    if (art.clips?.length) return art.clips;
+    if (art.video_clips) {
+      const vc = art.video_clips;
       return Object.entries(vc)
         .sort(([a], [b]) => {
           const na = parseInt(a.replace(/\D/g, '')) || 0;
@@ -388,7 +419,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
         }));
     }
     return [];
-  })();
+  }, [state.artifact]);
 
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
   const [editDescs, setEditDescs] = useState<Record<string, string>>({});
@@ -397,8 +428,10 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
   const [editingIds, setEditingIds] = useState<Set<string>>(new Set());
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
 
-  // 当分镜数据变化时，初始化编辑描述
-  useEffect(() => {
+  // 当分镜数据变化时，初始化编辑描述：渲染期完成（替代 effect 内同步 setState）
+  const [descsSyncKey, setDescsSyncKey] = useState(clips);
+  if (descsSyncKey !== clips) {
+    setDescsSyncKey(clips);
     if (clips.length > 0) {
       setEditDescs(prev => {
         const next: Record<string, string> = {};
@@ -406,7 +439,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
         return next;
       });
     }
-  }, [clips]);
+  }
 
   // 当对应片段新增版本或失败时，仅清除该片段的重新生成状态，支持多个任务并行。
   useEffect(() => {
@@ -448,8 +481,8 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
       });
       if (response.ok) {
         // 更新前端缓存的 clips.description
-        if (onUpdateArtifact && state.artifact?.clips) {
-          const updatedClips = state.artifact.clips.map((c: ClipItem) =>
+        if (onUpdateArtifact && artifact.clips) {
+          const updatedClips = artifact.clips.map((c: ClipItem) =>
             c.id === clipId ? { ...c, description: newPrompt } : c
           );
           onUpdateArtifact({ clips: updatedClips });
@@ -508,8 +541,8 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
     const nextSelected = currentSelected === path ? '' : path;
     setSelectedVersions(prev => ({ ...prev, [clipId]: nextSelected }));
     // 同步更新 artifact 以便确认时能传递正确的选中片段给阶段6
-    if (onUpdateArtifact && state.artifact?.clips) {
-      const updatedClips = state.artifact.clips.map((c: ClipItem) =>
+    if (onUpdateArtifact && artifact.clips) {
+      const updatedClips = artifact.clips.map((c: ClipItem) =>
         c.id === clipId ? { ...c, selected: nextSelected } : c
       );
       onUpdateArtifact({ clips: updatedClips });
@@ -558,14 +591,14 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
               // 按剧集分组
               const episodes: Record<number, ClipItem[]> = {};
               clips.forEach(c => {
-                const ep = (c as any).episode || 1;
+                const ep = c.episode || 1;
                 if (!episodes[ep]) episodes[ep] = [];
                 episodes[ep].push(c);
               });
 
               return Object.keys(episodes).sort((a, b) => Number(a) - Number(b)).map(epNum => {
                 const epClips = episodes[Number(epNum)];
-                const fallbackTitle = (epClips[0] as any).episode_title || `第 ${epNum} 集`;
+                const fallbackTitle = epClips[0].episode_title || `第 ${epNum} 集`;
                 const scriptTitle = episodeTitleMap[Number(epNum)];
                 const episodeTitle = scriptTitle ? `第 ${epNum} 集：${scriptTitle}` : fallbackTitle;
                 

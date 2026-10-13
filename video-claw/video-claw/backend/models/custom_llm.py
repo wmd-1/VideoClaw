@@ -10,9 +10,14 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import httpx
+import httpx  # noqa: E402 - sys.path 引导后导入
 
-from models.custom_common import build_custom_client_kwargs, connection_hint, make_http_client, to_data_url
+from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
+    build_custom_client_kwargs,
+    connection_hint,
+    make_http_client,
+    to_data_url,
+)
 
 logger = logging.getLogger(__name__)
 

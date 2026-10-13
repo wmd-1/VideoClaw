@@ -12,10 +12,10 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import logging
-import time
-from typing import Optional
-from http import HTTPStatus
+import logging  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+from http import HTTPStatus  # noqa: E402 - sys.path 引导后导入
+from typing import Optional  # noqa: E402 - sys.path 引导后导入
 
 try:
     import dashscope
@@ -23,9 +23,10 @@ try:
 except ImportError:
     dashscope = None
     VideoSynthesis = None
-import requests
-from requests import exceptions as requests_exceptions
-from config import Config
+import requests  # noqa: E402 - sys.path 引导后导入
+from requests import exceptions as requests_exceptions  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

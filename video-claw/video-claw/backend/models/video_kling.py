@@ -12,18 +12,19 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import io
-import ssl
-import time
-import base64
-import logging
-from typing import Optional
+import base64  # noqa: E402 - sys.path 引导后导入
+import io  # noqa: E402 - sys.path 引导后导入
+import logging  # noqa: E402 - sys.path 引导后导入
+import ssl  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+from typing import Optional  # noqa: E402 - sys.path 引导后导入
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from PIL import Image
-from config import Config
+import requests  # noqa: E402 - sys.path 引导后导入
+from PIL import Image  # noqa: E402 - sys.path 引导后导入
+from requests.adapters import HTTPAdapter  # noqa: E402 - sys.path 引导后导入
+from urllib3.util.retry import Retry  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

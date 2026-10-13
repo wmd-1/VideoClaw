@@ -585,7 +585,9 @@ export default function SandboxPage() {
   };
 
   useEffect(() => {
-    fetchHistory();
+    // 延后到微任务执行：fetchHistory 传递包含 setState 的函数调用，
+    // effect 体内同步调用会触发级联渲染（react-hooks/set-state-in-effect）
+    queueMicrotask(() => { fetchHistory(); });
   }, []);
 
   useEffect(() => {
@@ -608,16 +610,25 @@ export default function SandboxPage() {
   }, []);
 
   // 入口过滤：附加音频参考 → audio_reference；附加参考视频 → video_reference；
-  // 两者同时附加时按多能力 AND 交集过滤，未声明全部所需能力的模型不出现在列表（spec）
+  // 两者同时附加时按多能力 AND 交集过滤，未声明全部所需能力的模型不出现在列表（spec）。
+  // 过滤条件变化且不再有必需能力时，渲染期即回到"未过滤"态（替代 effect 内同步 setState）
+  const hasRequiredVideoAbilities = activeTool === 'video' && (Boolean(audioRefUrl) || videoRefPaths.length > 0);
+  const [filterSyncKey, setFilterSyncKey] = useState({ activeTool, audioRefUrl, videoRefPaths });
+  if (
+    filterSyncKey.activeTool !== activeTool ||
+    filterSyncKey.audioRefUrl !== audioRefUrl ||
+    filterSyncKey.videoRefPaths !== videoRefPaths
+  ) {
+    setFilterSyncKey({ activeTool, audioRefUrl, videoRefPaths });
+    if (!hasRequiredVideoAbilities) setFilteredVideoGroups(null);
+  }
+
   useEffect(() => {
     let cancelled = false;
     const requiredAbilities = activeTool === 'video'
       ? [audioRefUrl ? 'audio_reference' : null, videoRefPaths.length > 0 ? 'video_reference' : null].filter(Boolean) as string[]
       : [];
-    if (requiredAbilities.length === 0) {
-      setFilteredVideoGroups(null);
-      return;
-    }
+    if (requiredAbilities.length === 0) return;
     fetchVideoModelGroupsByAbility(requiredAbilities.join(','))
       .then(groups => { if (!cancelled) setFilteredVideoGroups(groups); })
       .catch(() => { if (!cancelled) setFilteredVideoGroups(null); });
@@ -651,7 +662,12 @@ export default function SandboxPage() {
     if (recordId && history.length > 0) {
       const record = history.find(r => r.id === recordId);
       if (record) {
-        applyRecord(record);
+        // 延后到微任务执行：applyRecord 内含多个同步 setState（react-hooks/set-state-in-effect）。
+        // cancelled 守卫：依赖连续变化时丢弃尚未执行的过期回填（与原同步版等价，
+        // 原版在 effect 体内同步执行、不存在跨 effect 的过期窗口）
+        let cancelled = false;
+        queueMicrotask(() => { if (!cancelled) applyRecord(record); });
+        return () => { cancelled = true; };
       }
     }
   }, [searchParams, history]);
@@ -727,15 +743,22 @@ export default function SandboxPage() {
     setVideoRefPaths([]);
   };
 
-  // 监听工具变化，确保模型选择同步
-  useEffect(() => {
+  // 监听工具变化，确保模型选择同步：工具/模型组/当前选中变化即校正（渲染期完成，
+  // 替代 effect 内同步 setState；触发面与原 effect 依赖 [activeTool, modelGroups,
+  // selectedModel] 一致——含 selectedModel 才能把历史回填的失效模型纠回默认）
+  const [modelSyncKey, setModelSyncKey] = useState({ activeTool, modelGroups, selectedModel });
+  if (
+    modelSyncKey.activeTool !== activeTool ||
+    modelSyncKey.modelGroups !== modelGroups ||
+    modelSyncKey.selectedModel !== selectedModel
+  ) {
+    setModelSyncKey({ activeTool, modelGroups, selectedModel });
     const models = getModels();
     // 只有当前模型不在新工具的模型列表中时才更新
-    const currentInList = models.some(m => m.id === selectedModel);
-    if (!currentInList) {
+    if (!models.some(m => m.id === selectedModel)) {
       setSelectedModel(models.find(m => m.default)?.id || models[0]?.id || '');
     }
-  }, [activeTool, modelGroups, selectedModel]);
+  }
 
   // 检查是否可以提交
   const canSubmit = () => {
@@ -755,7 +778,7 @@ export default function SandboxPage() {
 
     try {
       let apiUrl = '';
-      let body: Record<string, unknown> = {
+      const body: Record<string, unknown> = {
         model: selectedModel,
         prompt: prompt,
       };

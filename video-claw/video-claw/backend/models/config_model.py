@@ -13,8 +13,8 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-from copy import deepcopy
-from typing import Any, Optional
+from copy import deepcopy  # noqa: E402 - sys.path 引导后导入
+from typing import Any, Optional  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 
@@ -844,7 +844,7 @@ def model_availability(model: str) -> dict[str, Any]:
             "reason": f"模型 {model} 未注册（可在设置页注册为自定义模型或检查名称）",
         }
     try:
-        from config import Config, CUSTOM_PROTOCOLS
+        from config import CUSTOM_PROTOCOLS, Config
     except Exception:  # pragma: no cover
         Config = None
         CUSTOM_PROTOCOLS = ()

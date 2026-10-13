@@ -11,12 +11,14 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import time
-import logging
-import httpx
-from typing import Optional, List, Dict
-from openai import OpenAI
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+from typing import Dict, List, Optional  # noqa: E402 - sys.path 引导后导入
+
+import httpx  # noqa: E402 - sys.path 引导后导入
+from openai import OpenAI  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +180,6 @@ class SeedreamClient:
             extra_body["style"] = kwargs["style"]
 
         # 处理参考图 (图生图)
-        image_urls = []
         if image_paths and len(image_paths) > 0:
             # 处理参考图：支持 URL 和本地文件
             ref_images = []

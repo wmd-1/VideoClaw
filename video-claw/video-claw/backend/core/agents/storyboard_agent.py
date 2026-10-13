@@ -5,13 +5,12 @@
 支持 Segment -> Shots 嵌套结构。
 """
 
-import os
-import re
-import json
 import asyncio
+import json
 import logging
+import re
 from datetime import datetime
-from typing import Any, Optional, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .base_agent import AgentInterface
 
@@ -37,14 +36,18 @@ class StoryboardAgent(AgentInterface):
         text = re.sub(r"\s*```$", "", text)
         try:
             result = json.loads(text)
-            if isinstance(result, list): return result
-        except json.JSONDecodeError: pass
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
         m = re.search(r"\[.*\]", text, re.DOTALL)
         if m:
             try:
                 result = json.loads(m.group())
-                if isinstance(result, list): return result
-            except json.JSONDecodeError: pass
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                pass
         return None
 
     @staticmethod
@@ -1208,19 +1211,22 @@ class StoryboardAgent(AgentInterface):
         """验证嵌套的 Episode -> Segment -> Shots 结构"""
         valid_episodes = []
         for ep in episodes:
-            if not isinstance(ep, dict): continue
+            if not isinstance(ep, dict):
+                continue
             
             segments = ep.get("segments", [])
             valid_segments = []
             for idx, seg in enumerate(segments, 1):
-                if not isinstance(seg, dict): continue
+                if not isinstance(seg, dict):
+                    continue
                 
                 shots = seg.get("shots", [])
                 valid_shots = []
                 calc_total_duration = 0
                 
                 for s in shots:
-                    if not isinstance(s, dict): continue
+                    if not isinstance(s, dict):
+                        continue
                     dur = s.get("duration", 5)
                     calc_total_duration += dur
                     valid_shots.append({
@@ -1252,7 +1258,8 @@ class StoryboardAgent(AgentInterface):
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
         input_data = self._merge_session_params(input_data)
         sid = input_data.get("session_id")
-        if not sid: raise Exception("Missing session_id")
+        if not sid:
+            raise Exception("Missing session_id")
         artifacts = self._session_artifacts(input_data)
         session_meta = self._session_meta(input_data)
             
@@ -1264,7 +1271,8 @@ class StoryboardAgent(AgentInterface):
         # 处理人工干预/修改
         if intervention and "modified_storyboard" in intervention:
             modified_episodes = intervention["modified_storyboard"]
-            if isinstance(modified_episodes, str): modified_episodes = json.loads(modified_episodes)
+            if isinstance(modified_episodes, str):
+                modified_episodes = json.loads(modified_episodes)
             return {
                 "payload": {
                     "session_id": sid,
@@ -1276,7 +1284,8 @@ class StoryboardAgent(AgentInterface):
             }
         
         script_data = artifacts.get("script_generation", {})
-        if not script_data: raise Exception("未找到剧本数据")
+        if not script_data:
+            raise Exception("未找到剧本数据")
         
         episodes = script_data.get("episodes", [])
         if not episodes:

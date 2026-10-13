@@ -1,15 +1,12 @@
 import logging
 from typing import Any, Optional
 
-from models.image_client import ImageClient
 from models.config_model import (
-    image_capabilities,
     list_api_models,
-    media_capabilities,
-    model_ability_tags,
     parse_api_model,
     video_capabilities,
 )
+from models.image_client import ImageClient
 from models.video_client import VideoClient
 
 logger = logging.getLogger(__name__)

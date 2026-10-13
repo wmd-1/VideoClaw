@@ -1,11 +1,11 @@
+import logging
 import os
 import re
-import logging
 
+from models.config_model import video_capabilities
 from models.llm_client import LLM
 
-from .api_media import generate_image_api, generate_video_api
-from .api_media import parse_api_workflow
+from .api_media import generate_image_api, generate_video_api, parse_api_workflow
 from .storage import append_artifact, task_output_dir, update_task
 from .tts import generate_edge_tts
 from .utils import (
@@ -21,7 +21,6 @@ from .utils import (
     write_json,
     write_text,
 )
-from models.config_model import video_capabilities
 
 logger = logging.getLogger(__name__)
 

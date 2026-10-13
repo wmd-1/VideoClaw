@@ -4,6 +4,8 @@
 管理六阶段状态机，协调各智能体执行，支持用户在任意阶段介入
 """
 
+import asyncio
+import copy
 import json
 import logging
 import os
@@ -11,18 +13,16 @@ import re
 import shutil
 import threading
 import time
-import copy
-import asyncio
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from core.agents import (
-    ScriptWriterAgent,
     CharacterDesignerAgent,
-    StoryboardAgent,
-    ReferenceGeneratorAgent,
     PromptRewriteAgent,
+    ReferenceGeneratorAgent,
+    ScriptWriterAgent,
+    StoryboardAgent,
     VideoDirectorAgent,
     VideoEditorAgent,
 )
@@ -586,10 +586,12 @@ class WorkflowEngine:
                 
             all_sync_clips = []
             for ep in episodes:
-                if not isinstance(ep, dict): continue
+                if not isinstance(ep, dict):
+                    continue
                 ep_n = ep.get("episode_number", 0)
                 for s_i, seg in enumerate(ep.get("segments", []), 1):
-                    if not isinstance(seg, dict): continue
+                    if not isinstance(seg, dict):
+                        continue
                     seg_id = seg.get("segment_id", f"seg_{ep_n:02d}_{s_i:02d}")
                     
                     # 汇总 segment 级别的描述和时长
@@ -1258,7 +1260,7 @@ class WorkflowEngine:
         return {
             "status": "error",
             "openclaw": f"当前状态 {current_status} 不允许继续，请检查会话状态。",
-            "message": f"当前状态不允许继续",
+            "message": "当前状态不允许继续",
             "current_status": current_status,
         }
 
@@ -1578,8 +1580,8 @@ class WorkflowEngine:
 
     def save_session_to_disk(self, session_id: str, meta: Dict = None):
         """保存 / 更新会话到磁盘（原子写入）"""
-        import tempfile
         import shutil
+        import tempfile
 
         with self._state_lock:
             path = os.path.join(self._session_dir, f"{session_id}.json")
@@ -1689,8 +1691,9 @@ class WorkflowEngine:
 
     def delete_session(self, session_id: str) -> bool:
         """删除指定会话（内存 + 磁盘 + 结果文件）"""
-        from config import settings
         import shutil
+
+        from config import settings
 
         with self._state_lock:
             if session_id in self._active_sessions:

@@ -6,24 +6,24 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import logging
+import logging  # noqa: E402 - sys.path 引导后导入
 
 try:
-    from models.llm_gpt import GPT
-    from models.llm_gemini import Gemini
-    from models.llm_deepseek import DeepSeek
     from models.llm_dashscope import QwenLLM
+    from models.llm_deepseek import DeepSeek
+    from models.llm_gemini import Gemini
+    from models.llm_gpt import GPT
     from models.vlm_dashscope import QwenVLClient
 except ImportError:
-    from llm_gpt import GPT
-    from llm_gemini import Gemini
-    from llm_deepseek import DeepSeek
     from llm_dashscope import QwenLLM
+    from llm_deepseek import DeepSeek
+    from llm_gemini import Gemini
+    from llm_gpt import GPT
     from vlm_dashscope import QwenVLClient
 
-from config import Config
-from models.config_model import resolve_model_entry
-from models.custom_common import ModelNotRegisteredError
+from config import Config  # noqa: E402 - sys.path 引导后导入
+from models.config_model import resolve_model_entry  # noqa: E402 - sys.path 引导后导入
+from models.custom_common import ModelNotRegisteredError  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

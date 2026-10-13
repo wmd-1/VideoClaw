@@ -54,7 +54,7 @@ export async function fetchVideoModelCapabilities(modelId: string): Promise<Vide
     const models = await fetchApiModels({ modelType: 'video' });
     const map = new Map<string, VideoModelCapabilities>();
     for (const model of models) {
-      const caps = (model as any).capabilities;
+      const caps = model.capabilities;
       if (caps && typeof caps === 'object') map.set(model.id, caps as VideoModelCapabilities);
     }
     videoCapsCache = { at: now, map };

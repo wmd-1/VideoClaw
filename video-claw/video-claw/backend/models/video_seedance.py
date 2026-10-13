@@ -11,12 +11,14 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import time
-import logging
-import requests
-import base64
-from typing import Optional
-from config import Config
+import base64  # noqa: E402 - sys.path 引导后导入
+import logging  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+from typing import Optional  # noqa: E402 - sys.path 引导后导入
+
+import requests  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

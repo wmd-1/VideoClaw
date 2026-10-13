@@ -19,12 +19,14 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import time
-import logging
-import httpx
-from openai import OpenAI
-from typing import List
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+from typing import List  # noqa: E402 - sys.path 引导后导入
+
+import httpx  # noqa: E402 - sys.path 引导后导入
+from openai import OpenAI  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

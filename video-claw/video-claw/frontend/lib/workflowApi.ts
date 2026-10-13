@@ -62,10 +62,10 @@ export interface StreamEvent {
   stage?: string;
   status?: string;
   requires_intervention?: boolean;
-  payload_summary?: any;
+  payload_summary?: unknown;
   content?: string;
   time?: number;
-  data?: any;
+  data?: Record<string, unknown>;
 }
 
 export interface PipelineTask {
@@ -74,8 +74,8 @@ export interface PipelineTask {
   status: 'pending' | 'running' | 'completed' | 'failed' | string;
   progress?: number;
   message?: string;
-  input?: Record<string, any>;
-  output?: Record<string, any>;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
   artifacts?: Array<{ kind: string; name?: string; path: string; exists?: boolean; created_at?: string }>;
   error?: string | null;
   created_at?: string;
@@ -83,11 +83,23 @@ export interface PipelineTask {
   output_dir?: string;
 }
 
+/** 临时工作台任务输入（按 Sandbox/AppShell 实际读取字段声明） */
+export interface SandboxTaskInput {
+  prompt?: string;
+  reference_image?: string;
+  images?: string[];
+  ratio?: string;
+  resolution?: string;
+  duration?: number | string;
+  audio_url?: string;
+  reference_videos?: string[];
+}
+
 export interface SandboxTask {
   id: string;
   tool: string;
   model: string;
-  input?: Record<string, any>;
+  input?: SandboxTaskInput;
   status: string;
   progress?: number;
   created_at?: string;
@@ -124,7 +136,7 @@ export interface ApiModelOption {
   input_modalities?: string[];
   adapter_input_modalities?: string[];
   api_contract_verified?: boolean;
-  capabilities?: Record<string, any>;
+  capabilities?: Record<string, unknown>;
 }
 
 export interface StandardTemplateOption {
@@ -150,13 +162,25 @@ export async function fetchStages(): Promise<StageInfo[]> {
   return data.stages;
 }
 
-export async function fetchSessions(): Promise<any[]> {
+/** 历史会话摘要（/api/sessions 下发；字段按消费方实际使用声明，其余动态字段走索引签名） */
+export interface SessionSummary {
+  id?: string;
+  session_id?: string;
+  title?: string;
+  idea?: string;
+  style?: string;
+  date?: number;
+  status?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export async function fetchSessions(): Promise<SessionSummary[]> {
   const resp = await fetch('/api/sessions');
   const data = await resp.json();
   return data.sessions || [];
 }
 
-async function postPipelineTask(path: string, params: Record<string, any>): Promise<PipelineStartResponse> {
+async function postPipelineTask(path: string, params: Record<string, unknown>): Promise<PipelineStartResponse> {
   const resp = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -169,15 +193,15 @@ async function postPipelineTask(path: string, params: Record<string, any>): Prom
   return resp.json();
 }
 
-export async function startStandardPipeline(params: Record<string, any>): Promise<PipelineStartResponse> {
+export async function startStandardPipeline(params: Record<string, unknown>): Promise<PipelineStartResponse> {
   return postPipelineTask('/api/pipelines/standard/tasks', params);
 }
 
-export async function startActionTransferPipeline(params: Record<string, any>): Promise<PipelineStartResponse> {
+export async function startActionTransferPipeline(params: Record<string, unknown>): Promise<PipelineStartResponse> {
   return postPipelineTask('/api/pipelines/action_transfer/tasks', params);
 }
 
-export async function startDigitalHumanPipeline(params: Record<string, any>): Promise<PipelineStartResponse> {
+export async function startDigitalHumanPipeline(params: Record<string, unknown>): Promise<PipelineStartResponse> {
   return postPipelineTask('/api/pipelines/digital_human/tasks', params);
 }
 
@@ -236,7 +260,7 @@ export class ModelUnavailableError extends Error {
 }
 
 async function throwResponseError(resp: Response, fallback: string): Promise<never> {
-  let detail: any = null;
+  let detail: { code?: string; reason?: string; message?: string } | string | null = null;
   try {
     const body = await resp.json();
     detail = body?.detail ?? null;
@@ -300,8 +324,8 @@ export interface ModelTestResult {
 
 /** 自定义模型连通性测试（模型/供应商草稿或已保存条目均支持；媒体类会发起一次真实生成） */
 export async function testCustomModel(payload: {
-  model: Record<string, any>;
-  provider: Record<string, any> | string;
+  model: Record<string, unknown>;
+  provider: Record<string, unknown> | string;
   model_type: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
 }): Promise<ModelTestResult> {
   const resp = await fetch('/api/models/test', {
@@ -343,7 +367,7 @@ export async function uploadArtifactImage(
   itemType: string,
   itemId: string,
   file: File,
-): Promise<{ status: string; path: string; artifact: any; status_map: Record<string, string> }> {
+): Promise<{ status: string; path: string; artifact: unknown; status_map: Record<string, string> }> {
   const formData = new FormData();
   formData.append('item_type', itemType);
   formData.append('item_id', itemId);
@@ -401,7 +425,7 @@ export async function startProject(params: {
   web_search?: boolean;
   expand_idea?: boolean;
   episodes?: number;
-}): Promise<{ session_id: string; status: string; params: any }> {
+}): Promise<{ session_id: string; status: string; params: unknown }> {
   const resp = await fetch('/api/project/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -421,13 +445,13 @@ export async function getProjectStatus(sessionId: string): Promise<ProjectStatus
 }
 
 // 兼容旧路由名；后端实际会通过统一的 workflow state 入口返回状态。
-export async function getProjectStatusFromDisk(sessionId: string): Promise<any> {
+export async function getProjectStatusFromDisk(sessionId: string): Promise<unknown> {
   const resp = await fetch(`/api/project/${sessionId}/status/from_disk`);
   if (!resp.ok) throw new Error('Failed to get project status snapshot');
   return resp.json();
 }
 
-export async function getArtifact(sessionId: string, stage: string): Promise<any> {
+export async function getArtifact(sessionId: string, stage: string): Promise<{ artifact: unknown }> {
   const resp = await fetch(`/api/project/${sessionId}/artifact/${stage}`);
   if (!resp.ok) throw new Error(`Artifact for stage '${stage}' not found`);
   return resp.json();
@@ -447,7 +471,7 @@ export async function checkSceneAssets(sessionId: string, sceneNumber: number): 
 export async function executeStage(
   sessionId: string,
   stage: string,
-  inputData: Record<string, any> = {},
+  inputData: Record<string, unknown> = {},
   signal?: AbortSignal,
 ): Promise<Response> {
   const resp = await fetchStreamRequest(`${STREAM_API_BASE}/api/project/${sessionId}/execute/${stage}`, {
@@ -463,7 +487,7 @@ export async function executeStage(
 export async function intervene(
   sessionId: string,
   stage: string,
-  modifications: Record<string, any>,
+  modifications: Record<string, unknown>,
 ): Promise<Response> {
   // Use STREAM_API_BASE to bypass Next.js proxy (SSE endpoint)
   const resp = await fetchStreamRequest(`${STREAM_API_BASE}/api/project/${sessionId}/intervene`, {
@@ -511,7 +535,7 @@ export async function deleteSession(
 export async function saveSelections(
   sessionId: string,
   stage: string,
-  selections: Record<string, any>,
+  selections: Record<string, unknown>,
 ): Promise<{ status: string }> {
   const resp = await fetch(`/api/project/${sessionId}/artifact/${stage}`, {
     method: 'PATCH',
@@ -522,7 +546,7 @@ export async function saveSelections(
   return resp.json();
 }
 
-export async function continueWorkflow(sessionId: string): Promise<{ status: string; next_stage?: string }> {
+export async function continueWorkflow(sessionId: string): Promise<{ status: string; next_stage?: string; status_map?: Record<string, string> }> {
   const resp = await fetch(`/api/project/${sessionId}/continue`, {
     method: 'POST',
   });

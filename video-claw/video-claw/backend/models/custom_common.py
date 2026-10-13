@@ -17,9 +17,9 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import httpx
+import httpx  # noqa: E402 - sys.path 引导后导入
 
-from config import Config
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

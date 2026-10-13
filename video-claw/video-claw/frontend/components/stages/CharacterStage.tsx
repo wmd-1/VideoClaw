@@ -21,6 +21,12 @@ interface AssetVersion {
   rewrite_result?: RewriteResult;
 }
 
+/** 本阶段 artifact 的本地结构（后端动态 JSON，按消费字段声明） */
+interface CharacterStageArtifact {
+  characters?: AssetVersion[];
+  settings?: AssetVersion[];
+}
+
 /* ─── 水平滚动图片画廊 ─── */
 function ImageGallery({
   versions,
@@ -334,8 +340,8 @@ function AssetRow({
 
 /* ─── 主组件 ─── */
 export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted }: StageViewProps) {
-  const characters: AssetVersion[] = state.artifact?.characters || [];
-  const settingsData: AssetVersion[] = state.artifact?.settings || [];
+  const characters: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.characters || [];
+  const settingsData: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.settings || [];
 
   const [editChars, setEditChars] = useState<Record<string, string>>({});
   const [editSets, setEditSets] = useState<Record<string, string>>({});
@@ -391,7 +397,7 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
   };
 
   const saveEdit = (id: string) => {
-    const selections: Record<string, any> = {};
+    const selections: Record<string, unknown> = {};
     characters.forEach(c => { selections[c.id] = selectedChars[c.id] || c.selected; });
     settingsData.forEach(s => { selections[s.id] = selectedSets[s.id] || s.selected; });
     selections._editDescs = {
@@ -406,7 +412,7 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
     setUploadingIds(prev => new Set(prev).add(id));
     try {
       const result = await uploadArtifactImage(sessionId, 'character_design', type, id, file);
-      const artifact = result.artifact;
+      const artifact = result.artifact as CharacterStageArtifact | undefined;
       if (artifact) {
         onUpdateArtifact?.({
           characters: artifact.characters || [],

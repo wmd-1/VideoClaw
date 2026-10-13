@@ -48,7 +48,9 @@ async function fetchEnabledStages(): Promise<string[]> {
       return DEFAULT_ENABLED_STAGES;
     }
     const data = await resp.json();
-    const ids: string[] = (data?.stages || []).map((s: any) => s?.id).filter(Boolean);
+    const ids: string[] = (data?.stages || [])
+      .map((s: { id?: string }) => s?.id)
+      .filter((id: string | undefined): id is string => Boolean(id));
     const valid = ids.filter(id => STAGES.some(s => s.id === id));
     cachedEnabledStages = valid.length ? valid : DEFAULT_ENABLED_STAGES;
   } catch {
@@ -195,20 +197,27 @@ function ModelSelector({
         : firstFrameVideoProviders;
   const activeVideoLabel = VIDEO_GENERATION_MODES.find(item => item.id === config.video_generation_mode)?.label || '首帧生视频';
 
-  // 供模型切换联动读取最新 config（避免 effect 依赖 config 导致重复触发）
+  // 供模型切换联动读取最新 config（避免 effect 依赖 config 导致重复触发）。
+  // 渲染期不写 ref（react-hooks/refs）：改为提交后同步；读取方均为异步回调，时序等价。
   const configRef = useRef(config);
-  configRef.current = config;
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  // 切换模型即重置联动提示与就绪态（渲染期同步，替代 effect 内同步 setState；
+  // 无模型时 capsLoading 由下方派生式计算，不依赖此处置位）
+  const [clampSyncKey, setClampSyncKey] = useState(activeVideoModel);
+  if (clampSyncKey !== activeVideoModel) {
+    setClampSyncKey(activeVideoModel);
+    setClampHint('');
+    setCapsReady(false);
+    if (!activeVideoModel) setVideoCaps(null);
+  }
 
   // 切换模型时按新模型能力联动：夹取当前值并提示（能力未声明的维度不限制）
   useEffect(() => {
+    if (!activeVideoModel) return;
     let cancelled = false;
-    setClampHint('');
-    setCapsReady(false);
-    if (!activeVideoModel) {
-      setVideoCaps(null);
-      setCapsReady(true);
-      return;
-    }
     fetchVideoModelCapabilities(activeVideoModel)
       .then(caps => {
         if (cancelled) return;
@@ -262,8 +271,9 @@ function ModelSelector({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeVideoModel]);
 
-  // 模型能力尚未就绪时不给出具期选项，避免首屏闪现未按能力过滤的默认集（如 11–15s、21:9）
-  const capsLoading = !capsReady;
+  // 模型能力尚未就绪时不给出具期选项，避免首屏闪现未按能力过滤的默认集（如 11–15s、21:9）。
+  // 无模型可联动时（activeVideoModel 为空）不视为加载中，直接展示全量选项。
+  const capsLoading = !capsReady && Boolean(activeVideoModel);
   const ratioOptions = capsLoading
     ? []
     : videoCaps?.ratios?.length

@@ -181,8 +181,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         setSelectedResolution(generation.video_resolution || '720P');
         setSelectedDuration(generation.video_duration ? String(generation.video_duration) : '');
         setSelectedFps(generation.video_fps ? String(generation.video_fps) : '');
-      } catch (e: any) {
-        if (!cancelled) setConfigError(e.message || '读取默认模型配置失败');
+      } catch (e: unknown) {
+        if (!cancelled) setConfigError((e as Error | null)?.message || '读取默认模型配置失败');
       } finally {
         if (!cancelled) setConfigLoading(false);
       }
@@ -198,8 +198,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
     try {
       await onDeleteSession(deleteTarget);
       setDeleteTarget(null);
-    } catch (e: any) {
-      setDeleteError(e.message || '删除失败');
+    } catch (e: unknown) {
+      setDeleteError((e as Error | null)?.message || '删除失败');
     } finally {
       setDeleting(false);
     }

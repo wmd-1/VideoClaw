@@ -14,13 +14,16 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 
-import dashscope
-from dashscope import MultiModalConversation
-import logging
+import logging  # noqa: E402 - sys.path 引导后导入
+
+import dashscope  # noqa: E402 - sys.path 引导后导入
+from dashscope import MultiModalConversation  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
-from typing import Any, Dict, List, Optional
-from config import Config
+from typing import Any, Dict, List, Optional  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
+
 
 class QwenVLClient:
     def __init__(self,
@@ -72,7 +75,6 @@ class QwenVLClient:
 if __name__ == "__main__":
     import sys
     import time
-    import json
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import Config
 

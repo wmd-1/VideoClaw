@@ -6,13 +6,16 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import time
-import uuid
-import base64
-import httpx
-import logging
-from openai import OpenAI
-from config import Config
+import base64  # noqa: E402 - sys.path 引导后导入
+import logging  # noqa: E402 - sys.path 引导后导入
+import time  # noqa: E402 - sys.path 引导后导入
+import uuid  # noqa: E402 - sys.path 引导后导入
+
+import httpx  # noqa: E402 - sys.path 引导后导入
+from openai import OpenAI  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
+
 try:
     from models.image_processor import ImageProcessor
 except ImportError:
@@ -160,7 +163,6 @@ class ImageGPT:
 
 if __name__ == "__main__":
     import sys
-    import tempfile
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import Config
 

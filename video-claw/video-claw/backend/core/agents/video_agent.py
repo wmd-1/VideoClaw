@@ -7,13 +7,13 @@
 - 支持逐项并发生成、实时预览、重新生成
 """
 
+import asyncio
+import glob
+import logging
 import os
 import re
-import glob
-import asyncio
-import logging
-from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
 
 from .base_agent import AgentInterface
 
@@ -489,7 +489,6 @@ class VideoDirectorAgent(AgentInterface):
     # ─── 核心流程 ───
 
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
-        from config import settings
         
         input_data = self._merge_session_params(input_data)
         sid = input_data["session_id"]
@@ -550,18 +549,6 @@ class VideoDirectorAgent(AgentInterface):
         prompt_rewrite_art = artifacts.get('prompt_rewrite', {})
         
         style_zh = input_data.get('style') or session_meta.get('style') or 'realistic'
-        # 简单映射为中文显示名
-        style_map_zh = {
-            "anime": "动漫",
-            "realistic": "写实",
-            "cartoon": "卡通",
-            "3d-disney": "3D迪斯尼",
-            "oil-painting": "油画",
-            "chinese-ink": "国画",
-            "comic-book": "美漫",
-            "cyberpunk": "赛博朋克"
-        }
-        style_name = style_map_zh.get(style_zh, style_zh)
         style_prompt = self._get_style_prompt(style_zh)
 
         # ═══ 介入：重新生成指定片段 ═══
@@ -579,7 +566,8 @@ class VideoDirectorAgent(AgentInterface):
                         for seg_id in regen_ids:
                             seg = segment_map.get(seg_id)
                             clip = clip_map.get(seg_id) if clip_map.get(seg_id) else None
-                            if not seg: continue
+                            if not seg:
+                                continue
                             prompt = self._final_prompt(seg, style_prompt, character_art, video_data=clip,
                                                         prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id)
 
@@ -665,7 +653,8 @@ class VideoDirectorAgent(AgentInterface):
             for seg_index, seg in enumerate(segments):
                 seg_id = seg["segment_id"]
                 existing = self._list_versions(sid, seg_id)
-                if existing: continue
+                if existing:
+                    continue
                 prompt = self._final_prompt(seg, style_prompt, character_art, video_data=None,
                                             prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id)
                 reference_image_paths = None
@@ -740,7 +729,8 @@ class VideoDirectorAgent(AgentInterface):
                         })
                     if self.cancellation_check and self.cancellation_check():
                         for f in futs:
-                            if not f.done(): f.cancel()
+                            if not f.done():
+                                f.cancel()
                         break
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, run)

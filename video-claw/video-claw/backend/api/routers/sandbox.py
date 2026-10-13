@@ -11,15 +11,15 @@ from typing import List, Optional
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 
+from api.routers.files import resolve_within_allowed_dirs
 from api.schemas.sandbox import (
     SandboxI2IRequest,
     SandboxLLMRequest,
     SandboxT2IRequest,
-    SandboxVLMRequest,
     SandboxVideoRequest,
+    SandboxVLMRequest,
 )
 from config import settings
-from api.routers.files import resolve_within_allowed_dirs
 
 router = APIRouter(tags=["Sandbox"])
 logger = logging.getLogger(__name__)

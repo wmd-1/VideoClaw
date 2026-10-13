@@ -1,6 +1,6 @@
+import logging
 import os
 import sys
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,23 +11,23 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from config import settings
-from api.logging_config import setup_concurrent_logging
+from api.logging_config import setup_concurrent_logging  # noqa: E402 - sys.path 引导后导入
+from config import settings  # noqa: E402 - sys.path 引导后导入
 
 setup_concurrent_logging()
 
 logger = logging.getLogger(__name__)
 
-from api.routers import (
+from api.routers import (  # noqa: E402 - sys.path 引导后导入
+    configuration_router,
     files_router,
     health_router,
+    models_router,
+    pipelines_router,
     sandbox_router,
     sessions_router,
     stages_router,
     workflow_router,
-    pipelines_router,
-    configuration_router,
-    models_router,
 )
 
 

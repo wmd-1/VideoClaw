@@ -7,19 +7,47 @@ import { assetUrl } from './utils';
 import StageProgress from './StageProgress';
 import StageActions from './StageActions';
 
+/* ─── 本地结构类型（后端动态 JSON，按消费字段声明） ─── */
+interface FinalVideoItem {
+  name?: string;
+  path?: string;
+  episode?: number;
+}
+interface PostProductionArtifact {
+  final_videos?: FinalVideoItem[];
+  final_video?: string;
+}
+interface EpisodeTitleItem {
+  episode_number?: number;
+  episode?: number;
+  act_title?: string;
+  title?: string;
+}
+interface ClipStatItem {
+  episode?: number | string;
+  id?: string;
+  selected?: string | boolean;
+  duration?: number | string;
+}
+
 export default function PostProductionStage({ state, onConfirm, onIntervene, onRegenerate, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, artifacts, scriptArtifact }: StageViewProps) {
   // 提取最终视频列表
-  const finalVideos: any[] = state.artifact?.final_videos || [];
-  
+  const artifact = state.artifact as PostProductionArtifact | undefined;
+  const finalVideos: FinalVideoItem[] = artifact?.final_videos || [];
+
   // 兼容旧格式及其变形
-  const legacyVideo = state.artifact?.final_video;
-  
+  const legacyVideo = artifact?.final_video;
+
   // 从剧本或分镜数据中提取剧集名称映射
   const episodeTitleMap = React.useMemo(() => {
     // 优先从 scriptArtifact 获取
-    const episodes = scriptArtifact?.episodes || artifacts?.storyboard?.episodes || artifacts?.script?.episodes || [];
+    const episodes: EpisodeTitleItem[] =
+      (scriptArtifact as { episodes?: EpisodeTitleItem[] } | undefined)?.episodes ||
+      (artifacts?.storyboard as { episodes?: EpisodeTitleItem[] } | undefined)?.episodes ||
+      (artifacts?.script as { episodes?: EpisodeTitleItem[] } | undefined)?.episodes ||
+      [];
     const map: Record<number, string> = {};
-    episodes.forEach((ep: any) => {
+    episodes.forEach(ep => {
       const epNum = ep.episode_number || ep.episode;
       if (epNum) {
         map[Number(epNum)] = ep.act_title || ep.title || '';
@@ -29,16 +57,16 @@ export default function PostProductionStage({ state, onConfirm, onIntervene, onR
   }, [artifacts, scriptArtifact]);
 
   const selectedClipStatsMap = React.useMemo(() => {
-    const clips = artifacts?.video_generation?.clips || [];
+    const clips: ClipStatItem[] = (artifacts?.video_generation as { clips?: ClipStatItem[] } | undefined)?.clips || [];
     const map: Record<number, { count: number; duration: number }> = {};
-    const parseEpisode = (clip: any): number => {
+    const parseEpisode = (clip: ClipStatItem): number => {
       if (clip?.episode) return Number(clip.episode);
       const id = String(clip?.id || '');
       const match = id.match(/(?:seg_|shot_)?(\d{1,3})_\d{1,3}/);
       return match ? Number(match[1]) : 1;
     };
 
-    clips.forEach((clip: any) => {
+    clips.forEach(clip => {
       if (!clip?.selected) return;
       const epNum = parseEpisode(clip);
       if (!map[epNum]) map[epNum] = { count: 0, duration: 0 };
@@ -101,7 +129,7 @@ export default function PostProductionStage({ state, onConfirm, onIntervene, onR
                   
                   <div className="bg-black rounded-xl overflow-hidden shadow-lg border border-gray-800">
                     <video 
-                      src={assetUrl(video.path)} 
+                      src={assetUrl(video.path || '')}
                       controls 
                       className="w-full max-h-[60vh] object-contain" 
                     />
@@ -117,7 +145,7 @@ export default function PostProductionStage({ state, onConfirm, onIntervene, onR
                       重新生成本集
                     </button>
                     <a
-                      href={assetUrl(video.path)}
+                      href={assetUrl(video.path || '')}
                       download={`${epTitle}.mp4`}
                       className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg text-xs font-medium hover:bg-black transition-colors"
                     >

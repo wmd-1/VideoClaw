@@ -6,13 +6,15 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import requests
-import numpy as np
-from pathlib import Path
-from datetime import datetime, timedelta
-from PIL import Image
-import logging
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+from datetime import datetime, timedelta  # noqa: E402 - sys.path 引导后导入
+from pathlib import Path  # noqa: E402 - sys.path 引导后导入
+
+import numpy as np  # noqa: E402 - sys.path 引导后导入
+import requests  # noqa: E402 - sys.path 引导后导入
+from PIL import Image  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,7 @@ class ImageProcessor:
             max_retries: 最大重试次数
         """
         import time
+
         import urllib3
         
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

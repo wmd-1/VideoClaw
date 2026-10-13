@@ -13,9 +13,10 @@ backend_dir = os.path.dirname(models_dir)
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import logging
-from typing import Optional
-from config import Config
+import logging  # noqa: E402 - sys.path 引导后导入
+from typing import Optional  # noqa: E402 - sys.path 引导后导入
+
+from config import Config  # noqa: E402 - sys.path 引导后导入
 
 try:
     from models.video_dashscope import DashscopeVideoClient
@@ -26,8 +27,8 @@ except ImportError:
     from video_kling import KlingVideoClient
     from video_seedance import SeedanceVideoClient
 
-from models.config_model import resolve_model_entry
-from models.custom_common import ModelNotRegisteredError
+from models.config_model import resolve_model_entry  # noqa: E402 - sys.path 引导后导入
+from models.custom_common import ModelNotRegisteredError  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 

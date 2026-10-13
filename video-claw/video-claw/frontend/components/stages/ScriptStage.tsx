@@ -24,6 +24,11 @@ interface ScriptCharacter {
   age?: string;
   species?: string;
   occupation?: string;
+  /** 后端动态 JSON 附加字段（按消费处声明） */
+  role?: string;
+  personality?: string;
+  motivation?: string;
+  arc_description?: string;
 }
 
 interface ScriptSetting {
@@ -65,7 +70,21 @@ interface ScriptData {
   overall_style?: string;
   mood?: string;
   session_id?: string;
-  [key: string]: any;
+  /** 阶段推进标识（logline_selection / logline_confirm / mode_selection ...） */
+  phase?: string;
+  /** logline 六要素候选与已选结果 */
+  logline_data?: LoglineData;
+  logline_options?: LoglineData[];
+  logline_summary?: LoglineData;
+  selected_logline?: LoglineData;
+  /** 逐幕生成进度 */
+  beat_sheet?: string;
+  completed_acts?: ActCompleteData[];
+  /** 智能续写增量数据 */
+  new_characters?: ScriptCharacter[];
+  new_settings?: ScriptSetting[];
+  new_episodes?: ScriptEpisode[];
+  [key: string]: unknown;
 }
 
 /* ─── Logline 六要素展示卡 ─── */
@@ -100,7 +119,7 @@ function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
 }
 
 export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, showConfirm, isRunning, hasPendingItems, hasNextStageStarted }: StageViewProps) {
-  const data: ScriptData = state.artifact || {};
+  const data = (state.artifact || {}) as ScriptData;
 
   const isLoglinePhase = data.phase === 'logline_selection' || data.phase === 'logline_confirm' || data.phase === 'mode_selection';
 
@@ -142,7 +161,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const getEpisodeNumber = (ep: ScriptEpisode, index: number) =>
     Number(ep.episode_number || ep.act_number || index + 1);
 
-  const patchScriptArtifact = async (patch: Record<string, any>) => {
+  const patchScriptArtifact = async (patch: Record<string, unknown>) => {
     if (!sessionId) throw new Error('缺少会话 ID');
     const response = await fetch(`/api/project/${sessionId}/artifact/script_generation`, {
       method: 'PATCH',
@@ -313,7 +332,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
     try {
       const nextCharacters = (data.characters || []).map((character, itemIndex) => {
         if (itemIndex !== index) return character;
-        const restCharacter = { ...(character as ScriptCharacter & Record<string, any>) };
+        const restCharacter = { ...character };
         delete restCharacter.role;
         delete restCharacter.personality;
         delete restCharacter.motivation;
@@ -387,7 +406,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           <>
             {data.selected_logline && (
               <div className="mb-4">
-                <LoglineSummaryBar logline={data.selected_logline as LoglineData} />
+                <LoglineSummaryBar logline={data.selected_logline} />
               </div>
             )}
 
@@ -399,15 +418,15 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   <h3 className="text-sm font-semibold text-gray-700">节拍表 (Beat Sheet)</h3>
                 </div>
                 <div className="bg-white border border-gray-200 rounded-xl p-4">
-                  <pre className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap font-sans">{data.beat_sheet as string}</pre>
+                  <pre className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap font-sans">{data.beat_sheet}</pre>
                 </div>
               </div>
             )}
 
             {/* 逐幕完成的分场结果 */}
-            {data.completed_acts && (data.completed_acts as ActCompleteData[]).length > 0 && (
+            {data.completed_acts && data.completed_acts.length > 0 && (
               <div className="mb-4 space-y-4">
-                {(data.completed_acts as ActCompleteData[]).map((actData) => (
+                {data.completed_acts.map((actData) => (
                   <div key={actData.act}>
                     {/* 幕分隔线 */}
                     <div className="flex items-center gap-3 mb-3">
@@ -426,7 +445,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                             <span className="flex items-center justify-center w-7 h-7 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex-shrink-0">{sc.scene_number}</span>
                             <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs rounded-full">{sc.location}</span>
                             <div className="flex flex-wrap gap-1">
-                              {(sc.characters || []).map((c: any, ci: number) => (
+                              {(sc.characters || []).map((c, ci: number) => (
                                 <span key={ci} className="px-2 py-0.5 bg-blue-50 text-blue-600 text-xs rounded-full">{c}</span>
                               ))}
                             </div>
@@ -461,7 +480,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   <span className="text-xs text-gray-400">点击卡片以选择</span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {(data.logline_options as LoglineData[]).map((opt, i) => (
+                  {data.logline_options.map((opt, i) => (
                     <button
                       key={i}
                       onClick={() => onIntervene({ selected_logline: opt })}
@@ -490,7 +509,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   <Lightbulb className="w-4 h-4 text-amber-500" />
                   <h3 className="text-sm font-semibold text-gray-700">Logline 提取结果</h3>
                 </div>
-                <LoglineSummaryBar logline={data.logline_summary as LoglineData} />
+                <LoglineSummaryBar logline={data.logline_summary} />
                 <div className="flex justify-center pt-2">
                   <button
                     onClick={() => onIntervene({ selected_logline: data.logline_summary })}
@@ -508,7 +527,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               <>
                 {data.selected_logline && (
                   <div className="mb-4">
-                    <LoglineSummaryBar logline={data.selected_logline as LoglineData} />
+                    <LoglineSummaryBar logline={data.selected_logline} />
                   </div>
                 )}
                 <div className="flex items-center gap-2 mb-3">
@@ -562,7 +581,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
             {/* Logline 六要素摘要 */}
             {data.logline_data && (
-              <LoglineSummaryBar logline={data.logline_data as LoglineData} />
+              <LoglineSummaryBar logline={data.logline_data} />
             )}
 
             {/* 标题 / Logline / 标签 */}
@@ -927,7 +946,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                             <span className="flex items-center justify-center w-7 h-7 rounded-full bg-purple-100 text-purple-700 text-xs font-bold flex-shrink-0">{sc.scene_number}</span>
                             <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs rounded-full">{sc.location}</span>
                             <div className="flex flex-wrap gap-1">
-                              {(sc.characters || []).map((c: any, ci: number) => (
+                              {(sc.characters || []).map((c, ci: number) => (
                                 <span key={ci} className="px-2 py-0.5 bg-blue-50 text-blue-600 text-xs rounded-full">{c}</span>
                               ))}
                             </div>
@@ -968,7 +987,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <Users className="w-4 h-4" /> 新增角色
                     </h4>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                      {data.new_characters.map((c: any, i: number) => (
+                      {data.new_characters.map((c, i: number) => (
                         <div key={i} className="bg-white p-3 rounded-lg border border-amber-100 shadow-sm flex flex-col gap-1">
                           <div className="font-bold text-amber-900 text-sm">{c.name}</div>
                           <p className="text-[11px] text-gray-600 line-clamp-2 md:line-clamp-none">{c.description}</p>
@@ -984,7 +1003,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <MapPin className="w-4 h-4" /> 新增场景
                     </h4>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                      {data.new_settings.map((s: any, i: number) => (
+                      {data.new_settings.map((s, i: number) => (
                         <div key={i} className="bg-white p-3 rounded-lg border border-emerald-100 shadow-sm flex flex-col gap-1">
                           <div className="font-bold text-emerald-900 text-sm">{s.name}</div>
                           <p className="text-[11px] text-gray-600 line-clamp-2 md:line-clamp-none">{s.description}</p>
@@ -995,7 +1014,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 )}
 
                 <div className="space-y-6">
-                  {data.new_episodes.map((ep: any, i: number) => (
+                  {data.new_episodes?.map((ep, i: number) => (
                     <div key={`new-${i}`} className="bg-purple-50 border-2 border-purple-300 rounded-xl overflow-hidden shadow-md">
                       <div className="bg-gradient-to-r from-purple-200 to-purple-100 px-4 py-3 flex items-center justify-between border-b border-purple-200/50">
                         <h4 className="font-bold text-purple-900">第 {ep.episode_number || (data.episodes ? data.episodes.length + i + 1 : i + 1)} 集：{ep.act_title}</h4>

@@ -30,9 +30,16 @@ export default function ProviderSelect({
     applySyncPlaceholder(providers, value),
   );
 
+  // providers/value 变化即重建同步占位：渲染期完成（替代 effect 内同步 setState），
+  // 既避免首帧闪现陈旧列表，也不产生级联渲染
+  const [placeholderKey, setPlaceholderKey] = useState({ providers, value });
+  if (placeholderKey.providers !== providers || placeholderKey.value !== value) {
+    setPlaceholderKey({ providers, value });
+    setResolved(applySyncPlaceholder(providers, value));
+  }
+
   useEffect(() => {
     let cancelled = false;
-    setResolved(applySyncPlaceholder(providers, value));
     withSlotPlaceholder(providers, value)
       .then(groups => {
         if (!cancelled) setResolved(groups);

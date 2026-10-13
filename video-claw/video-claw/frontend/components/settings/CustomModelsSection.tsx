@@ -11,7 +11,29 @@ export interface EnvOverrides {
   models: string[];
 }
 
-type ConfigTree = Record<string, any>;
+/** 自定义供应商条目（api_providers 中非内置条目） */
+interface ProviderEntry {
+  protocol?: string;
+  base_url?: string;
+  api_key?: string;
+  enable_proxy?: boolean;
+  [field: string]: unknown;
+}
+
+/** 自定义模型条目（custom_models[]） */
+interface CustomModelEntry {
+  id?: string;
+  provider?: string;
+  model?: string;
+  name?: string;
+  types?: unknown;
+  abilities?: unknown;
+  capabilities?: Record<string, unknown>;
+  tasks?: unknown;
+  [field: string]: unknown;
+}
+
+type ConfigTree = Record<string, unknown>;
 
 /** 内置供应商：不在「自定义供应商」管理区中展示 */
 export const BUILTIN_PROVIDERS = ['common', 'openai', 'gemini', 'deepseek', 'dashscope', 'ark', 'kling'];
@@ -92,28 +114,32 @@ export function CustomProvidersSection({
   const [draft, setDraft] = useState({ key: '', protocol: 'openai', base_url: '', api_key: '' });
   const [error, setError] = useState('');
 
-  const providers: Array<[string, any]> = Object.entries(config.api_providers || {}).filter(
+  const providerMap = (config.api_providers || {}) as Record<string, ProviderEntry>;
+  const providers = Object.entries(providerMap).filter(
     ([key]) => !BUILTIN_PROVIDERS.includes(key),
   );
-  const savedProviders: Record<string, any> = (savedConfig.api_providers as Record<string, any>) || {};
+  const savedProviders: Record<string, ProviderEntry> = (savedConfig.api_providers as Record<string, ProviderEntry> | undefined) || {};
 
   const isEnvField = (key: string, field: string) => envOverrides.fields.includes(`api_providers.${key}.${field}`);
   const isEnvOnly = (key: string) => envOverrides.providers.includes(key);
   // 当前编辑值与已保存值不一致：工作流实际使用已保存配置
   const isProviderDirty = (key: string) =>
-    JSON.stringify((config.api_providers || {})[key] ?? null) !== JSON.stringify(savedProviders[key] ?? null);
+    JSON.stringify(providerMap[key] ?? null) !== JSON.stringify(savedProviders[key] ?? null);
 
-  const updateProvider = (key: string, field: string, value: any) => {
+  const updateProvider = (key: string, field: string, value: unknown) => {
     setConfig(current => {
       const next = structuredClone(current || {});
-      next.api_providers = next.api_providers || {};
-      next.api_providers[key] = { ...(next.api_providers[key] || {}), [field]: value };
+      const providers = (next.api_providers || {}) as Record<string, ProviderEntry>;
+      providers[key] = { ...(providers[key] || {}), [field]: value };
+      next.api_providers = providers;
       return next;
     });
   };
 
   const removeProvider = (key: string) => {
-    const referenced = (config.custom_models || []).filter((m: any) => m?.provider === key).map((m: any) => m.id);
+    const referenced = ((config.custom_models || []) as CustomModelEntry[])
+      .filter(m => m?.provider === key)
+      .map(m => m.id);
     if (referenced.length > 0) {
       setError(`供应商 ${key} 仍被模型引用（${referenced.join('、')}），请先删除或改绑这些模型`);
       return;
@@ -121,7 +147,8 @@ export function CustomProvidersSection({
     setError('');
     setConfig(current => {
       const next = structuredClone(current || {});
-      if (next.api_providers) delete next.api_providers[key];
+      const providers = next.api_providers as Record<string, ProviderEntry> | undefined;
+      if (providers) delete providers[key];
       return next;
     });
   };
@@ -136,7 +163,7 @@ export function CustomProvidersSection({
       setError('供应商名称仅支持字母、数字、下划线和中划线');
       return;
     }
-    if (BUILTIN_PROVIDERS.includes(key) || (config.api_providers || {})[key]) {
+    if (BUILTIN_PROVIDERS.includes(key) || providerMap[key]) {
       setError(`供应商名称已存在：${key}`);
       return;
     }
@@ -147,13 +174,14 @@ export function CustomProvidersSection({
     setError('');
     setConfig(current => {
       const next = structuredClone(current || {});
-      next.api_providers = next.api_providers || {};
-      next.api_providers[key] = {
+      const providers = (next.api_providers || {}) as Record<string, ProviderEntry>;
+      providers[key] = {
         protocol: draft.protocol,
         base_url: draft.base_url.trim(),
         api_key: draft.api_key,
         enable_proxy: false,
       };
+      next.api_providers = providers;
       return next;
     });
     setDraft({ key: '', protocol: 'openai', base_url: '', api_key: '' });
@@ -292,23 +320,24 @@ export function CustomModelsSection({
   // 高级能力参数（capabilities）折叠区，默认收起以免干扰主流程
   const [capsOpen, setCapsOpen] = useState<Record<string, boolean>>({});
 
-  const models: any[] = Array.isArray(config.custom_models) ? config.custom_models : [];
-  const providerKeys = Object.keys(config.api_providers || {}).filter(key => !BUILTIN_PROVIDERS.includes(key));
-  const savedModelsById = new Map<string, any>(
-    (Array.isArray(savedConfig.custom_models) ? savedConfig.custom_models : [])
-      .filter((item: any) => item?.id)
-      .map((item: any) => [item.id, item]),
-  );
+  const models: CustomModelEntry[] = (Array.isArray(config.custom_models) ? config.custom_models : []) as CustomModelEntry[];
+  const providerMap = (config.api_providers || {}) as Record<string, ProviderEntry>;
+  const providerKeys = Object.keys(providerMap).filter(key => !BUILTIN_PROVIDERS.includes(key));
+  const savedModels = (Array.isArray(savedConfig.custom_models) ? savedConfig.custom_models : []) as CustomModelEntry[];
+  const savedModelsById = new Map<string, CustomModelEntry>();
+  for (const item of savedModels) {
+    if (item?.id) savedModelsById.set(item.id, item);
+  }
 
   const isEnvField = (id: string, field: string) => envOverrides.fields.includes(`custom_models[${id}].${field}`);
   const isEnvOnly = (id: string) => envOverrides.models.includes(id);
   // 当前编辑值与已保存值不一致：工作流实际使用已保存配置
-  const isModelDirty = (entry: any) => JSON.stringify(entry ?? null) !== JSON.stringify(savedModelsById.get(entry?.id) ?? null);
+  const isModelDirty = (entry: CustomModelEntry | undefined) => JSON.stringify(entry ?? null) !== JSON.stringify(savedModelsById.get(entry?.id ?? '') ?? null);
 
-  const updateModel = (index: number, field: string, value: any) => {
+  const updateModel = (index: number, field: string, value: unknown) => {
     setConfig(current => {
       const next = structuredClone(current || {});
-      const list = Array.isArray(next.custom_models) ? next.custom_models : [];
+      const list = (Array.isArray(next.custom_models) ? next.custom_models : []) as CustomModelEntry[];
       list[index] = { ...(list[index] || {}), [field]: value };
       next.custom_models = list;
       return next;
@@ -316,7 +345,7 @@ export function CustomModelsSection({
   };
 
   const toggleListValue = (index: number, field: 'types' | 'abilities', value: string) => {
-    const list: string[] = models[index]?.[field] || [];
+    const list = (models[index]?.[field] as string[] | undefined) || [];
     const next = list.includes(value) ? list.filter(item => item !== value) : [...list, value];
     updateModel(index, field, next);
   };
@@ -324,7 +353,7 @@ export function CustomModelsSection({
   const removeModel = (index: number) => {
     setConfig(current => {
       const next = structuredClone(current || {});
-      const list = Array.isArray(next.custom_models) ? next.custom_models : [];
+      const list = (Array.isArray(next.custom_models) ? next.custom_models : []) as CustomModelEntry[];
       list.splice(index, 1);
       next.custom_models = list;
       return next;
@@ -338,13 +367,13 @@ export function CustomModelsSection({
   const updateCapability = (index: number, key: string, raw: string | boolean) => {
     setConfig(current => {
       const next = structuredClone(current || {});
-      const list = Array.isArray(next.custom_models) ? next.custom_models : [];
+      const list = (Array.isArray(next.custom_models) ? next.custom_models : []) as CustomModelEntry[];
       const entry = list[index];
       if (!entry) return current;
-      const caps: Record<string, any> = { ...(entry.capabilities || {}) };
+      const caps: Record<string, unknown> = { ...(entry.capabilities || {}) };
       const [group, sub] = key.split('.');
       if (sub) {
-        const duration = { ...((caps[group as 'duration'] as Record<string, any>) || {}) };
+        const duration: Record<string, unknown> = { ...((caps[group] as Record<string, unknown> | undefined) || {}) };
         if (typeof raw === 'string' && raw.trim() === '') delete duration[sub];
         else duration[sub] = raw;
         if (Object.keys(duration).length) caps[group] = duration;
@@ -367,9 +396,12 @@ export function CustomModelsSection({
     });
   };
 
-  const capValue = (entry: any, key: string, sub?: string): string => {
-    const caps = entry?.capabilities || {};
-    if (sub) return String(caps[key]?.[sub] ?? '');
+  const capValue = (entry: CustomModelEntry | undefined, key: string, sub?: string): string => {
+    const caps = (entry?.capabilities || {}) as Record<string, unknown>;
+    if (sub) {
+      const group = caps[key] as Record<string, unknown> | undefined;
+      return String(group?.[sub] ?? '');
+    }
     const value = caps[key];
     if (Array.isArray(value)) return value.join(', ');
     return value === true ? '' : String(value ?? '');
@@ -399,7 +431,7 @@ export function CustomModelsSection({
   };
 
   const runTest = async (index: number, modelType: string) => {
-    const entry = models[index] || {};
+    const entry: CustomModelEntry = models[index] || {};
     const key = `${entry.id}:${modelType}`;
     setTesting(prev => ({ ...prev, [key]: true }));
     setTestResults(prev => {
@@ -409,15 +441,15 @@ export function CustomModelsSection({
     });
     try {
       const providerKey = entry.provider || '';
-      const providerDraft = { key: providerKey, ...(config.api_providers?.[providerKey] || {}) };
+      const providerDraft = { key: providerKey, ...(providerMap[providerKey] || {}) };
       const result = await testCustomModel({
         model: { id: entry.id, model: entry.model, abilities: entry.abilities || [] },
         provider: providerDraft,
         model_type: modelType as 'llm' | 'vlm' | 't2i' | 'i2i' | 'video',
       });
       setTestResults(prev => ({ ...prev, [key]: result }));
-    } catch (e: any) {
-      setTestResults(prev => ({ ...prev, [key]: e?.message || '测试请求失败' }));
+    } catch (e: unknown) {
+      setTestResults(prev => ({ ...prev, [key]: (e as Error | null)?.message || '测试请求失败' }));
     } finally {
       setTesting(prev => ({ ...prev, [key]: false }));
     }
@@ -437,43 +469,45 @@ export function CustomModelsSection({
 
       <div className="space-y-3">
         {models.map((entry, index) => {
-          const envOnly = isEnvOnly(entry.id);
-          const selectedTypes: string[] = entry.types || [];
+          const entryId = entry.id || '';
+          const envOnly = isEnvOnly(entryId);
+          const selectedTypes: string[] = Array.isArray(entry.types) ? entry.types : [];
+          const selectedAbilities: string[] = Array.isArray(entry.abilities) ? entry.abilities : [];
           // key 使用稳定的行下标：编辑 id 时不触发重挂载（否则输入一个字符就失焦）
           return (
             <div key={index} className="rounded-xl border border-gray-100 bg-gray-50/60 p-3">
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
                 <label className="flex flex-col">
-                  <FieldLabel text="id 模型标识" envLocked={isEnvField(entry.id, 'id')} />
+                  <FieldLabel text="id 模型标识" envLocked={isEnvField(entryId, 'id')} />
                   <input
                     className={inputClass}
                     value={entry.id || ''}
-                    disabled={envOnly || isEnvField(entry.id, 'id')}
+                    disabled={envOnly || isEnvField(entryId, 'id')}
                     onChange={e => updateModel(index, 'id', e.target.value)}
                   />
                 </label>
                 <label className="flex flex-col">
-                  <FieldLabel text="provider 供应商" envLocked={isEnvField(entry.id, 'provider')} />
+                  <FieldLabel text="provider 供应商" envLocked={isEnvField(entryId, 'provider')} />
                   <select
                     className={inputClass}
                     value={entry.provider || ''}
-                    disabled={envOnly || isEnvField(entry.id, 'provider')}
+                    disabled={envOnly || isEnvField(entryId, 'provider')}
                     onChange={e => updateModel(index, 'provider', e.target.value)}
                   >
                     <option value="">请选择</option>
                     {providerKeys.map(key => (
                       <option key={key} value={key}>
-                        {config.api_providers?.[key]?.name || key}
+                        {String(providerMap[key]?.name ?? '') || key}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label className="flex flex-col">
-                  <FieldLabel text="model 请求模型名（可空=id）" envLocked={isEnvField(entry.id, 'model')} />
+                  <FieldLabel text="model 请求模型名（可空=id）" envLocked={isEnvField(entryId, 'model')} />
                   <input
                     className={inputClass}
                     value={entry.model || ''}
-                    disabled={envOnly || isEnvField(entry.id, 'model')}
+                    disabled={envOnly || isEnvField(entryId, 'model')}
                     onChange={e => updateModel(index, 'model', e.target.value)}
                   />
                 </label>
@@ -481,13 +515,13 @@ export function CustomModelsSection({
 
               <div className="mt-2 flex flex-wrap items-start gap-x-6 gap-y-2">
                 <div>
-                  <FieldLabel text="types 模型类型" envLocked={isEnvField(entry.id, 'types')} />
+                  <FieldLabel text="types 模型类型" envLocked={isEnvField(entryId, 'types')} />
                   <div className="flex flex-wrap gap-1.5">
                     {MODEL_TYPE_OPTIONS.map(option => (
                       <button
                         key={option.id}
                         type="button"
-                        disabled={envOnly || isEnvField(entry.id, 'types')}
+                        disabled={envOnly || isEnvField(entryId, 'types')}
                         onClick={() => toggleListValue(index, 'types', option.id)}
                         className={`rounded-lg border px-2 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed ${
                           selectedTypes.includes(option.id)
@@ -501,16 +535,16 @@ export function CustomModelsSection({
                   </div>
                 </div>
                 <div>
-                  <FieldLabel text="abilities 能力标签（可留空按类型推导）" envLocked={isEnvField(entry.id, 'abilities')} />
+                  <FieldLabel text="abilities 能力标签（可留空按类型推导）" envLocked={isEnvField(entryId, 'abilities')} />
                   <div className="flex flex-wrap gap-1.5">
                     {ABILITY_OPTIONS.map(option => (
                       <button
                         key={option.id}
                         type="button"
-                        disabled={envOnly || isEnvField(entry.id, 'abilities')}
+                        disabled={envOnly || isEnvField(entryId, 'abilities')}
                         onClick={() => toggleListValue(index, 'abilities', option.id)}
                         className={`rounded-lg border px-2 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed ${
-                          (entry.abilities || []).includes(option.id)
+                          selectedAbilities.includes(option.id)
                             ? 'border-emerald-300 bg-emerald-50 text-emerald-600'
                             : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
                         }`}
@@ -521,14 +555,14 @@ export function CustomModelsSection({
                   </div>
                 </div>
                 <label className="flex w-32 flex-col">
-                  <FieldLabel text="concurrency 并发" envLocked={isEnvField(entry.id, 'concurrency')} />
+                  <FieldLabel text="concurrency 并发" envLocked={isEnvField(entryId, 'concurrency')} />
                   <input
                     className={inputClass}
                     type="number"
                     min={1}
                     placeholder="1"
-                    value={entry.concurrency ?? ''}
-                    disabled={envOnly || isEnvField(entry.id, 'concurrency')}
+                    value={entry.concurrency == null ? '' : String(entry.concurrency)}
+                    disabled={envOnly || isEnvField(entryId, 'concurrency')}
                     onChange={e => updateModel(index, 'concurrency', e.target.value === '' ? undefined : Number(e.target.value))}
                   />
                 </label>

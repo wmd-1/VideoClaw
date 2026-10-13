@@ -89,6 +89,11 @@ function usePromptRewriteEnabled(): { known: boolean; enabled: boolean } {
   return flag;
 }
 
+/** 本阶段 artifact 的本地结构（后端动态 JSON，按消费字段声明） */
+interface PromptRewriteArtifact {
+  items?: RewriteItem[];
+}
+
 export default function PromptRewriteStage({
   state,
   artifacts,
@@ -100,7 +105,7 @@ export default function PromptRewriteStage({
   isRunning,
   hasPendingItems,
 }: StageViewProps) {
-  const artifact = state.artifact || {};
+  const artifact = (state.artifact || {}) as PromptRewriteArtifact;
   const items: RewriteItem[] = useMemo(
     () => (Array.isArray(artifact.items) ? artifact.items : []),
     [artifact.items],
@@ -110,9 +115,13 @@ export default function PromptRewriteStage({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [instructions, setInstructions] = useState<Record<string, string>>({});
 
-  useEffect(() => {
+  // 编辑草稿（按条目 id）：切换/重生成后以最新产物为准。
+  // items 变化即清空草稿：渲染期完成（替代 effect 内同步 setState，避免级联渲染）
+  const [draftsSyncKey, setDraftsSyncKey] = useState(items);
+  if (draftsSyncKey !== items) {
+    setDraftsSyncKey(items);
     setDrafts({});
-  }, [items]);
+  }
 
   const pendingCount = items.filter(i => i.status === 'pending').length;
   const failedCount = items.filter(i => i.status === 'failed').length;
@@ -121,7 +130,7 @@ export default function PromptRewriteStage({
   // 逐分镜串行改写：执行期事件只带条目身份与状态（改写正文随阶段完成才完整），
   // 故用分镜条数 + SSE percent 换算实时条数
   const segmentTotal = useMemo(() => {
-    const episodes = artifacts?.storyboard?.episodes;
+    const episodes = (artifacts?.storyboard as { episodes?: unknown[] } | undefined)?.episodes;
     if (!Array.isArray(episodes)) return 0;
     return episodes.reduce((sum: number, episode) => sum + countEpisodeSegments(episode), 0);
   }, [artifacts]);
