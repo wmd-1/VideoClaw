@@ -33,6 +33,7 @@
 | `Handoff 2：VideoClaw + LangGraph.md` | 用 LangGraph 接管核心创作流程的 Agent/Workflow 编排（备选路线） |
 | `Handoff 3：H3 提示词改写阶段 - 待办与验证缺口.md` | 改写阶段的待办事项与验证缺口事实交接（含容器内复现方式） |
 | `Handoff 4：H3 原生改写器 - 评审加固承接（I1·I4·M1）.md` | 第一轮评审加固项中仍适用于原生实现的部分 |
+| `Handoff 5：前端构建端口硬编码故障与修复.md` | 构建期端口硬编码致 API 500 故障的根因、修复与治理（含 655c519 留痕更正） |
 
 区分：Handoff 用于缺陷交接与跨会话续作；需求/方案层面的正式提案走 openspec（proposal / specs / design / tasks + validate）。
 
