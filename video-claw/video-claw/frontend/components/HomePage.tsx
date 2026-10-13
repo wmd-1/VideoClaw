@@ -305,7 +305,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         <div className="text-center mb-10">
           <div className="inline-flex items-center gap-2 mb-3">
             <Sparkles className="w-7 h-7 text-blue-500" />
-            <h1 className="text-2xl font-bold text-gray-800">Video-Claw</h1>
+            <h1 className="text-2xl font-bold text-gray-800">交心-Video</h1>
           </div>
           <p className="text-sm text-gray-500">
             输入你的创意，AI 将为你分步生成完整短片

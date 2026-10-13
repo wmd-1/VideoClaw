@@ -3,7 +3,7 @@ import AppShell from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Video-Claw",
+  title: "交心-Video",
   description: "AI视频生成工具",
 };
 

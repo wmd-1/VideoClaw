@@ -519,13 +519,13 @@ export default function TopBar({
         className="flex items-center gap-2 mr-6 hover:opacity-80 transition-opacity flex-shrink-0"
       >
         <img
-          src="/logo.jpg"
+          src="/jtyh.png"
           alt="Logo"
           className="w-8 h-8 rounded-lg object-contain"
         />
         <div className="flex flex-col leading-tight">
           <span className="font-bold text-sm text-gray-800 tracking-tight">
-            Video-Claw
+            交心-Video
           </span>
         </div>
       </button>
