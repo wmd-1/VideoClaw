@@ -185,7 +185,6 @@ class ScriptWriterAgent(AgentInterface):
             sid = input_data.get("session_id", "")
             if isinstance(modified, str):
                 modified = self._extract_json_from_text(modified) or {}
-            is_zh = any('\u4e00' <= c <= '\u9fff' for c in modified.get("title", ""))
             modified["session_id"] = sid
             # 【优化】移除手动调用 self._save_result，依靠 Orchestrator 自动保存
             return {"payload": modified, "requires_intervention": False, "stage_completed": True}
@@ -267,6 +266,10 @@ class ScriptWriterAgent(AgentInterface):
             _log_progress(45, "正在生成续写初稿...")
             sequel_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
 
+            # 续写流程固定使用中文 prompt（与本函数上方及下方各 prompt 的硬编码 "zh" 一致）。
+            # is_zh 在本函数尾部已有按标题推导的赋值，因而是本函数局部变量：必须先于
+            # 下面的评估/修订 prompt 定义，否则读取时未绑定（UnboundLocalError）。
+            is_zh = True
             _log_progress(50, "正在进行台词评估...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=sequel_script_text)
             dialogue_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
