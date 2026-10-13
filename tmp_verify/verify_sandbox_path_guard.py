@@ -6,7 +6,9 @@
 - I-A（image / reference_videos，经 _guard_media_input）：白名单外绝对路径/`..` 逃逸/符号链接 →
   发起生成前拒绝，文件不被适配层打开与外传；合法 TEMP_DIR 上传件透传规范化绝对路径；
   同文件 i2i（req.image）与 vlm（req.images 逐条）走同一守卫；
-- 远程形态（http(s)/data:/file://）三端均原样透传，不被误判为本地路径（URL 输入模式回归）。
+- 远程形态（http(s)/data:/oss://）三端均原样透传，不被误判为本地路径（URL 输入模式回归）；
+- file:// 是本地读取形态（评审 C-1）：越界 file:// URI 拒绝且不触适配层，白名单内文件剥前缀后
+  按规范化本地路径透传。
 
 运行：docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_sandbox_path_guard.py
 """
@@ -299,6 +301,22 @@ try:
             }).json()
             check("不存在的本地文件被明确拒绝", r20.get("success") is False and "不存在" in (r20.get("error") or ""), str(r20)[:160])
             check("不存在文件拒绝时不调用适配层", not CAPTURED_I2I, str(CAPTURED_I2I)[:120])
+
+            # 21) file:// 是本地读取形态（评审 C-1）：越界拒绝、白名单内文件剥前缀规范化透传
+            CAPTURED_I2I.clear()
+            r21 = client.post("/api/sandbox/i2i", json={
+                "model": "local-image", "prompt": "file uri escape", "image": "file:///etc/passwd",
+            }).json()
+            check("file:// 越界路径被拒绝", r21.get("success") is False and "越界" in (r21.get("error") or ""), str(r21)[:160])
+            check("file:// 越界拒绝时不调用适配层", not CAPTURED_I2I, str(CAPTURED_I2I)[:120])
+            CAPTURED_VLM.clear()
+            r22 = client.post("/api/sandbox/vlm", json={
+                "model": "local-vlm", "prompt": "file uri legit",
+                "images": [f"file://{os.path.realpath(img_up['file_path'])}"],
+            }).json()
+            check("file:// 白名单内文件剥前缀后规范化透传",
+                  r22.get("success") and CAPTURED_VLM.get("image_paths") == [os.path.realpath(img_up["file_path"])],
+                  str(CAPTURED_VLM)[:160])
         finally:
             import models.image_client as ic_module
             import models.vlm_client as vlm_module

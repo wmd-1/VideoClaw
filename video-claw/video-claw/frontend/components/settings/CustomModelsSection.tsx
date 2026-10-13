@@ -49,6 +49,17 @@ export const ABILITY_OPTIONS = [
 const inputClass =
   'h-9 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-700 outline-none focus:border-blue-300 disabled:bg-gray-50 disabled:text-gray-400';
 
+/** 视频模型 tasks 合法值（与后端 models/custom_video._supported_tasks 的过滤口径一致，评审 M-2） */
+const VIDEO_TASK_VALUES = ['t2va', 'fl2va', 'ref2va'];
+
+function invalidTaskTokens(raw: string | undefined | null): string[] {
+  return String(raw || '')
+    .split(/[,，|]+/)
+    .map(t => t.trim().toLowerCase())
+    .filter(Boolean)
+    .filter(t => !VIDEO_TASK_VALUES.includes(t));
+}
+
 function EnvBadge() {
   return (
     <span className="ml-1.5 inline-flex shrink-0 items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">
@@ -562,6 +573,12 @@ export function CustomModelsSection({
                   <label className="flex flex-col">
                     <FieldLabel text="tasks 支持的任务（如 ref2va）" />
                     <input className={inputClass} placeholder="ref2va 或 fl2va, ref2va" value={capValue(entry, 'tasks')} disabled={envOnly} onChange={e => updateCapability(index, 'tasks', e.target.value)} />
+                    {invalidTaskTokens(capValue(entry, 'tasks')).length > 0 && (
+                      <span className="mt-1 text-[10px] text-amber-600">
+                        无法识别：{invalidTaskTokens(capValue(entry, 'tasks')).join('、')}
+                        （合法值：t2va / fl2va / ref2va，逗号分隔；无法识别的值会被后端忽略，等同未声明）
+                      </span>
+                    )}
                   </label>
                   <label className="flex flex-col">
                     <FieldLabel text="num_inference_steps 步数" />

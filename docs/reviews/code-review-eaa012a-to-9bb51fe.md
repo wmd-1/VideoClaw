@@ -1,7 +1,8 @@
 # VideoClaw 提交区间代码评审报告（第四轮）
 
 - **评审日期**：2026-10-12
-- **评审范围**：`eaa012a..9bb51fe`（上轮报告终点之后的 18 个提交，HEAD `9bb51fe`，工作区干净）
+- **评审范围**：`eaa012a..9bb51fe`（上轮报告终点之后的 18 个提交，评审基准 HEAD `9bb51fe`，评审时工作区干净；
+  本报告入库时 HEAD 已推进至 `452e96d`，即本报告自身的提交）
   - `fa78e83` fix(sandbox)：媒体入参统一守卫扩至 i2i/vlm，远程形态原样透传（上轮 I-1/I-2 承接）
   - `ac437a4` test(models-filter)：删永真式并叠加供应商完整性谓词（上轮 M-1/M-2 承接）
   - `781c2e0` chore(env)：.env.example 补终止换行（上轮 M-4 承接）
@@ -29,6 +30,9 @@
   `code-review-07b4bdb-to-3ac13de.md`（第二轮）、`code-review-6ba2f19-to-cdea2a1.md`（第一轮）
 - **编号约定**：本报告问题编号为本轮新发现（C-1/I-1/I-2/M-1~M-4）；引用上轮问题时标注"上轮"
 
+> **修订记录（2026-10-13）**：依据外部复审意见修订 8 处外围偏差（计数、行号归属、证据转述、文件路径、
+> HEAD 时态），全部经源码/git 复核后采纳；三条问题结论（C-1/I-1/I-2）与"Not ready to merge"判定不变。
+
 ---
 
 ## 一、优点（Strengths）
@@ -48,13 +52,15 @@
    后端 `_event_item_summary`（`prompt_rewrite_agent.py` L79-100）只扩事件字段；
    `orchestrator.py` merge_progress_artifact 的 shell 白名单（L1038-1050）**确实未扩**
    （仍为 `id/status/selected/versions(+rewrite_result/error_type/error)`），执行期正文不落盘落实；
-   `EVENT_BODY_LIMIT=8000` 集中定义且注释明确"非契约、未经真实分布验证"（L44-47）。
+   `prompt_rewrite_agent.py` 的 `EVENT_BODY_LIMIT=8000` 集中定义且注释明确"非契约、未经真实分布验证"
+   （`prompt_rewrite_agent.py` L44-47）。
    前端 `lib/assetMerge.ts` 的 `preserveRewriteBodies` 对 `truncated` 的"后端已交正文则完全以后端为准"
    例外处理（L109-137）是真机发现缺陷的回归修复，并有对应断言（`verify_frontend_asset_merge.mjs` #5/#5b）。
 
 4. **`0069859` 回归覆盖验证真实行为，非自洽断言**
    `tmp_verify/verify_incremental_items_accept.py` 走真实 `WorkflowEngine.execute_stage` + 真实合并路径 +
-   FakeLLM，断言含截断前缀是最终正文前缀（2.3）、写盘体积单调（3.3）、重生成幂等/versions/selected/
+   FakeLLM，断言含截断前缀是最终正文前缀（2.3）、中间写盘体积最小值小于完成时体积即正文只在完成时
+   进入产物（3.3，`min(PERSIST) < final_json`，非严格单调性证明）、重生成幂等/versions/selected/
    失败双语义（4.1-4.5）；`verify_frontend_asset_merge.mjs` 直接 `import` 出货的 `assetMerge.ts`
    （无复制实现）。
 
@@ -70,7 +76,7 @@
 7. **`2e0c529` 兜底占位不洗值、不放宽过滤**
    `ProviderSelect.tsx` + `modelRegistry.ts` `withSlotPlaceholder`：占位项与正常项共存、保留历史选择、
    异常时仍保留可见占位（L94-97）；`describeSlotIssue` 设置页提示明确"不阻止保存"（L106-108）。
-   首页与顶栏共 11 处下拉均已接线，未引入"可用性倒退"。
+   首页与顶栏共 10 处下拉均已接线（HomePage 5 + TopBar 5），未引入"可用性倒退"。
 
 8. **openspec tasks 诚实记录未覆盖子项**（5.4-① 条目级 running 事件另案、5.4-② 场景 B FAIL 且归属
    `workflow-poll-timeout-visibility`），符合"允许如实记为未覆盖"的约定。
@@ -96,7 +102,8 @@
   - `models/custom_common.py` `to_data_url` L162-166：`file://` 剥前缀后本地 `open(local_path, "rb")`
     再 base64 外传；
   - `models/vlm_client.py` L157-158：`file://` 直接进 `file_urls` 交给 DashScope SDK
-    （`vlm_dashscope.py` 注释自证 SDK 会对 `file://` 本地读取并上传云端 OSS）；
+    （`vlm_dashscope.py` L40 注释自证 SDK 会处理 `file://` 本地路径；`image_client.py` L276 注释
+    "DashScope SDK (via MultiModalConversation) handles file://" 同证）；
   - `models/image_client.py` L279-280：DashScope 分支同样把 `file://` 原样交给 SDK。
 - **影响**：零鉴权下 `POST /api/sandbox/vlm {"images":["file:///root/.ssh/id_rsa"], ...}` 即任意本地
   文件读取 + 上传外传，与上轮 I-1 堵掉的 `/etc/passwd` 绝对路径**完全同构**。上轮报告 I-2 修复说明中
@@ -167,8 +174,8 @@
 | 编号 | 问题 | 位置 | 说明 |
 |---|---|---|---|
 | M-1 | Seedream 适配层静默丢弃 `file://` 与不存在的参考：既非 `http` 前缀、`os.path.exists` 又为 False 时被直接跳过，违反"不得静默丢弃"精神 | `models/image_seedream.py` L183-194 | 至少记一条 warning/adjustment |
-| M-2 | 设置页 `tasks` 输入为自由文本，填入 `t2va/fl2va/ref2va` 之外的值会被 `custom_video._supported_tasks`（L384）静默过滤为空 = 等于未声明，用户无感知 | `CustomModelsSection.tsx` L563-564 | 加 pattern 提示或下拉多选 |
-| M-3 | `withSlotPlaceholder` 每次值变化都打一次 `/api/model_availability`，无缓存；首页 + 顶栏共 11 个实例，切换模型即一轮请求 | `modelRegistry.ts` L70-103 | 复用 `videoCapsCache`（L52-63）同型 TTL 缓存 |
+| M-2 | 设置页 `tasks` 输入为自由文本，填入 `t2va/fl2va/ref2va` 之外的值会被 `custom_video._supported_tasks`（L384）静默过滤为空 = 等于未声明，用户无感知 | `components/settings/CustomModelsSection.tsx` L563-564 | 加 pattern 提示或下拉多选 |
+| M-3 | `withSlotPlaceholder` 每次值变化都打一次 `/api/model_availability`，无缓存；首页 + 顶栏共 10 个实例，切换模型即一轮请求 | `modelRegistry.ts` L70-103 | 复用 `videoCapsCache`（L52-63）同型 TTL 缓存 |
 | M-4 | `preserveRewriteBodies` 只按 `nextVal` 的 id 集合映射，存在毫秒级"条目闪没"窗口：轮询请求飞行中 SSE 刚追加的条目会被整体覆盖，下一轮轮询（2s）自愈 | `lib/assetMerge.ts` L118-137 | 如需闭环，合并时把 `prev` 有而 `next` 缺失的条目按 id 补回 |
 
 ---

@@ -62,6 +62,21 @@ export async function fetchVideoModelCapabilities(modelId: string): Promise<Vide
   return videoCapsCache.map.get(modelId) ?? null;
 }
 
+/* 模型可用性短缓存（评审 M-3）：首页/顶栏共 10 处下拉都经 withSlotPlaceholder/describeSlotIssue
+ * 查询同一模型的可用性，切换模型即一轮请求；按 id 做同型 TTL 缓存（与 videoCapsCache 同取向）。
+ * 异常不缓存（失败路径保持每次现查，避免把瞬时故障固化）。 */
+type ModelAvailability = Awaited<ReturnType<typeof fetchModelAvailability>>;
+const availabilityCache = new Map<string, { at: number; av: ModelAvailability }>();
+const AVAILABILITY_CACHE_TTL_MS = 10_000;
+
+async function fetchModelAvailabilityCached(modelId: string): Promise<ModelAvailability> {
+  const hit = availabilityCache.get(modelId);
+  if (hit && Date.now() - hit.at <= AVAILABILITY_CACHE_TTL_MS) return hit.av;
+  const av = await fetchModelAvailability(modelId);
+  availabilityCache.set(modelId, { at: Date.now(), av });
+  return av;
+}
+
 /**
  * 首页/运行时选择器兵底：当当前已保存值不在按类型/能力过滤后的列表时，
  * 仍作为置顶、可选的占位项保留，并附不可用原因，避免静默丢值。
@@ -78,7 +93,7 @@ export async function withSlotPlaceholder(
 
   let label = `${id}（不可用）`;
   try {
-    const av = await fetchModelAvailability(id);
+    const av = await fetchModelAvailabilityCached(id);
     if (!av.available) {
       if (av.code === 'not_registered') {
         label = `${id}（未注册）`;
@@ -114,7 +129,7 @@ export async function describeSlotIssue(
   if (!id) return '';
   if (slotList.some(g => g.models.some(m => m.id === id))) return '';
   try {
-    const av = await fetchModelAvailability(id);
+    const av = await fetchModelAvailabilityCached(id);
     if (!av.available) {
       if (av.code === 'not_registered') return `${id} 未注册，首页/运行时的本槽位将不出现此选项`;
       if (av.reason) return `${id} 当前不可用：${av.reason}`;

@@ -18,6 +18,8 @@ from typing import Optional, List, Dict
 from openai import OpenAI
 from config import Config
 
+logger = logging.getLogger(__name__)
+
 # 模型名称映射表（旧名称 -> 新名称）
 MODEL_NAME_MAP: Dict[str, str] = {
     # doubao-seedream-5-0 系列
@@ -191,6 +193,9 @@ class SeedreamClient:
                     ext = os.path.splitext(p)[1].lower()
                     mime = "image/png" if ext == ".png" else "image/jpeg"
                     ref_images.append(f"data:{mime};base64,{img_data}")
+                else:
+                    # 不得静默丢弃（评审 M-1）：file:// 或不存在的参考显式留痕
+                    logger.warning("Seedream 参考图既非 http URL 也不是本地文件，已跳过: %s", p)
             extra_body["image"] = ref_images
 
         # 调用 API

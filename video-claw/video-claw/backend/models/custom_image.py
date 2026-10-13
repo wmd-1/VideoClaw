@@ -91,7 +91,12 @@ class CustomImageClient:
 
     def _edit(self, prompt: str, image_paths: List[str], size: str) -> List[Any]:
         last_error = ""
-        for field_name, mode in self._edit_field_variants():
+        variants = self._edit_field_variants()
+        # 远程形态（http(s)/data:）不能走 file 模式（open() 直接抛 FileNotFoundError），
+        # 必须分流到 dataurl/url 变体——否则 file 变体的异常冒泡会让回退分支永不可达（评审 I-1）
+        if any(str(p).startswith(("http://", "https://", "data:")) for p in image_paths):
+            variants = [(name, mode) for name, mode in variants if mode == "dataurl"] or [("url", "dataurl")]
+        for field_name, mode in variants:
             try:
                 response = self._post_edit(prompt, image_paths, size, field_name, mode)
                 if response.status_code < 400:
@@ -104,7 +109,9 @@ class CustomImageClient:
                 )
                 if response.status_code not in RETRYABLE_STATUS_CODES:
                     response.raise_for_status()
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, OSError) as exc:
+                # OSError 兜底：file 模式对不存在/不可读路径 open() 抛 FileNotFoundError，
+                # 需落入回退而不是直接冒泡终结请求（评审 I-1）
                 last_error = str(exc)
         raise RuntimeError(
             f"自定义图生图模型 {self._model} 调用失败（目标 {self._base_url}/images/edits）: {last_error}"
@@ -112,7 +119,8 @@ class CustomImageClient:
 
     def _edit_field_variants(self) -> List[Tuple[str, str]]:
         if self._protocol == "openai":
-            return [("image[]", "file"), ("image", "file")]
+            # url(data URL) 变体兜底远程形态输入（file 变体无法 open URL；多数 openai 兼容服务按表单字段接受）
+            return [("image[]", "file"), ("image", "file"), ("url", "dataurl")]
         if self._protocol == "sglang":
             return [("image", "file"), ("url", "dataurl")]
         # vllm-omni（默认）：image 文件 → image[] 文件 → url data URL

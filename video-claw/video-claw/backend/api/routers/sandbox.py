@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -208,8 +209,18 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     return base_url.rstrip("/") + "/code/" + relative
 
 
-# 远程媒体形态：不经本地 open，交由适配层按各自协议消费（与 audio_url 口径一致）
-_REMOTE_MEDIA_PREFIXES = ("http://", "https://", "data:", "file://", "oss://")
+# 远程媒体形态：适配层不读本地盘，按各自协议远程消费（与 audio_url 口径一致）。
+# 注意：file:// 不在此列——本仓库适配层对 file:// 会剥前缀后本地 open 并外传
+# （models/custom_common.to_data_url、DashScope SDK），属本地读取形态，必须与裸路径同口径走白名单（评审 C-1）。
+_REMOTE_MEDIA_PREFIXES = ("http://", "https://", "data:", "oss://")
+
+
+def _strip_file_uri(value: str) -> str:
+    """file:// URI → 本地绝对路径（与 models/custom_common.to_data_url 的剥前缀口径一致，含 /C:/ Windows 形态）。"""
+    local = value[len("file://"):]
+    if re.match(r"^/[A-Za-z]:", local):
+        local = local[1:]
+    return local
 
 
 def _guard_media_input(value: str, field: str) -> str:
@@ -217,13 +228,16 @@ def _guard_media_input(value: str, field: str) -> str:
 
     适配层会直接 open 本地路径并上传到远端推理服务，零鉴权下越界路径即任意文件读取+外传；
     因此发起生成前必须拒绝越界/符号链接逃逸/不存在的本地文件。相对路径按 CODE_DIR 解析（与音频一致）。
-    http(s)/data:/file://oss:// 形态不读本地盘，原样交给适配层（图片/视频参考的 URL 输入模式依赖此路径）。
+    http(s)/data:/oss:// 形态不读本地盘，原样交给适配层（图片/视频参考的 URL 输入模式依赖此路径）；
+    file:// 是本地读取形态，剥前缀后与裸路径同口径走白名单。
     """
     value = (value or "").strip()
     if not value:
         return value
     if value.startswith(_REMOTE_MEDIA_PREFIXES):
         return value
+    if value.startswith("file://"):
+        value = _strip_file_uri(value)
     candidates = [value] if os.path.isabs(value) else [
         os.path.join(os.path.realpath(settings.CODE_DIR), value),
         os.path.join(os.path.realpath(settings.CODE_DIR), "result", value),
