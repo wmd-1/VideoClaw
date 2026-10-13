@@ -6,6 +6,10 @@
 # Build context is the repository root (/root/projects/VideoClaw/), so source
 # paths are prefixed with video-claw/video-claw/frontend/.
 #
+# Build with ./build-frontend.sh — it reads BACKEND_PORT from the repo-root
+# .env and passes it as the build arg below. Do NOT build without it unless
+# the backend really listens on the default 8000.
+#
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY video-claw/video-claw/frontend/package.json video-claw/video-claw/frontend/package-lock.json ./
@@ -15,10 +19,17 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY video-claw/video-claw/frontend/ ./
-# Standalone rewrites are baked into the build output, so the API proxy target
-# must be set here (the compose service name). Runtime env alone does NOT
-# change it.
-ENV BACKEND_INTERNAL_URL=http://backend:8000
+# Backend port injected at BUILD time (default 8000; ./build-frontend.sh reads
+# it from the repo-root .env). Both derived values are BAKED into the build
+# output and must match the backend's real port, otherwise:
+#   BACKEND_INTERNAL_URL      -> server-side rewrites proxy to a dead port;
+#                                every /api/* through the frontend returns 500
+#   NEXT_PUBLIC_BACKEND_PORT  -> browser SSE fallback baked into client chunks
+#                                with the wrong port
+# Runtime env does NOT change either — rebuild after editing .env.
+ARG BACKEND_PORT=8000
+ENV BACKEND_INTERNAL_URL=http://backend:${BACKEND_PORT} \
+    NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT}
 # Build the standalone output (requires `output: "standalone"` in next.config.ts).
 RUN npm run build
 

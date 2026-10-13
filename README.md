@@ -189,7 +189,7 @@ cd <仓库根>
 
 # 1) 构建镜像（首次；compose 只运行镜像、不构建镜像）
 docker build -f Dockerfile.backend  -t video-claw-backend:latest  .
-docker build -f Dockerfile.frontend -t video-claw-frontend:latest .
+./build-frontend.sh                 # 前端：自动从 .env 读取 BACKEND_PORT 注入构建期（脚本内注释有原理）
 
 # 2) 构建前端运行产物并组装（首次必须执行；改前端代码后重复此步）
 cd video-claw/video-claw/frontend
@@ -235,7 +235,7 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 - **镜像构建的唯一入口**是 `docker build -f Dockerfile.backend / Dockerfile.frontend`（compose 服务只有 `image:` + `pull_policy: never`，`docker compose up -d` 不构建、不拉取）；迁移机器可用 `docker save` / `docker load`。
 - **改后端代码免重建**：`docker-compose.yml` 将后端源码逐项只读（`:ro`）挂载进容器 `/app`（不能整目录挂载，会遮蔽镜像内的 `.venv`、`docker-entrypoint.sh`、`config.yaml` 软链等）。改完执行 `docker compose restart backend` 生效；依赖文件（`pyproject.toml` / `uv.lock`）不挂载，改依赖需重建镜像。
 - **改前端代码免重建**：前端是 standalone 编译产物，按「快速开始」步骤 2 重新构建并组装 `.next-runtime/`（采用**清空式**组装：保留目录本身，避免 Docker 挂载 inode 失效）后 `docker compose restart frontend` 生效；若改用了删除目录重建的组装方式，则需 `docker rm -f video-claw-frontend && docker compose up -d frontend` 重建容器。compose 以 `create_host_path: false` 只读挂载该目录——未构建时 `up` 会直接报错而不是静默建空目录。
-- **注意**：standalone 产物在**构建时**固化 rewrites 代理地址，运行时环境变量不生效，因此宿主机构建必须带 `BACKEND_INTERNAL_URL=http://backend:<BACKEND_PORT>`（端口与 `.env` 的 `BACKEND_PORT` 一致；构建命令已自动从 `.env` 读取）。
+- **注意**：standalone 产物在**构建时**固化 rewrites 代理地址与 SSE 直连端口，运行时环境变量不生效，因此**两条构建路径**都必须让端口与 `.env` 的 `BACKEND_PORT` 一致：镜像路径用 `./build-frontend.sh`（自动从 `.env` 读取）；宿主机 `npm run build` 路径按「快速开始」步骤 2 显式带 `BACKEND_INTERNAL_URL=http://backend:<BACKEND_PORT>` 与 `NEXT_PUBLIC_BACKEND_PORT=<BACKEND_PORT>`。端口不一致时前端不报错、但经转发的 API 全部 500、SSE 直连失败，且只能靠重新构建修复。
 
 ## 配置说明
 
