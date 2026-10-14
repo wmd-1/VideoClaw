@@ -1,9 +1,9 @@
 # Video-Claw — Docker Compose
 #
-# This file only *runs* images; building is done with plain docker build (see ReadMe.md):
+# This file only *runs* images; building is done outside compose (see ReadMe.md):
 #
-#   docker build -f Dockerfile.backend  -t video-claw-backend:latest  .
-#   docker build -f Dockerfile.frontend -t video-claw-frontend:latest .
+#   docker build -f Dockerfile.backend -t video-claw-backend:latest .
+#   ./build-frontend.sh               # frontend: reads BACKEND_PORT from .env
 #   docker compose up -d
 #
 # Frontend:  http://localhost:${FRONTEND_PORT:-3000}
