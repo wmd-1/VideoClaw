@@ -36,6 +36,13 @@ const nextConfig: NextConfig = {
         destination: `${BACKEND_URL}/api/upload_media`,
       },
       {
+        // 首页文档上传（txt/doc/docx/md/pdf）：曾经只在浏览器侧硬编码寻址，Docker 部署下
+        // 必失败；现与其他接口一致走同源相对路径 + rewrite。
+        // 见 OpenSpec change home-file-upload-relative-proxy。
+        source: "/api/upload_file",
+        destination: `${BACKEND_URL}/api/upload_file`,
+      },
+      {
         source: "/api/models",
         destination: `${BACKEND_URL}/api/models`,
       },

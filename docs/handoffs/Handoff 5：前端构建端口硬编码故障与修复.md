@@ -159,7 +159,7 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 | 去掉 8000 默认值、缺失即 `exit 1`、Dockerfile 断言 | 本次已实施（OpenSpec `frontend-build-port-fail-fast`） | ✅ 实测见 §3.3.2 |
 | 补齐 `models.video_first_frame` | 用户决定（已选 `m3`） | ✅ 已写入并 restart backend，首页入口已解锁 |
 | `video_start_end` / `video_reference` 两槽位 | 用户（切模式时再选；`m3` 能匹配当前模式但不匹配这两种） | ⏸ 不阻塞 |
-| 首页文档上传打到 `localhost:8000` | 已实测复现；待另开 change 修复（见 §7） | ⏸ 与本故障无关 |
+| 首页文档上传打到 `localhost:8000` | 已修复（change `home-file-upload-relative-proxy`，实测见 §7） | ✅ 命令行与浏览器取证均通过 |
 
 **产物类边界**：`.next-runtime/`、`.next/`、`node_modules/` 均被 gitignore，**不得作为交接证据源**；要证明部署状态，只引「§3.3 实测输出」。
 
@@ -221,7 +221,7 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 - ✅ `docker-compose.yml` 顶部过时的 `docker build -f Dockerfile.frontend` 命令已改指向脚本（纯注释）。
 - ✅ `logo.jpg` 部署态已下线（实测 404，见 §2.4）。
 
-**同族缺陷（已实测复现，待另开 change 修复）**
+**同族缺陷（已修复：OpenSpec change `home-file-upload-relative-proxy`，2026-10-14）**
 
 - `components/HomePage.tsx:273` 的文档上传（同文件 L426 的 `<input type="file">`，支持 doc/docx/txt/md/pdf）请求
   `${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/api/upload_file`：
@@ -237,8 +237,15 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
     `net::ERR_CONNECTION_REFUSED`；控制台 `上传错误: TypeError: Failed to fetch`；页面 alert「上传提取内容失败，请重试」；
     未出现上传成功态。截图 `tmp_verify/apply_02_upload_fail.png`（取证方法：给真实 input 设置文件并派发 `change` 事件，
     与用户选文件走同一段 `handleFileUpload`；为避开阶段式 alert 临时包装了 `window.alert`/`console.error`/`fetch`）。
-- 建议修法（归下一个 change，本变更不改前端源码）：与其他接口一致改走相对路径 `/api/upload_file`，
-  并在 `next.config.ts` 补上该 rewrite；或至少复用已有的 `DIRECT_API_BASE` 而不是另引一个从未设置过的变量名。
+- 修复实施（2026-10-14，change `home-file-upload-relative-proxy`，新 capability `frontend-api-addressing`）：
+  `HomePage.tsx` 上传改同源相对路径 `/api/upload_file`（删除从未定义的 `NEXT_PUBLIC_API_BASE_URL` 引用），
+  `next.config.ts` rewrites 补该精确条目。部署态实测：经 3500 `POST /api/upload_file` → **200**
+  （`{"filename":...,"file_path":...}`；修复前为 404「Server action not found.」），六个业务 API 回归全 200，
+  产物 grep 无 `localhost:8000` / `NEXT_PUBLIC_API_BASE_URL` 残留。浏览器级取证已完成（外部校验 agent，2026-10-14）：
+  请求为同源 `POST http://localhost:3500/api/upload_file` → 200，46 条网络请求中**无任何 localhost:8000**，
+  无 `ERR_CONNECTION_REFUSED`、控制台无 error，页面出现成功态「已选: probe2.t...」（截图
+  `tmp_verify/verify_upload_01.png`、`verify_upload_02_viewport.png`）。未采用「复用 `DIRECT_API_BASE`」方案：那是 SSE 专用机制，REST 用它等于
+  要求后端端口对浏览器直接可达，且把构建期端口变成 REST 的依赖，与 `frontend-build-port-fail-fast` 的方向相悖。
 
 **环境事实（已修，但需知晓）**
 
@@ -260,3 +267,7 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
    （本环境当日多次出现）。排障顺序应当是 §3.1 的第 0 步：先 `docker ps`，再查 baked 值。
 7. **假设不能当验收**：design D2 对 `set -e` / `pipefail` 行为的假设被 tasks 1.3 的实测推翻（脚本会静默退出而不输出指引）。
    凡是“失败路径”的需求，必须用 `echo $?` + 捕获 stderr 实际跑一遍，不能只看语法。
+8. **runtime 的组装源必须是镜像导出的 standalone**：宿主机 `.next/standalone` 若不是本轮构建产物，会带入旧
+   `routes-manifest.json` 与旧客户端 chunk——compose 挂载遮蔽下镜像再正确也不生效，表现为新 rewrite 404
+   （「Server action not found.」）、旧硬编码串仍在产物里，极易误判为「rewrite 没写对」。组装 runtime 一律
+   `docker create` + `docker cp $cid:/app/. .next-runtime/`（清空式目标目录），与教训 4 是一体两面。
