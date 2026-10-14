@@ -13,6 +13,10 @@ server:
   port: 8000                 # 建议改为与 .env 的 BACKEND_PORT 一致（如 8500），避免与同机 vllm-omni 的 8000 冲突
   log_level: INFO
   access_log: false
+  # 媒体引用对外基址：填推理服务（195）能访问到的本后端地址，sglang 的 conditions[].uri 会拼成 HTTP 引用。
+  # 跨机跳 sglang 必需；留空则只发 file:// 本地路径（对端读不到，报 source does not exist or is not a file）。
+  # 也可用 .env 的 VC_MEDIA_REF_BASE_URL 覆盖（优先级更高，改后需 docker compose up -d backend）。
+  media_ref_base_url: 'http://53.192.56.188:8000'
 
 api_providers:
   common:
@@ -155,6 +159,7 @@ custom_models:
 | 6 | `local_image_t2i/it2i.base_url` | `192.168.1.10:8091`（模板占位） | 待填真实地址 | 否则第 2/4 阶段图像生成必然失败（只能走上传兜底） |
 | 7 | `server.port` | `8000` | 建议 `8500`（与 `.env BACKEND_PORT` 一致） | 与 vllm-omni 的 8000 同机部署时会冲突；分开后日志/直连端口一致更清晰 |
 | 8 | 两个 H3 模型 | 无 `tasks` | vllm 条目声明 `tasks: ['ref2va']` | 你的 vllm-omni 以 `--task-type ref2va` 启动（只挂一个 DiT partition），task 不符会 500；sglang 侧如也是单 partition 同理声明 |
+| 9 | `server.media_ref_base_url` | 无此键 | 填推理端可访问的后端地址 | 跨机跳 sglang 时 `conditions[].uri` 的 `file://` 路径对端读不到（本次报错根因） |
 
 ## 2.5 关于 `checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'`
 
@@ -179,6 +184,46 @@ for mid in ('MiniMax-H3-vllm', 'MiniMax-H3-sglang'):
 # 任务对齐逻辑的完整回归：
 docker exec -i video-claw-backend /app/.venv/bin/python - < tmp_verify/verify_task_partitions.py
 ```
+
+## 2.6 跨机跳 sglang：`source does not exist or is not a file: /app/code/...`
+
+原因：sglang 的图片参考走 `conditions[].uri`，而我们发的是 **backend 容器内的绝对路径**（`file:///app/code/result/...`）；推理端在另一台机器，那里没有这个文件 → 必然失败。同时手册（Cookbook L638）明确：**sglang H3 只消费 `conditions[].uri`**，通用上传字段（`video_path`/`video_url`/顶层上传）不会被 lowered 进参考条件。
+
+本版已做的两件事：
+
+1. **引用改为 HTTP 优先**：配置 `server.media_ref_base_url`（或 `.env` 的 `VC_MEDIA_REF_BASE_URL`）后，位于 `CODE_DIR` 内的图片会拼成 `{基址}/code/<相对路径>`；`file://` 作为第二种形态继续回退（未配置时行为与旧版一致）。
+2. **含图首选 conditions**：不再先试 multipart（否则 multipart “成功”只会生成与输入不符的无参考视频），顺序为 `conditions(HTTP) → conditions(file://) → multipart`。
+
+你需要做的：
+
+```bash
+# 1) 确认网络方向：推理机（195）必须能访问后端（下列任一条在 195 上执行能通即可）
+curl -sI http://53.192.56.188:8000/code/ | head -1
+
+# 2) 写入基址（二选一）
+#    a) config.yaml：server.media_ref_base_url: 'http://53.192.56.188:8000'
+#    b) .env：VC_MEDIA_REF_BASE_URL=http://53.192.56.188:8000   # 改 .env 需重建容器
+docker compose up -d backend
+
+# 3) 自检引用形态（容器内）
+docker exec -i -w /app -e PYTHONPATH=/app video-claw-backend /app/.venv/bin/python -c "
+from config import Config
+from models.custom_video import CustomVideoClient
+c = CustomVideoClient({'id':'m','request_model':'x','base_url':'http://1.1.1.1/v1','protocol':'sglang','api_key':''})
+print('base =', repr(Config.MEDIA_REF_BASE_URL))
+import glob
+sample = sorted(glob.glob('/app/code/result/**/*.jpg', recursive=True) + glob.glob('/app/code/result/**/*.png', recursive=True))
+print('样例引用形态 =', c._reference_uris(sample[0]) if sample else '暂无产物')
+"
+```
+
+✅ **真机已证实**：sglang 接受 `http://` 形态的 `conditions[].uri`（手册只给 `file://` 示例，此处已实测确认），因此配好基址就能直接跨机用图，**无需共享挂载**。
+
+仅当推理机确实无法回连后端基址（如 WSL2 NAT 隔离、不在同一网段）时，才退而使用备选：
+- 把后端的 `data/code` 目录**共享挂载**到推理机相同路径（如两边都是 `/app/code`），继续用 `file://`；
+- 含图路径改走 **vllm-omni**（multipart 直传文件，不依赖共享盘），sglang 只跑文生视频。
+
+本项已记录为真机结论（OpenSpec `video-audio-video-references` 任务 11.5 已关闭）。
 
 ## 3. 校验与生效
 

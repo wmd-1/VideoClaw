@@ -27,6 +27,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "port": 8000,
         "log_level": "INFO",
         "access_log": False,
+        # 后端对推理服务可访问的基址（跨机部署时供 sglang conditions[].uri 等拼 HTTP 引用）；
+        # 留空则退回 file:// 本地路径（仅同机/共享挂载可用）
+        "media_ref_base_url": "",
     },
     "api_providers": {
         "common": {
@@ -825,6 +828,20 @@ def _resolve_generation_timeouts() -> Tuple[float, float]:
 _GENERATION_TIMEOUT_IMAGE, _GENERATION_TIMEOUT_VIDEO = _resolve_generation_timeouts()
 
 
+def _resolve_media_ref_base_url() -> str:
+    """后端对推理服务可访问的基址：VC_MEDIA_REF_BASE_URL > VC_SERVER_MEDIA_REF_BASE_URL > server.media_ref_base_url。
+
+    跨机部署时推理服务读不到本容器的绝对路径（file:// 会报 source does not exist or is not a file），
+    需此基址将 CODE_DIR 内的产物拼为 `{base}/code/<相对路径>` 的 HTTP 引用。留空表示不启用。
+    """
+    env = _load_env_sources()
+    for key in ("VC_MEDIA_REF_BASE_URL", "VC_SERVER_MEDIA_REF_BASE_URL"):
+        value = str(env.get(key) or "").strip()
+        if value:
+            return value.rstrip("/")
+    return str(_get(CONFIG_VALUES, "server.media_ref_base_url") or "").strip().rstrip("/")
+
+
 class Config:
     CONFIG = CONFIG_VALUES
     ENV_OVERRIDES = CONFIG_ENV_INFO
@@ -834,6 +851,7 @@ class Config:
     # 生成超时（.env：VC_TIMEOUT_IMAGE / VC_TIMEOUT_VIDEO，默认 3 小时）
     TIMEOUT_IMAGE = _GENERATION_TIMEOUT_IMAGE
     TIMEOUT_VIDEO = _GENERATION_TIMEOUT_VIDEO
+    MEDIA_REF_BASE_URL = _resolve_media_ref_base_url()
     LOG_LEVEL = _get(CONFIG, "server.log_level")
     DEBUG = LOG_LEVEL == "DEBUG"
     ACCESS_LOG = _get(CONFIG, "server.access_log")

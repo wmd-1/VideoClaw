@@ -492,31 +492,77 @@ class CustomVideoClient:
             return path
         return "file://" + os.path.abspath(path)
 
+    def _reference_uris(self, path: str) -> List[str]:
+        """推理服务端可见的引用候选：HTTP URL（需 server.media_ref_base_url）优先，file:// 兜底。
+
+        跨机部署时推理服务读不到本容器的绝对路径（报 source does not exist or is not a file）；
+        配置基址后将 CODE_DIR 内的产物拼为 `{base}/code/<相对路径>`，仅对位于 CODE_DIR 内且真实存在的文件生效。
+        """
+        uris: List[str] = []
+        base = str(getattr(Config, "MEDIA_REF_BASE_URL", "") or "").strip().rstrip("/")
+        if base:
+            code_dir = os.path.realpath(str(Config.CODE_DIR))
+            real = os.path.realpath(path)
+            if real.startswith(code_dir + os.sep) and os.path.isfile(real):
+                relative = os.path.relpath(real, code_dir).replace(os.sep, "/")
+                uris.append(f"{base}/code/{relative}")
+        uris.append(self._file_uri(path))
+        return list(dict.fromkeys(uris))
+
+    def _reference_uri_at(self, path: str, index: int) -> str:
+        """取第 index 种引用形态（超出则退化到最后一种兼容形态）。"""
+        uris = self._reference_uris(path)
+        return uris[min(max(index, 0), len(uris) - 1)]
+
+    def _reference_uri_forms(self, sample_path: str) -> int:
+        """可用引用形态数量（1=仅 file://，2=HTTP+file）。"""
+        return len(self._reference_uris(sample_path))
+
+    @staticmethod
+    def _reference_hint(error_text: str) -> str:
+        """服务端读不到引用资源时给可执行提示（跨机部署最常见的失败原因，不应让人猜）。"""
+        lowered = (error_text or "").lower()
+        markers = ("does not exist", "not a file", "no such file", "cannot open", "failed to fetch", "download")
+        if not any(marker in lowered for marker in markers):
+            return ""
+        base = str(getattr(Config, "MEDIA_REF_BASE_URL", "") or "").strip()
+        if base:
+            return (
+                f"；服务端无法读取引用的媒体资源。已配置对外基址 {base}，"
+                "请确认推理服务所在机器能访问该地址（同网段/防火墙/端口），或改用共享挂载目录"
+            )
+        return (
+            "；服务端无法读取引用的媒体资源（file:// 路径仅在同机或共享挂载下可用）。"
+            "跨机部署请配置 .env 的 VC_MEDIA_REF_BASE_URL=http://<后端对外地址>:<端口>"
+            "（或 config.yaml 的 server.media_ref_base_url），使图片以 HTTP URL 供推理服务拉取"
+        )
+
     def _sglang_conditions_variant(
         self,
         image_path: Optional[str],
         last_image_path: Optional[str],
         refs: List[str],
         task: str,
+        uri_index: int = 0,
     ) -> Tuple[str, List[Tuple[str, str]], Dict[str, Any]]:
-        """sglang 官方 cookbook 形态（JSON + conditions，file:// 引用服务端可见路径）。"""
+        """sglang 官方 cookbook 形态（JSON + conditions，服务端可见 uri：HTTP 优先、file:// 兜底）。"""
         conditions: List[Dict[str, Any]] = []
         if refs:
             conditions = [
-                {"type": "image", "uri": self._file_uri(path), "role": "reference"} for path in refs
+                {"type": "image", "uri": self._reference_uri_at(path, uri_index), "role": "reference"} for path in refs
             ]
         elif image_path and last_image_path:
             conditions = [
-                {"type": "image", "uri": self._file_uri(image_path), "role": "keyframe", "frame_index": 0},
-                {"type": "image", "uri": self._file_uri(last_image_path), "role": "keyframe", "frame_index": -1},
+                {"type": "image", "uri": self._reference_uri_at(image_path, uri_index), "role": "keyframe", "frame_index": 0},
+                {"type": "image", "uri": self._reference_uri_at(last_image_path, uri_index), "role": "keyframe", "frame_index": -1},
             ]
         elif last_image_path:
             conditions = [
-                {"type": "image", "uri": self._file_uri(last_image_path), "role": "keyframe", "frame_index": -1}
+                {"type": "image", "uri": self._reference_uri_at(last_image_path, uri_index), "role": "keyframe", "frame_index": -1}
             ]
         else:
             conditions = [
-                {"type": "image", "uri": self._file_uri(image_path or ""), "role": "keyframe", "frame_index": 0}
+                {"type": "image", "uri": self._reference_uri_at(image_path or "", uri_index), "role": "keyframe", "frame_index": 0}
             ]
         return ("json", [], {"task": task, "conditions": conditions})
 
@@ -742,8 +788,17 @@ class CustomVideoClient:
             tail_only=tail_only,
         )
         if self._protocol == "sglang" and (refs or image_path or last_image_path):
-            # H3 cookbook 官方形态（JSON + conditions，file:// 引用服务端可见路径）：作为最后回退
-            variants.append(self._sglang_conditions_variant(image_path, last_image_path, refs, task))
+            # 手册依据（SGLang Cookbook L638）：H3 只消费 conditions[].uri，通用上传字段（video_path/video_url
+            # 与顶层上传）不会被 lowered 进 H3 参考条件 → 含图时 conditions 必须是首选形态而非最后回退
+            # （否则 multipart “成功”只会生成与输入不符的无参考视频）。
+            # uri 形态按可达性排序：HTTP（需 media_ref_base_url，跨机可用）→ file://（同机/共享挂载）。
+            sample_path = next(path for path in [image_path, last_image_path, *(refs or [])] if path)
+            forms = self._reference_uri_forms(sample_path)
+            conditions_variants = [
+                self._sglang_conditions_variant(image_path, last_image_path, refs, task, uri_index=index)
+                for index in range(forms)
+            ]
+            variants = conditions_variants + variants
         last_error = ""
         last_exc: Optional[Exception] = None
         for encoding, field_spec, form_extra in variants:
@@ -777,6 +832,7 @@ class CustomVideoClient:
         raise RuntimeError(
             f"自定义视频模型 {self._model} 创建任务失败（目标 {self._base_url}/videos）: {last_error}"
             f"{connection_hint(last_exc or Exception(last_error), self._base_url)}"
+            f"{self._reference_hint(last_error)}"
         )
 
     def _post_create(

@@ -11,6 +11,10 @@ server:
   port: 8000               # 未显式 VC_SERVER__PORT 时自动对齐 .env 的 BACKEND_PORT（Docker 下由 compose 注入，容器内外同端口）
   log_level: INFO
   access_log: false
+  # 媒体引用对外基址：推理服务读不到本容器绝对路径（file://）时用它拼 HTTP 引用。
+  # 跨机部署请填推理端可访问的后端地址（如 http://192.168.1.20:8500）；留空=仅同机/共享挂载可用。
+  # 也可用 .env 的 VC_MEDIA_REF_BASE_URL 覆盖（优先级更高）。
+  media_ref_base_url: ''
 
 api_providers:
   common:

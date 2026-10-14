@@ -175,15 +175,44 @@ f = multipart_fields(last_record()["body"])
 ep = json.loads(f.get("extra_params", ["{}"])[0])
 check("1.3 extra_params.duration=15.0 与 seconds=15 一致", ep.get("duration") == 15.0 and f.get("seconds") == ["15"], f"{ep} {f.get('seconds')}")
 
-# sglang fl2va（multipart）：target 以 JSON 字符串序列化
+# sglang 含图：首选为 JSON + conditions（手册 L638：通用上传字段不会被 lowered 进 H3 参考条件）
 RECORDS.clear()
 with open("/tmp/vp_img.png", "wb") as fh:
     fh.write(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
 make("sglang", dict(H3_CAPS)).generate_video(prompt="t", image_path="/tmp/vp_img.png", save_path="/tmp/vp_s.mp4", duration=5)
-f = multipart_fields(last_record()["body"])
-target = json.loads(f.get("target", ["null"])[0]) if "target" in f else None
-check("1.1 sglang multipart target JSON 字符串", isinstance(target, dict) and target.get("duration_seconds") == 5, str(f.get("target")))
-check("1.1 sglang multipart 含 task", f.get("task") == ["fl2va"], str(f.get("task")))
+sent_body = json.loads(last_record()["body"])
+check("1.1 sglang 含图首选 conditions 形态", "conditions" in sent_body and sent_body["conditions"][0]["role"] == "keyframe", str(sorted(sent_body)))
+check("1.1 sglang conditions 同时带 task 与 target", sent_body.get("task") == "fl2va" and isinstance(sent_body.get("target"), dict), str(sent_body.get("target")))
+
+# multipart 变体（仍保留在后面）承载 task 与 target（表单将结构化字段序列化为 JSON 字符串）
+c_mp = make("sglang", dict(H3_CAPS))
+captured = {}
+
+
+class _OK:
+    status_code = 200
+    text = "{}"
+    headers = {"content-type": "application/json"}
+
+    def json(self):
+        return {"id": "v-1"}
+
+
+def _capture(path, **kwargs):
+    captured.update({"path": path, **kwargs})
+    return _OK()
+
+
+c_mp._client.post = _capture
+fields_mp, json_mp, drop_mp = c_mp._map_protocol_params(
+    duration=5, video_ratio="16:9", resolution="768P", fps=None, short_edge=None, has_image=True)
+c_mp._post_create("multipart", "t", [("input_reference", "/tmp/vp_img.png")], "1344x768", 5, None, None,
+                  {"task": "fl2va"}, protocol_fields=fields_mp, json_fields=json_mp, drop_size=drop_mp)
+mp_data = captured.get("data") or {}
+check("1.1 sglang multipart 含 task", mp_data.get("task") == "fl2va", str(sorted(mp_data)))
+mp_target = mp_data.get("target")
+check("1.1 sglang multipart target JSON 字符串", isinstance(mp_target, str)
+      and json.loads(mp_target).get("duration_seconds") == 5, str(mp_target))
 
 # ═══ 2.2 fps 夹取与忽略 ═══
 
