@@ -33,6 +33,10 @@
 5. **验证边界（如实标注）**：未实跑任何阶段执行/生成（避免真实调用模型）；后端本轮零源码改动，
    仅在既有容器内复跑 `ruff check .` → All checks passed；前端门禁已恢复并实测：eslint
    0 errors / 38 warnings、tsc --noEmit exit 0。
+6. **实施后的重新部署（2026-10-14）**：`./build-frontend.sh` 产出 `video-claw-frontend:latest` = `d64317b2174a`
+   （镜像内 baked 30 处均为 `http://backend:8500`、客户端 `8500` 且无 `"8000"`、`public` 已无 `logo.jpg`）；
+   由该镜像导出 standalone 并**清空式组装** `.next-runtime`，再 `docker compose up -d frontend` 使运行容器
+   切到新镜像——同时消除了 §2.3 遗留的“容器跑旧镜像 / `:latest` 是新镜像”漂移。验收见 §3.3.2。
 
 ## 3. 复现命令与验收标准
 
@@ -119,8 +123,20 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 证据：`tmp_verify/fixverify_01_home.png`、`fixverify_01_home_history.png`、`fixverify_02_session.png`、
 `fixverify_03_ref_empty.png`、`fixverify_04_vid_empty.png`、`fixverify_05_sandbox.png`。
 
-首页常驻红色提示「backend/config.yaml 缺少主流程默认模型」与两个创作按钮 `disabled=true` **仍存在**，
-属 §7 的运行配置问题，与本节验收无关。
+当时首页仍常驻红色提示「backend/config.yaml 缺少主流程默认模型」且两个创作按钮 `disabled=true`
+（属 §7 的运行配置问题，与本节验收无关）；已于同日按用户决定补齐 `video_first_frame` 后消失，见 §3.3.2。
+
+#### 3.3.2 机制实施后的验收结果（2026-10-14，全部通过）
+
+| 项 | 实测 |
+|---|---|
+| 有 `.env` | `BACKEND_PORT=8500，来源：.env` + 烤入值两行日志 |
+| `BACKEND_PORT=9999` | `来源：环境变量`，烤入值为 `backend:9999` / `9999` |
+| `.env` 存在但无该键 | `rc=1` + 6 行指引（修正 pipefail 静默退出后补实测） |
+| 无 `.env`（`mv .env` 实跑完整脚本） | `rc=1`、stdout 0 行、stderr 6 行、`video-claw-frontend:latest` ID 未变 |
+| 不带 `--build-arg` 直接 `docker build -f Dockerfile.frontend` | 失败（builder 断言），未产生镜像标签 |
+| `docker build --target deps` | `rc=0`（不受断言影响，免网络取用仍可用） |
+| 代理链路 / baked / 部署态 UI | 6 个 `/api/*` 全 200；新镜像与 runtime 均只含 `backend:8500`；首页红色提示消失、输入创意后两按钮启用、设置页首帧显示 `m3`；两条空产物深链无 `Too many re-renders`（证据 `tmp_verify/apply_01..04*.png`） |
 
 ---
 
@@ -140,9 +156,10 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 | 构建日志如实标注端口来源 + 默认值告警 + 笔误 | 本次已完成 | ✅ `41dcf94`（三分支均实测） |
 | README「唯一入口」措辞 + compose 注释 | 本次已完成 | ✅ `9fffaaf` |
 | `logo.jpg` 部署态下线 | 本次已完成 | ✅ 已重新组装，实测 404（见 §2.4） |
-| 去掉 8000 默认值、缺失即 `exit 1`、Dockerfile 断言 | **OpenSpec `frontend-build-port-fail-fast`（提案已建，待批准实施）** | ⏸ 未动代码 |
-| 补齐 `models.video_*` 默认模型槽位 | 用户（设置页或 `.env`） | ⏸ 不阻塞交付；阻塞“能真的开始创作” |
-| 首页文档上传打到 `localhost:8000`（见 §7 末尾新发现） | 待复核后另开 change | ⏸ 与本故障无关 |
+| 去掉 8000 默认值、缺失即 `exit 1`、Dockerfile 断言 | 本次已实施（OpenSpec `frontend-build-port-fail-fast`） | ✅ 实测见 §3.3.2 |
+| 补齐 `models.video_first_frame` | 用户决定（已选 `m3`） | ✅ 已写入并 restart backend，首页入口已解锁 |
+| `video_start_end` / `video_reference` 两槽位 | 用户（切模式时再选；`m3` 能匹配当前模式但不匹配这两种） | ⏸ 不阻塞 |
+| 首页文档上传打到 `localhost:8000` | 已实测复现；待另开 change 修复（见 §7） | ⏸ 与本故障无关 |
 
 **产物类边界**：`.next-runtime/`、`.next/`、`node_modules/` 均被 gitignore，**不得作为交接证据源**；要证明部署状态，只引「§3.3 实测输出」。
 
@@ -150,10 +167,10 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 
 ## 5. 与其他工件的关系
 
-- **机制性防护已立项**：上述“默认值不能静默兜底”“绕过脚本的 `docker build` 必须失败”已进入
-  OpenSpec change **`frontend-build-port-fail-fast`**（proposal / specs / design / tasks 齐备，
-  `openspec validate` 通过；`openspec/` 为本地工件目录、不入版本库，故本文只引用**变更名**、不引用路径行号）。
-  实施需用户明确批准；本 handoff 不再保留该待办的细节，以免两处规格漂移。
+- **机制性防护已立项并实施**：上述“默认值不能静默兜底”“绕过脚本的 `docker build` 必须失败”由
+  OpenSpec change **`frontend-build-port-fail-fast`** 承接（proposal / specs / design / tasks 齐备，
+  `openspec validate` 通过；代码与文档已在本批提交里实施，实测记录见 §3.3.2；验收后可归档）。
+  `openspec/` 为本地工件目录、不入版本库，故本文只引用**变更名**、不引用路径行号。
 - **OpenSpec `prompt-rewrite-draft-merge-preservation`（活跃）**：其 tasks 2.1/2.2 要求“清草稿的触发条件改为条目
   签名（`id + rewritten_prompt`），事件视图字段变化不得触发”。这与 lint 提交 `655c519` 里 ReferenceStage/VideoStage 的
   `useMemo` 稳定化是同一原则（**渲染期同步的比较键必须稳定**）。实施该 change 时，**不得把 `PromptRewriteStage` 的
@@ -172,19 +189,29 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 
 ## 7. 遗留事项与待办
 
-**运行配置（用户）**
+**运行配置（已按用户决定处理）**
 
-- 首页提示「backend/config.yaml 缺少主流程默认模型」、创作按钮 disabled：`data/config/config.yaml` 的
-  `models.video / video_first_frame / video_start_end / video_reference` 四个槽位为空所致（已实测），属运行配置，需用户自行在
-  设置页或 `.env` 补齐（已注册可选视频模型 `m3` / `my-model`）。该提示与代理故障无关，在故障之前就已存在。
+- 曾长期提示「backend/config.yaml 缺少主流程默认模型」并使两个创作按钮 disabled：因为
+  `data/config/config.yaml` 的 `models.video / video_first_frame / video_start_end / video_reference` 四个槽位全空，
+  而 `generation.video_generation_mode: first_frame` 使 `HomePage.tsx:162-169` 只取 `video_first_frame || video`。
+- 已处理（2026-10-14）：按用户选择写入 `models.video_first_frame: m3`（`m3` 声明了 `first_frame_i2v`，与当前模式能力匹配），
+  `docker compose restart backend` 后 `/api/config` 已回显该值；浏览器实测：红色提示消失、输入创意后
+  「逐步创作」「一键生成」`disabled=false`、设置页首帧下拉显示 `m3`。
+- 仍未填：`video_start_end` / `video_reference`。故意不填 m3——它没声明 `start_end_frame_i2v` / `reference_to_video`；
+  若日后切到这两种模式，同一拦截会再次出现（预期行为），此时可选已注册模型 `my-model`（它声明了这些能力）。
+  注：`HomePage.tsx:163-164` 对这两个槽位有内置默认值（`wan2.7-i2v` / `wan2.7-r2v`），空位时不会报“缺少默认模型”。
 
-**机制残留风险（已立项，本 handoff 不再维护细节）**
+**机制残留风险（已实施完毕）**
 
-- 已落地（`41dcf94`）：`build-frontend.sh` 引入 `PORT_SOURCE`，日志如实标注环境变量 / .env / 默认值，
-  走 8000 兜底时向 stderr 输出 4 行告警（修复了原 `${BACKEND_PORT:+环境变量或 .env}` 恒为真、掩盖真实来源的缺陷）。
-- 仍未落地（归 `frontend-build-port-fail-fast`）：`Dockerfile.frontend:30` `ARG BACKEND_PORT=8000` 与
-  `build-frontend.sh` 的 8000 默认值仍会让“取不到端口”静默构建成功，即本次故障的同构失效模式（值错但不报错）。
-  目标行为：缺失即 `exit 1`，且不带 `--build-arg` 直接 `docker build -f Dockerfile.frontend` 也必须失败。
+- 来源标注与告警（`41dcf94`）：`PORT_SOURCE` 如实区分环境变量 / .env，修复了原 `${BACKEND_PORT:+环境变量或 .env}` 恒为真的缺陷。
+- 彻底去掉兜底（本次实施，OpenSpec `frontend-build-port-fail-fast`）：
+  ① `build-frontend.sh` 两来源都取不到时 `exit 1` 并输出 6 行可执行指引（不再回退 8000）；
+  ② `Dockerfile.frontend` 改为 `ARG BACKEND_PORT=`（无默认值）+ builder 阶段在任何 `COPY` 之前断言非空，
+     因此不带 `--build-arg` 直接 `docker build -f Dockerfile.frontend` 会立即失败；`--target deps` 不受影响。
+  实测：有 `.env`→`8500/来源：.env`；`BACKEND_PORT=9999`→`9999/环境变量`；`mv .env` 后跑脚本→`rc=1`、stdout 0 行、
+  stderr 6 行指引、`video-claw-frontend:latest` ID 未变（未产生镜像）；不带参直接构建→ BuildKit 在断言层退出并输出该提示、未产生镜像。
+- 实施中修正了一个设计假设：design D2 原认为“`grep` 失败被 `cut` 掩盖”，实测**不成立**（`set -o pipefail` 会把
+  非零状态传出命令替换，导致脚本在打印指引前就静默退出）。已加 `|| true` 并把结论回写 design.md。
 
 **文档一致性（已完成 `9fffaaf`）**
 
@@ -194,14 +221,24 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 - ✅ `docker-compose.yml` 顶部过时的 `docker build -f Dockerfile.frontend` 命令已改指向脚本（纯注释）。
 - ✅ `logo.jpg` 部署态已下线（实测 404，见 §2.4）。
 
-**同族新发现（勘察得到，未修改，待复核后另开 change）**
+**同族缺陷（已实测复现，待另开 change 修复）**
 
 - `components/HomePage.tsx:273` 的文档上传（同文件 L426 的 `<input type="file">`，支持 doc/docx/txt/md/pdf）请求
   `${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/api/upload_file`：
-  ① `NEXT_PUBLIC_API_BASE_URL` 全仓从未被设置（只有这一行引用它），永远走到 `localhost:8000`；
+  ① `NEXT_PUBLIC_API_BASE_URL` 全仓从未被设置（唯一引用就是这一行），永远走到 `localhost:8000`；
   ② `next.config.ts` 的 rewrites 只覆盖 `/api/upload_media`，**不含** `/api/upload_file`（而后端路由存在于
-     `api/routers/files.py:59`）。→ Docker 部署（后端 8500）下该上传必然失败。属独立缺陷，与本次端口故障同源（硬编码 8000）
-  但不同链路，本 handoff 仅登记事实，**未实测复现**（未发起真实上传）。
+     `api/routers/files.py:59`）。
+- 实测证据（2026-10-14，两层取证）：
+  · 命令行：`POST :8500/api/upload_file` → **200**（后端路由正常）；`POST :8000/api/upload_file` → curl rc=7（连接被拒）；
+    `POST :3500/api/upload_file` → **404**，而对照组 `:3500/api/upload_media` → 405（证明 rewrite 机制本身工作，只有该路径未覆盖）；
+    宿主 `ss -ltn` 确认 `:8000` 无监听。
+  · 浏览器：向该文件控件传入一个临时 txt（`tmp_verify/probe_upload.txt`，一次性探针、已删除，用任意小 txt 可复现）
+    实际发出 `POST http://localhost:8000/api/upload_file` →
+    `net::ERR_CONNECTION_REFUSED`；控制台 `上传错误: TypeError: Failed to fetch`；页面 alert「上传提取内容失败，请重试」；
+    未出现上传成功态。截图 `tmp_verify/apply_02_upload_fail.png`（取证方法：给真实 input 设置文件并派发 `change` 事件，
+    与用户选文件走同一段 `handleFileUpload`；为避开阶段式 alert 临时包装了 `window.alert`/`console.error`/`fetch`）。
+- 建议修法（归下一个 change，本变更不改前端源码）：与其他接口一致改走相对路径 `/api/upload_file`，
+  并在 `next.config.ts` 补上该 rewrite；或至少复用已有的 `DIRECT_API_BASE` 而不是另引一个从未设置过的变量名。
 
 **环境事实（已修，但需知晓）**
 
@@ -221,3 +258,5 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
    提交。尤其：仅验静态渲染（标题/Logo）会完全错过 API 代理这类回归，`655c519` 验证段已覆盖的项必须重新跑一遍才算不回归。
 6. **500 不等于端口错**：本轮就遇到一次“baked 值全对但 /api 全 500”，真实原因是 backend 容器已以退出码 127 静默离开
    （本环境当日多次出现）。排障顺序应当是 §3.1 的第 0 步：先 `docker ps`，再查 baked 值。
+7. **假设不能当验收**：design D2 对 `set -e` / `pipefail` 行为的假设被 tasks 1.3 的实测推翻（脚本会静默退出而不输出指引）。
+   凡是“失败路径”的需求，必须用 `echo $?` + 捕获 stderr 实际跑一遍，不能只看语法。
