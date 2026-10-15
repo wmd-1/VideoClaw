@@ -20,6 +20,53 @@ logger = logging.getLogger(__name__)
 def _get_script_prompt(name: str, lang: str = "zh") -> str:
     return load_prompt_with_fallback("script", name, lang, "zh")
 
+
+# 片子类型规范枚举：meta.film_type 的唯一合法取值（openspec: script-stage-promo-type-rework）
+FILM_TYPES = ("介绍", "宣传", "营销")
+DEFAULT_FILM_TYPE = "介绍"
+
+# 主体形式规范枚举：meta.subject_mode 的唯一合法取值，决定是否以人物为故事主体
+SUBJECT_MODES = ("人物故事", "旁白描述")
+DEFAULT_SUBJECT_MODE = "旁白描述"
+
+# 判定输出同义词白名单：英文模板输出英文类型词，统一归一化回中文规范名
+# （包含匹配按“具体优先”排序，避免理由句中的泛词误命中）
+_FILM_TYPE_ALIASES = {
+    "介绍": "介绍",
+    "宣传": "宣传",
+    "营销": "营销",
+    "intro": "介绍",
+    "introduction": "介绍",
+    "introduce": "介绍",
+    "introducing": "介绍",
+    "promo": "宣传",
+    "promotion": "宣传",
+    "promotional": "宣传",
+    "publicity": "宣传",
+    "marketing": "营销",
+    "sale": "营销",
+    "sales": "营销",
+    "selling": "营销",
+}
+
+_SUBJECT_MODE_ALIASES = {
+    "旁白描述": "旁白描述",
+    "旁白": "旁白描述",
+    "voiceover description": "旁白描述",
+    "voiceover": "旁白描述",
+    "voice-over": "旁白描述",
+    "voice over": "旁白描述",
+    "narration": "旁白描述",
+    "narrative": "旁白描述",
+    "人物故事": "人物故事",
+    "人物": "人物故事",
+    "故事": "人物故事",
+    "character story": "人物故事",
+    "character_story": "人物故事",
+    "person story": "人物故事",
+    "story": "人物故事",
+}
+
 class ScriptWriterAgent(AgentInterface):
     MIN_EPISODE_LINES = 25
     MAX_EPISODE_LINES = 30
@@ -56,6 +103,69 @@ class ScriptWriterAgent(AgentInterface):
             except json.JSONDecodeError:
                 pass
         return None
+
+    @staticmethod
+    def _normalize_film_type(raw: Any) -> Optional[str]:
+        """将判定输出归一化为中文规范枚举；无法识别返回 None（由调用方回退默认值）。"""
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip().strip("`\"'[](){}【】。.，,：:！!？?\n\r\t ").lower()
+        if not text:
+            return None
+        if text in FILM_TYPES:
+            return text
+        if text in _FILM_TYPE_ALIASES:
+            return _FILM_TYPE_ALIASES[text]
+        # 包含匹配：LLM 可能在类型词前后附加理由文字，按白名单顺序取首个命中
+        for alias, canonical in _FILM_TYPE_ALIASES.items():
+            if alias in text:
+                return canonical
+        return None
+
+    @staticmethod
+    def _normalize_subject_mode(raw: Any) -> Optional[str]:
+        """将主体形式判定输出归一化为规范枚举；无法识别返回 None（由调用方回退默认值）。"""
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip().strip("`\"'[](){}【】。.，,：:！!？?\n\r\t ").lower()
+        if not text:
+            return None
+        if text in SUBJECT_MODES:
+            return text
+        if text in _SUBJECT_MODE_ALIASES:
+            return _SUBJECT_MODE_ALIASES[text]
+        # 包含匹配：白名单按“具体优先”排序，避免理由句中的泛词误命中
+        for alias, canonical in _SUBJECT_MODE_ALIASES.items():
+            if alias in text:
+                return canonical
+        return None
+
+    @classmethod
+    def _parse_classification(cls, raw_text: str) -> tuple:
+        """解析类型判定输出（JSON 优先），返回 (film_type, subject_mode)，无法识别项为 None。"""
+        film_type: Optional[str] = None
+        subject_mode: Optional[str] = None
+        parsed = cls._extract_json_from_text(raw_text)
+        if isinstance(parsed, dict):
+            for key in ("film_type", "type", "类型"):
+                if key in parsed:
+                    film_type = cls._normalize_film_type(parsed[key]) or film_type
+            for key in ("subject_mode", "mode", "主体形式", "主体"):
+                if key in parsed:
+                    subject_mode = cls._normalize_subject_mode(parsed[key]) or subject_mode
+            # 键名异常时扫描全部值兜底
+            for value in parsed.values():
+                film_type = film_type or cls._normalize_film_type(value)
+                subject_mode = subject_mode or cls._normalize_subject_mode(value)
+        if not film_type or not subject_mode:
+            # 非 JSON 输出：按行扫描，两个维度各自取首个命中行
+            for line in raw_text.splitlines():
+                film_type = film_type or cls._normalize_film_type(line)
+                subject_mode = subject_mode or cls._normalize_subject_mode(line)
+        if not film_type or not subject_mode:
+            film_type = film_type or cls._normalize_film_type(raw_text)
+            subject_mode = subject_mode or cls._normalize_subject_mode(raw_text)
+        return film_type, subject_mode
 
     def _gen_id(self, prefix: str = "char") -> str:
         import uuid
@@ -108,7 +218,7 @@ class ScriptWriterAgent(AgentInterface):
             return False
         if text.startswith("**") and text.endswith("**"):
             return False
-        if re.match(r"^(人物|角色|Characters)\s*[:：]", text, re.IGNORECASE):
+        if re.match(r"^(人物|角色|场景元素|Characters|Scene elements)\s*[:：]", text, re.IGNORECASE):
             return False
         return True
 
@@ -186,6 +296,15 @@ class ScriptWriterAgent(AgentInterface):
             if isinstance(modified, str):
                 modified = self._extract_json_from_text(modified) or {}
             modified["session_id"] = sid
+            # 类型缺省回填：保证"类型随产物持久化"对人工干预路径同样成立
+            modified_meta = modified.get("meta")
+            if not isinstance(modified_meta, dict):
+                modified_meta = {}
+                modified["meta"] = modified_meta
+            if not self._normalize_film_type(modified_meta.get("film_type")):
+                modified_meta["film_type"] = DEFAULT_FILM_TYPE
+            if not self._normalize_subject_mode(modified_meta.get("subject_mode")):
+                modified_meta["subject_mode"] = DEFAULT_SUBJECT_MODE
             # 【优化】移除手动调用 self._save_result，依靠 Orchestrator 自动保存
             return {"payload": modified, "requires_intervention": False, "stage_completed": True}
 
@@ -227,6 +346,10 @@ class ScriptWriterAgent(AgentInterface):
             web_search = input_data.get("web_search", False)
             episodes_to_add = intervention.get("episodes_to_add", 1)
             sequel_idea = intervention.get("sequel_idea", "").strip()
+            # 续写沿用原片类型与主体形式：读取产物 meta（缺省默认，兼容旧会话），不重复判定
+            existing_meta = input_data.get("meta") if isinstance(input_data.get("meta"), dict) else {}
+            film_type = self._normalize_film_type(existing_meta.get("film_type")) or DEFAULT_FILM_TYPE
+            subject_mode = self._normalize_subject_mode(existing_meta.get("subject_mode")) or DEFAULT_SUBJECT_MODE
 
             from models.llm_client import LLM
             llm = LLM()
@@ -259,7 +382,9 @@ class ScriptWriterAgent(AgentInterface):
                 settings_text=existing_settings_text,
                 episodes_to_add=episodes_to_add,
                 sequel_idea=sequel_idea,
-                start_episode_num=last_episode_num + 1
+                start_episode_num=last_episode_num + 1,
+                film_type=film_type,
+                subject_mode=subject_mode
             )
             
             _log_progress(45, "正在生成续写初稿...")
@@ -270,18 +395,20 @@ class ScriptWriterAgent(AgentInterface):
             # 下面的评估/修订 prompt 定义，否则读取时未绑定（UnboundLocalError）。
             is_zh = True
             _log_progress(50, "正在进行台词评估...")
-            eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=sequel_script_text)
+            eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
             dialogue_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(55, "正在进行情节评估...")
-            eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=sequel_script_text)
+            eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
             plot_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(58, "正在根据评估意见优化续写内容...")
             revise_prompt = _get_script_prompt("revise_script", "zh" if is_zh else "en").format(
                 script_text=sequel_script_text, 
                 dialogue_critique=dialogue_critique, 
-                plot_critique=plot_critique
+                plot_critique=plot_critique,
+                film_type=film_type,
+                subject_mode=subject_mode
             )
             sequel_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
 
@@ -394,6 +521,30 @@ class ScriptWriterAgent(AgentInterface):
 
             loop = asyncio.get_running_loop()
 
+            # 1. 判定片子类型与主体形式：独立提示词 + 单次 LLM 调用，
+            #    解析失败或无法归类时回退默认值，不中断生成流程
+            film_type = DEFAULT_FILM_TYPE
+            subject_mode = DEFAULT_SUBJECT_MODE
+            try:
+                classify_prompt = _get_script_prompt("classify_film_type", "zh" if is_zh else "en").format(idea=idea)
+                classify_raw = await loop.run_in_executor(None, self._cancellable_query, llm, classify_prompt, [], llm_model, True, sid, web_search)
+                parsed_type, parsed_mode = self._parse_classification(classify_raw)
+                film_type = parsed_type or DEFAULT_FILM_TYPE
+                subject_mode = parsed_mode or DEFAULT_SUBJECT_MODE
+                logger.info(
+                    "[ScriptWriter] Film classified as type=%s subject_mode=%s (raw snippet: %.80s)",
+                    film_type,
+                    subject_mode,
+                    (classify_raw or "").replace("\n", " "),
+                )
+            except Exception:
+                logger.warning(
+                    "[ScriptWriter] Film classification failed; falling back to %s/%s",
+                    DEFAULT_FILM_TYPE,
+                    DEFAULT_SUBJECT_MODE,
+                    exc_info=True,
+                )
+
             async def _trim_script_if_needed(script_text: str, phase: str) -> str:
                 trimmed = script_text
                 for attempt in range(2):
@@ -413,6 +564,8 @@ class ScriptWriterAgent(AgentInterface):
                         min_lines=self.MIN_EPISODE_LINES,
                         max_lines=self.MAX_EPISODE_LINES,
                         line_report=self._length_feedback(stats),
+                        film_type=film_type,
+                        subject_mode=subject_mode,
                     )
                     trimmed = await loop.run_in_executor(None, self._cancellable_query, llm, trim_prompt, [], llm_model, True, sid, web_search)
                     logger.info("[ScriptWriter] Trimmed %s script generated (%d chars)", phase, len(trimmed))
@@ -437,6 +590,8 @@ class ScriptWriterAgent(AgentInterface):
                         episode_report=feedback,
                         min_lines=self.MIN_EPISODE_LINES,
                         max_lines=self.MAX_EPISODE_LINES,
+                        film_type=film_type,
+                        subject_mode=subject_mode,
                     )
                     repaired = await loop.run_in_executor(None, self._cancellable_query, llm, repair_prompt, [], llm_model, True, sid, web_search)
                     repaired = await _trim_script_if_needed(repaired, f"{phase}集数修复后")
@@ -444,7 +599,7 @@ class ScriptWriterAgent(AgentInterface):
 
             # 1. Generate full script
             _log_progress(10, "正在生成完整剧本文本初稿...")
-            prompt = _get_script_prompt("generate_script", "zh" if is_zh else "en").format(idea=idea, style=style, episodes=episodes)
+            prompt = _get_script_prompt("generate_script", "zh" if is_zh else "en").format(idea=idea, style=style, episodes=episodes, film_type=film_type, subject_mode=subject_mode)
 
             full_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
             logger.info(f"[ScriptWriter] Initial script generated ({len(full_script_text)} chars)")
@@ -452,18 +607,20 @@ class ScriptWriterAgent(AgentInterface):
             full_script_text = await _repair_episode_count_if_needed(full_script_text, "初稿")
             
             _log_progress(20, "正在进行台词评估...")
-            eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=full_script_text)
+            eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
             dialogue_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(30, "正在进行情节评估...")
-            eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=full_script_text)
+            eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
             plot_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(40, "正在根据评估意见优化剧本...")
             revise_prompt = _get_script_prompt("revise_script", "zh" if is_zh else "en").format(
                 script_text=full_script_text, 
                 dialogue_critique=dialogue_critique, 
-                plot_critique=plot_critique
+                plot_critique=plot_critique,
+                film_type=film_type,
+                subject_mode=subject_mode
             )
             full_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
             logger.info(f"[ScriptWriter] Final script generated ({len(full_script_text)} chars)")
@@ -477,6 +634,22 @@ class ScriptWriterAgent(AgentInterface):
             meta_raw = await loop.run_in_executor(None, self._cancellable_query, llm, meta_prompt, [], llm_model, True, sid, web_search)
             meta_res = self._extract_json_from_text(meta_raw)
             meta_data = meta_res if isinstance(meta_res, dict) else {}
+
+            # meta_extract 输出的 film_type/subject_mode 仅作一致性交叉校验，判定结果为权威来源，不覆盖
+            extracted_film_type = self._normalize_film_type(meta_data.get("film_type"))
+            if extracted_film_type and extracted_film_type != film_type:
+                logger.warning(
+                    "[ScriptWriter] meta_extract film_type=%s inconsistent with classified %s; keeping classified value",
+                    extracted_film_type,
+                    film_type,
+                )
+            extracted_subject_mode = self._normalize_subject_mode(meta_data.get("subject_mode"))
+            if extracted_subject_mode and extracted_subject_mode != subject_mode:
+                logger.warning(
+                    "[ScriptWriter] meta_extract subject_mode=%s inconsistent with classified %s; keeping classified value",
+                    extracted_subject_mode,
+                    subject_mode,
+                )
 
             all_characters = meta_data.get("characters", [])
             all_settings = meta_data.get("settings", [])
@@ -539,7 +712,9 @@ class ScriptWriterAgent(AgentInterface):
                 "meta": {
                     "generation_model": llm_model,
                     "generation_prompt": idea,
-                    "original_text": full_script_text
+                    "original_text": full_script_text,
+                    "film_type": film_type,
+                    "subject_mode": subject_mode
                 },
                 "title": meta_data.get("title", "Generated Script"),
                 "logline": meta_data.get("logline", ""),

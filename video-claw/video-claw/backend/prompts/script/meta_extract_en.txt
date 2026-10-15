@@ -16,14 +16,17 @@ Please extract the following information from the [Script Input], specifically f
 
 **Note (Strictly Adhere to):**
 1. **Output Format**: You must output ONLY a pure JSON object. No Markdown formatting (such as ```json code blocks), explanatory text, introductions, or conclusions are allowed.
-2. Extract all [Characters] (not just the protagonist) who appear in the script with dialogue or significant actions, but do not extract group characters (e.g., "some employees," "a few customers").
-3. Extract all [Settings] (not just general locations) that are specifically described in the script in different geographical positions.
+2. Extract all [Characters] who appear in the script with dialogue or significant actions, **AND the film's subject object** (the entity being introduced/promoted/marketed) — both MUST be extracted. The [Characters] list MUST match the "Characters:" lines in the script: include **ALL people AND non-person subjects** (products, logos, banks, places, institutions, etc.), but do not extract group characters (e.g., "some employees," "a few customers"). **Special exclusion: voice-over / narrator (旁白/画外音/解说) is dubbing only and never appears on-screen; it only needs voice consistency, so it MUST NOT be extracted as a Character or given a portrait, even if it appears as a dialogue speaker or in the "Characters:" lines — ignore it.**
+3. Extract all [Settings] (not just general locations) that are specifically described in the script in different geographical positions; a scene name IS the background location image, and identical locations must use perfectly consistent names.
 4. **Character Description** (for static portraits):
-   - Use a descriptive format: "age + gender + hairstyle/accessories + clothing + body type + facial features."
-   - Core Features: Must include visual characteristics such as hairstyle, body type, clothing color, and style.
-   - Strict Restrictions: Never describe expressions, personality, or state changes (must be a static visual description); do not describe actions; the character's appearance must be neat and clean, with intact clothing—no wounds, blood, or torn clothes; do not add any special marks like scars, birthmarks, tattoos, or strange makeup.
-   - Strictly prohibit sci-fi or fantasy elements; the appearance must be realistic.
-   - Style: 30-50 words, plain and direct language; avoid metaphors or literary rhetoric.
+   - **Human/animal characters**: Use a descriptive format: "age + gender + hairstyle/accessories + clothing + body type + facial features."
+     - Core Features: Must include visual characteristics such as hairstyle, body type, clothing color, and style.
+     - Strict Restrictions: Never describe expressions, personality, or state changes (must be a static visual description); do not describe actions; the character's appearance must be neat and clean, with intact clothing—no wounds, blood, or torn clothes; do not add any special marks like scars, birthmarks, tattoos, or strange makeup; do not describe eye/eyelid colors.
+     - Strictly prohibit sci-fi or fantasy elements; the appearance must be realistic.
+     - Style: 30-50 words, plain and direct language; avoid metaphors or literary rhetoric.
+   - **Non-person subjects** (products, logos, banks, places, institutions, etc.): Use an objective format: "type + form/structure + color + material + key visual features (such as the position and style of a logo)."
+     - Strict Restrictions: MUST be a fixed, static visual description; do NOT describe usage state, actions, or state changes; do NOT describe expressions or personality; keep the image clean and bright.
+     - Style: 30-50 words, plain and direct language; avoid metaphors or literary rhetoric.
 5. **Setting Layout**:
    - Use a descriptive format: "space type + lighting + core furnishings (texture/material)."
    - Strict Restrictions: Lighting must be adequate (not too dark), with no literary or emotional descriptions. **The environment MUST be kept clean and tidy. The design must avoid any dirty, messy environment. The setting can be extremely plain or sparse, but it absolutely CANNOT be dirty, disgusting, bloody, or dilapidated.**
@@ -38,11 +41,13 @@ Please extract the following information from the [Script Input], specifically f
   "logline": "One-sentence story summary",
   "genre": ["Genre 1", "Genre 2"],
   "mood": "Emotional tone of the film",
+  "film_type": "one of: introduction, promotion, marketing (judged from the script content)",
+  "subject_mode": "one of: character story, voiceover (judged from the script content)",
   "characters": [
     {{
       "name": "Full name of protagonist/major supporting character",
       "description": "Appearance description, see [Design Requirements]",
-      "species": "Human or specific animal species"
+      "species": "human / specific animal species / non-person subject type (e.g., product, logo, building, place)"
     }}
   ],
   "settings": [

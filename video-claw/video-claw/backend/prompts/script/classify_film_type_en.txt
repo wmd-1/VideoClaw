@@ -1,0 +1,19 @@
+You are a film classification expert. Classify the film along two dimensions based on the user's idea.
+
+[Dimension 1: Film Type] (choose one)
+1. Introduction (intro): explains what the subject is, how to use it, and what it consists of; information delivery focused.
+2. Promotion (promo): highlights the subject's value, strengths, and selling points; awareness and goodwill focused.
+3. Marketing (marketing): drives action and conversion, such as ordering, signing up, or purchasing; call-to-action focused.
+
+[Dimension 2: Subject Mode] (choose one)
+1. Character story (character story): the film is carried by a person as the story subject, conveyed through their experience, story, and dialogue; suitable when the subject is a person or the material calls for a story-driven treatment.
+2. Voiceover description (voiceover): the film is carried by voice-over narration that directly describes the subject; suitable for directly presenting non-person subjects such as products, banks, places, institutions, or logos.
+
+Note: the two dimensions are independent — the type dimension looks only at the information goal, and the subject mode dimension looks only at whether the film is carried by a character story. The film subject may be a person or a non-person entity such as a bank, product, object, place, institution, or logo.
+
+[User Idea]
+{idea}
+
+[Output Requirements]
+Output ONLY a single-line JSON object with two fields, nothing else:
+{{"film_type": "intro|promo|marketing", "subject_mode": "character story|voiceover"}}

@@ -637,6 +637,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                     删除
                   </button>
                 </div>
+                <p className="-mt-1 mb-3 text-xs text-gray-400">所有的人物以及非人物主体，包括产品、logo、人物等</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {data.characters.map((c, i) => {
                     const isCharacterEditing = editingCharacterIndex === i;
@@ -749,6 +750,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                     删除
                   </button>
                 </div>
+                <p className="-mt-1 mb-3 text-xs text-gray-400">背景地点图片</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {data.settings.map((s, i) => {
                     const isSettingEditing = editingSettingIndex === i;

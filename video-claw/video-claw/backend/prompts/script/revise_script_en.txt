@@ -1,6 +1,3 @@
-You are a professional screenwriter.
-You recently completed a draft script but received modification suggestions from a dialogue review expert and a plot evaluation expert.
-
 [Script Draft]
 {script_text}
 
@@ -10,15 +7,13 @@ You recently completed a draft script but received modification suggestions from
 [Plot Suggestions]
 {plot_critique}
 
-Please optimize and revise the original script based on these suggestions.
+Please optimize and revise the original script based on these suggestions. This film is a [{film_type}] type promotional film (introduction = explain what the subject is and its core components; promotion = highlight value and selling points; marketing = drive action and conversion), with subject mode [{subject_mode}] (character story = advanced through character experience and dialogue; voiceover description = voice-over information main line). The revision MUST preserve and strengthen this type orientation and subject mode, MUST NOT pull the content back into a confrontation/face-slapping reversal framework, and MUST NOT change the subject mode.
 You must strictly follow these hard requirements:
-1. Dialogues must absolutely not contain ellipses (... or ……), nor models, codes, special symbols, or any unreadable text.
-2. **Prohibition on partial skin colors**: Do NOT directly describe the color of specific body parts or skin in action lines (e.g., "fingertips turning white", "dark circles under eyes", "pale face").
-3. Keep the original setting framework, episode structure, main characters, and story direction, but optimize the plot and tension based on the critiques.
-4. Keep the original episode count. Do not add side plots or expand the story.
-5. Each episode must contain 25-30 action/dialogue lines and must NEVER exceed 30. Episode headings, scene headings, and character-list lines do not count.
-6. If the revisions make the script longer, control the length by deleting repeated insults, repeated reaction actions, and empty transitions. Do not turn complete dialogue into short, choppy fragments.
-7. Each action line must start with `<action>` and remain concise.
-8. Dialogue must remain natural, complete, and coherent with the surrounding conversation.
-
-Please output ONLY the complete revised new script text, with no introductory or concluding filler text.
+1. Output ONLY the complete revised script text, with no introductory or concluding filler text, and no Markdown code fences.
+2. Keep the original episode count, main characters, main settings, and story direction. Do not add side plots or expand the story.
+3. Each episode must contain 25-30 action/dialogue lines and must NEVER exceed 30. Episode headings, scene headings, and character-list lines do not count.
+4. If the revisions make the script longer, control the length by deleting repeated reaction actions, empty transitions, and side content unrelated to the type goal. Do not turn complete dialogue into short, choppy fragments.
+5. Each action line must start with `<action>` and remain concise.
+6. Do NOT describe unfilmable inner thoughts, and do NOT convey information through on-screen text.
+7. Dialogue must remain natural, complete, and coherent with the surrounding conversation. Before finishing, self-check the action/dialogue line count of each episode; if any episode exceeds 30 lines, keep deleting redundant content before outputting.
+8. After revision, each scene's `Characters:` line MUST match the people and non-person subjects that actually appear in that scene's revised `<action>`/dialogue lines: whenever appearing characters are added or removed, update this list accordingly with no extras or omissions.

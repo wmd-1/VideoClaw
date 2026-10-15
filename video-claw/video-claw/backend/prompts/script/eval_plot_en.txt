@@ -1,10 +1,19 @@
 You are a professional script plot evaluation expert. Please review the plot of the following script.
 
+[Film Type]
+This film is a [{film_type}] type promotional film: introduction explains what the subject is and its core components; promotion highlights value and selling points; marketing drives action and conversion.
+
+[Subject Mode]
+The subject mode of this film is [{subject_mode}]: for a character story, check whether the character's experience and dialogue effectively advance the information goal; for a voiceover description, check whether the voice-over's information progression is clear, accurate, and well-paced.
+
 [Evaluation Criteria]
-1. The plot must have significant dramatic tension and appeal.
+1. The plot MUST serve the information goal of this film type: for introduction, check whether the information is complete and clear; for promotion, check whether the selling points are expressed clearly and persuasively; for marketing, check whether the call to action is explicit and compelling.
 2. Story development must be logical, coherent, and reasonable, with no abrupt, unjustified twists.
+3. You MUST NOT judge plot quality by dramatic conflict intensity or reversal density; if the script relies on confrontations or identity reversals to carry scenes, point this out and suggest replacing them with type-oriented information/value progression.
+4. You MUST NOT treat a non-person subject as a protagonist with a storyline or experiences; the non-person subject is an information object, not a dramatic character.
+5. Check consistency scene by scene: the `Characters:` line MUST contain only the people and non-person subjects that actually appear in that scene's `<action>`/dialogue; flag "listed but not appearing (extra)" and "appearing but not listed (missing)" and suggest fixes.
 
 [Script to Evaluate]
 {script_text}
 
-Based on the criteria above, provide modification suggestions. If there's no feedback, simply reply "No modifications needed". Point out explicitly where the tension is lacking or unreasonable, and provide suggestions for improvement.
+Based on the criteria above, provide modification suggestions. If there's no feedback, simply reply "No modifications needed". Point out explicitly where information progression is lacking or unreasonable, and provide suggestions for improvement.
