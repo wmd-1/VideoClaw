@@ -112,6 +112,16 @@ interface SegmentLike {
   [key: string]: unknown;
 }
 
+/**
+ * 会话归属令牌（openspec: frontend-session-state-isolation / design D1、D9）。
+ * 令牌必须在**执行链启动时取一次并贯穿全链**：在写入点现读 ownerRef 会让守卫退化为永真，
+ * 每条 SSE 事件重取则会让该次写入自我作废。
+ */
+interface SessionToken {
+  sid: string | null;
+  gen: number;
+}
+
 function initStageStates(): Record<string, StageState> {
   const states: Record<string, StageState> = {};
   for (const s of ALL_stageOrder) {
@@ -189,6 +199,16 @@ export default function WorkflowPanel() {
   const [completedStagesFromSession, setCompletedStagesFromSession] = useState<string[]>([]);
   // 顶栏流程图用的后端阶段状态映射（提前声明：pollForCompletion 等闭包先于其使用点定义）
   const [globalStatusMap, setGlobalStatusMap] = useState<Record<string, string>>({});
+  // 会话载入空态与失败态（design D5）：两者与 showHome 的优先级固定为
+  // sessionLoadError > sessionLoading > showHome，否则复位置空 activeStage 会闪一下首页。
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
+  /**
+   * 执行链并发闸门。与 `isRunning` **必须分开**：isRunning 是会话视图态（切会话时要复位，
+   * 否则"执行中/停止"会当成上一会话的残留跟着走），而本 ref 跟的是"本标签页有没有链在跑"，
+   * 不能随视图复位。若继续用 isRunning 做闸门，切走会话会误将闸门打开，允许开第二条链。
+   */
+  const chainRunningRef = useRef(false);
   // 后端启用的阶段列表：禁用提示词改写时为原六阶段（不渲染、不驱动该阶段）
   const stageOrder = useEnabledStages();
 
@@ -196,6 +216,10 @@ export default function WorkflowPanel() {
   const stoppedRef = useRef(false);
   const autoModeRef = useRef(autoMode);
   const pollRef = useRef<Set<string>>(new Set());
+  // 会话归属真源：sid + 装载代数。任何会话态写入都要带上链启动时的令牌。
+  const ownerRef = useRef<SessionToken>({ sid: null, gen: 0 });
+  // sessionId 的同步镜像：异步闭包读 state 会拿到旧值，归属判定一律走 ref。
+  const sessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     autoModeRef.current = autoMode;
@@ -211,8 +235,25 @@ export default function WorkflowPanel() {
     return () => { pollRef.current.clear(); };
   }, []);
 
+  // 领取新归属：代数自增，使此前所有在途异步写入自动失效。MUST 与 sessionId 同时发生。
+  const enterSession = useCallback((sid: string | null) => {
+    const token: SessionToken = { sid, gen: ownerRef.current.gen + 1 };
+    ownerRef.current = token;
+    sessionRef.current = sid;
+    setSessionId(sid);
+    return token;
+  }, []);
+
+  // 令牌是否仍代表当前归属（sid 与 gen 双等；单看 sid 不足以判定，见 design D2）
+  const owns = useCallback((token: SessionToken): boolean => {
+    return token.sid === ownerRef.current.sid && token.gen === ownerRef.current.gen;
+  }, []);
+
+  // 当前归属快照：仅供**链启动时**取令牌使用，绝不得出现在写入点（design D9）
+  const currentToken = useCallback((): SessionToken => ownerRef.current, []);
+
   // 阶段状态更新（提前声明：pollForCompletion / handleResumeProject 等闭包先于其使用点定义）
-  const updateStageState = (stageId: string, update: Partial<StageState>) => {
+  const updateStageState = useCallback((stageId: string, update: Partial<StageState>) => {
     setStageStates(prev => {
       const current = prev[stageId];
       const nextUpdate = { ...update };
@@ -234,12 +275,82 @@ export default function WorkflowPanel() {
         [stageId]: { ...current, ...nextUpdate },
       };
     });
-  };
+  }, []);
+
+  /**
+   * 漏斗：所有阶段状态写入 MUST 经过此处（design D1）。
+   * 只丢弃**状态写入**；因令牌失效而改变控制流的只有轮询循环本身（design D11）。
+   */
+  const commitStageState = useCallback((token: SessionToken, stageId: string, update: Partial<StageState>) => {
+    if (!owns(token)) return;
+    updateStageState(stageId, update);
+  }, [owns, updateStageState]);
+
+  // 漏斗：SSE 增量合并、手动停止回填等函数式整体更新也要带令牌
+  const commitStageStates = useCallback((
+    token: SessionToken,
+    updater: (prev: Record<string, StageState>) => Record<string, StageState>,
+  ) => {
+    if (!owns(token)) return;
+    setStageStates(prev => updater(prev));
+  }, [owns]);
+
+  /**
+   * 漏斗：会话视图态（顶栏状态映射、当前/已完成阶段、会话级生成参数等）的带归属写入。
+   * MUST NOT 包含 setIsRunning / stoppedRef——它们跟的是"本标签页有没有在跑的任务"，不是"哪个会话的数据"（design D11）。
+   */
+  const commitSessionView = useCallback((token: SessionToken, view: {
+    globalStatusMap?: Record<string, string>;
+    currentStage?: string | null;
+    completedStages?: string[] | ((prev: string[]) => string[]);
+    projectParams?: ProjectParams | null;
+    activeStage?: string | null;
+  }) => {
+    if (!owns(token)) return;
+    if (view.globalStatusMap) setGlobalStatusMap(view.globalStatusMap);
+    if (view.currentStage !== undefined) setCurrentStageFromSession(view.currentStage);
+    // 允许函数式更新：长执行链里多阶段累加完成记录时，必须基于最新 prev 而非启动时的快照
+    const nextCompleted = view.completedStages;
+    if (nextCompleted !== undefined) {
+      setCompletedStagesFromSession(prev => (typeof nextCompleted === 'function' ? nextCompleted(prev) : nextCompleted));
+    }
+    if (view.projectParams !== undefined) setProjectParams(view.projectParams);
+    if (view.activeStage !== undefined) setActiveStage(view.activeStage);
+  }, [owns]);
+
+  /**
+   * 统一的会话态复位入口（design D3/D4）：四个退出路径共用。
+   * 只清前端视图与本地轮询订阅；MUST NOT abort SSE、MUST NOT 调 stopProject——
+   * 阶段执行跑在 SSE 请求生命周期内的同进程协程，中断读取会杀死后端正在跑的阶段。
+   */
+  const resetSessionView = useCallback((nextSid: string | null): SessionToken => {
+    const token = enterSession(nextSid);
+    // 清掉所有在途轮询 key：各循环下一 tick 的 has(key) 检查会自然退出
+    pollRef.current.clear();
+    setStageStates(initStageStates());
+    setGlobalStatusMap({});
+    setCurrentStageFromSession(null);
+    setCompletedStagesFromSession([]);
+    setProjectParams(null);
+    setModelFallback(null);
+    setActiveStage(null);
+    setIsRunning(false);
+    stoppedRef.current = false;
+    // 载入态必须一并清除：离开会话时，在途的 resume 会因令牌失效静默退出而不清这两个标志，
+    // 而渲染优先级是 sessionLoading > showHome，残留会把首页永久顶成"正在载入"。
+    setSessionLoading(false);
+    setSessionLoadError(null);
+    return token;
+  }, [enterSession]);
 
   // 轮询等待后端阶段完成。运行中优先读后端内存，后端重启后再回退到磁盘快照。
   const pollForCompletion = useCallback(async (sid: string, stageId: string) => {
     const key = `${sid}:${stageId}`;
+    // 入口去重守卫（design D10）：既有代码只有退出侧 has() 检查，重复调用会叠加并发循环
+    if (pollRef.current.has(key)) return;
     pollRef.current.add(key);
+    // 轮询在调用入门时取当前归属快照作为贯穿整轮轮询的令牌（design D9）
+    const token = currentToken();
     for (let i = 0; i < 300; i++) {  // 增加轮询次数（最多10分钟）
       await new Promise(r => setTimeout(r, 2000));
       if (!pollRef.current.has(key)) return;
@@ -251,7 +362,9 @@ export default function WorkflowPanel() {
           status = (await getProjectStatusFromDisk(sid)) as ProjectStatusSnapshot;
         }
         if (!pollRef.current.has(key)) return;
-        setGlobalStatusMap(status.status || {});
+        // getProjectStatus 是一个 await，返回后归属可能已变；先校令牌再落写入（design D1/D11）
+        if (!owns(token)) return;
+        commitSessionView(token, { globalStatusMap: status.status || {} });
         const done = Object.keys(status.status || {}).filter(k => ["completed", "session_completed"].includes(status.status[k]));
         const currentStageStatus = status.status?.[stageId] || 'idle';
         const artifacts = status.artifacts || {};
@@ -261,7 +374,9 @@ export default function WorkflowPanel() {
           const isWait = currentStageStatus === 'waiting' && status.current_stage === stageId;
           let artifact: unknown = null;
           try { artifact = (await getArtifact(sid, stageId)).artifact; } catch {}
-          updateStageState(stageId, {
+          // 此处多了一个 await：取完产物后必须重新校归属，否则迟到的旧会话会覆盖当前会话
+          if (!owns(token)) return;
+          commitStageState(token, stageId, {
             status: isWait ? 'waiting' : 'completed',
             progress: 100,
             progressMessage: isWait ? '等待确认' : '已完成',
@@ -271,7 +386,7 @@ export default function WorkflowPanel() {
           return;
         }
         if (currentStageStatus === 'error' && !hasRunningItems) {
-          updateStageState(stageId, {
+          commitStageState(token, stageId, {
             status: 'error',
             error: status.error || '执行出错',
             progressMessage: '执行失败',
@@ -280,7 +395,7 @@ export default function WorkflowPanel() {
           return;
         }
         if (currentStageStatus === 'stopped' && !hasRunningItems) {
-          updateStageState(stageId, {
+          commitStageState(token, stageId, {
             status: 'stopped',
             error: '手动停止',
             progressMessage: '已停止',
@@ -290,7 +405,7 @@ export default function WorkflowPanel() {
         }
         // 后台单卡重生成时，阶段状态可能仍是 waiting/completed；只要 item 还在 running 就继续轮询。
         if (currentStageStatus !== 'running' && !hasRunningItems) {
-          updateStageState(stageId, {
+          commitStageState(token, stageId, {
             status: currentStageStatus === 'waiting'
               ? 'waiting'
               : (done.includes(stageId) ? 'completed' : 'pending'),
@@ -343,25 +458,38 @@ export default function WorkflowPanel() {
         }
 
         if (Object.keys(update).length > 0) {
-          updateStageState(stageId, update);
+          commitStageState(token, stageId, update);
         }
       } catch { /* retry */ }
     }
     pollRef.current.delete(key);
-  }, []);
+  }, [commitSessionView, commitStageState, currentToken, owns]);
 
   // ── 恢复历史项目 ──
   const handleResumeProject = async (sid: string, targetStage: string | null = null) => {
-    // 如果正在执行的就是同一个项目，直接恢复视图，不重置状态
-    if (sid === sessionId) {
+    // 已经在展示同一个会话（归属未被别的会话接管）：只移指针，不取数也不复位。
+    // 本分支还承担两个职责（design D7）：会话内阶段点击的快路径，以及截断
+    // "resume → router.push → URL effect → resume" 的自激回路。
+    // 判定走 sessionRef 而非 sessionId state：异步闭包读 state 会拿到旧值。
+    // MUST NOT 在失败态下走早退：否则"载入失败 → 重试"会被当成同会话导航而跳过取数（design D5/D7 的交叉点）。
+    if (sid === sessionRef.current && !sessionLoadError) {
       const runningStage = stageOrder.find(s => stageStates[s]?.status === 'running');
       const waitingStage = stageOrder.find(s => stageStates[s]?.status === 'waiting');
       const lastCompleted = [...stageOrder].reverse().find(s => stageStates[s]?.status === 'completed');
       setActiveStage(targetStage || runningStage || waitingStage || lastCompleted || stageOrder[0]);
+      // 这里 MUST NOT 清 sessionLoading：handleResumeProject 自己会 router.push 改变 searchParams，
+      // 从而触发本 effect 第二次进入并命中此早退；若在此清标志，首次尚未完成的取数会被
+      // "空阶段面板"提前顶掉载入态（实测：人为拖慢 20s 时，“正在载入”完全不出现）。
+      // 载入态的置/清只属于完整取数路径（成功末尾 / catch / resetSessionView）。
       return;
     }
 
-    setSessionId(sid);
+    // 先清后拉（tasks 2.3）：复位上一会话的视图态并领取新归属令牌（含 enterSession 写 sessionId），
+    // 使 await 空窗呈现"该会话尚无数据"而不是上一个会话的数据。
+    // 不得在此之外再写裸的 setSessionId（tasks 1.2）。
+    const token = resetSessionView(sid);
+    setSessionLoading(true);
+    setSessionLoadError(null);
     // 更新 URL 参数（包含阶段）
     const stageParam = targetStage ? `&stage=${targetStage}` : '';
     router.push(`/?session=${sid}${stageParam}`);
@@ -372,16 +500,17 @@ export default function WorkflowPanel() {
       } catch {
         status = (await getProjectStatusFromDisk(sid)) as ProjectStatusSnapshot;
       }
-      setGlobalStatusMap(status.status || {});
+      // 取数后归属可能已变（用户又切了一次）：迟到响应直接放弃，不写界面
+      if (!owns(token)) return;
+      commitSessionView(token, { globalStatusMap: status.status || {} });
       const newStates = initStageStates();
       const stMap = status.status || {};
       const allStatusStages = Object.keys(stMap);
       const currentStage = status.current_stage;
 
       // 保存到 state 供顶栏流程图使用
-      setCurrentStageFromSession(currentStage || null);
       const completedStages = allStatusStages.filter(k => ["completed", "session_completed"].includes(stMap[k]));
-      setCompletedStagesFromSession(completedStages);
+      commitSessionView(token, { currentStage: currentStage || null, completedStages });
 
       // 仅处理已知工作流阶段（按全量已知集合，覆盖尚未 resolve 的可选注入阶段；
       // status map 里的 init 等内部键不在 ALL_stageOrder 中，仍会被跳过避免无谓 404）
@@ -422,6 +551,8 @@ export default function WorkflowPanel() {
         if (!newStates[sName].artifact) {
           try {
             const artResult = await getArtifact(sid, sName);
+            // 串行 await 共 N 次：任一次返回后归属可能已变，迟到的直接放弃整轮恢复
+            if (!owns(token)) return;
             newStates[sName].artifact = artResult.artifact;
           } catch { /* ignore */ }
         }
@@ -433,25 +564,27 @@ export default function WorkflowPanel() {
       if (s.idea || s.user_textbox_input) {
         // Legacy session compatibility: old sessions only stored one video_model, so hydrate it as the first-frame model.
         const restoredFirstFrameVideoModel = s.video_first_frame_model || s.video_model || '';
-        setProjectParams({
-          idea: s.idea || s.user_textbox_input || '',
-          style: s.style || '',
-          video_ratio: s.video_ratio || '16:9',
-          video_resolution: s.video_resolution || '720P',
-          video_duration: s.video_duration ? String(s.video_duration) : '',
-          video_fps: s.video_fps ? String(s.video_fps) : '',
-          llm_model: s.llm_model || '',
-          vlm_model: s.vlm_model || '',
-          image_t2i_model: s.image_t2i_model || '',
-          image_it2i_model: s.image_it2i_model || '',
-          video_generation_mode: (s.video_generation_mode || 'first_frame') as ProjectParams['video_generation_mode'],
-          video_first_frame_model: restoredFirstFrameVideoModel,
-          video_start_end_model: s.video_start_end_model || 'wan2.7-i2v',
-          video_reference_model: s.video_reference_model || 'wan2.7-r2v',
-          video_model: s.video_model || '',
-          expand_idea: s.expand_idea || false,
-          enable_concurrency: s.enable_concurrency || false,
-          web_search: s.web_search || false,
+        commitSessionView(token, {
+          projectParams: {
+            idea: s.idea || s.user_textbox_input || '',
+            style: s.style || '',
+            video_ratio: s.video_ratio || '16:9',
+            video_resolution: s.video_resolution || '720P',
+            video_duration: s.video_duration ? String(s.video_duration) : '',
+            video_fps: s.video_fps ? String(s.video_fps) : '',
+            llm_model: s.llm_model || '',
+            vlm_model: s.vlm_model || '',
+            image_t2i_model: s.image_t2i_model || '',
+            image_it2i_model: s.image_it2i_model || '',
+            video_generation_mode: (s.video_generation_mode || 'first_frame') as ProjectParams['video_generation_mode'],
+            video_first_frame_model: restoredFirstFrameVideoModel,
+            video_start_end_model: s.video_start_end_model || 'wan2.7-i2v',
+            video_reference_model: s.video_reference_model || 'wan2.7-r2v',
+            video_model: s.video_model || '',
+            expand_idea: s.expand_idea || false,
+            enable_concurrency: s.enable_concurrency || false,
+            web_search: s.web_search || false,
+          },
         });
       }
 
@@ -460,8 +593,11 @@ export default function WorkflowPanel() {
       if (!finalStage) {
         finalStage = currentStage || (completedStages.length > 0 ? completedStages[completedStages.length - 1] : stageOrder[0]);
       }
-      setActiveStage(finalStage);
-      setStageStates(newStates);
+      commitSessionView(token, { activeStage: finalStage });
+      // 整体替换：仅当确实换了会话才会走到这里（同 sid 已走上面的早退），
+      // 它会把 SSE 驱动的进度打回后端快照值——属预期且已记入 design D7 的闪烁说明。
+      commitStageStates(token, () => newStates);
+      setSessionLoading(false);
 
       // 轮询正在执行的阶段；后台单卡重生成时阶段可能不是 running，但 item 会是 running。
       // 遍历必须基于会话状态里实际出现的阶段（用 ALL_stageOrder 过滤 init 等内部键），
@@ -474,7 +610,11 @@ export default function WorkflowPanel() {
         }
       }
     } catch {
-      setActiveStage(stageOrder[0]);
+      // 载入失败 MUST NOT 回落上一个会话的产物（tasks 3.2/3.3）：
+      // 保留已复位的空 stageStates 与 sessionId，进入可区分失败态，由用户主动重试。
+      if (!owns(token)) return;
+      setSessionLoading(false);
+      setSessionLoadError('未能载入该会话，请检查后端服务或该会话是否仍存在');
     }
   };
 
@@ -498,11 +638,20 @@ export default function WorkflowPanel() {
       const targetStage = stageParam && ALL_stageOrder.includes(stageParam) ? stageParam : null;
       // 延后到微任务执行：handleResumeProject 传递包含 setState 的函数调用，
       // effect 体内同步调用会触发级联渲染（react-hooks/set-state-in-effect）。
-      // cancelled 守卫：searchParams 连续变化时丢弃尚未执行的过期恢复
-      let cancelled = false;
-      queueMicrotask(() => { if (!cancelled) handleResumeProject(sessionParam, targetStage); });
-      return () => { cancelled = true; };
+      // 不需要 cancelled 守卫：迟到的恢复由归属令牌丢弃写入（design D12）。
+      queueMicrotask(() => { handleResumeProject(sessionParam, targetStage); });
+      return;
     }
+    // 第四个退出入口（tasks 2.6）：侧栏首页链接与浏览器后退不带 session 参数。
+    // 它们不会走 handleGoHome，若不在此复位，上一会话会残留在顶栏；前置条件限定为
+    // "确实来自某个会话"，避免首页首次挂载与无关参数变化时多余复位。
+    if (sessionRef.current !== null) {
+      resetSessionView(null);
+    }
+    // deps 仅取 searchParams：本 effect 的语义是"URL 变了才载入"。handleResumeProject 每渲染重建，
+    // 放进 deps 会变成 effect → setState → 重渲染 → effect 的死循环（design R6）。
+    // 闭包隔代带来的陈旧 state 读取已由归属令牌接管：入口判定走 sessionRef，写入走 owns()。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   // 页面加载时从后端获取历史记录
@@ -527,6 +676,8 @@ export default function WorkflowPanel() {
 
   // ── 停止执行 ──
   const handleStop = async () => {
+    // 令牌在**点击时**捕获：500ms 延迟回调不能读回调时的归属（design D9）
+    const token = currentToken();
     stoppedRef.current = true;
     // 1. 断开前端 SSE 流
     if (abortRef.current) {
@@ -539,7 +690,7 @@ export default function WorkflowPanel() {
     }
     setIsRunning(false);
     // 3. 将所有 running 阶段标记为 stopped，保留已有的 artifact
-    setStageStates(prev => {
+    commitStageStates(token, prev => {
       const next = { ...prev };
       for (const s of stageOrder) {
         if (next[s]?.status === 'running') {
@@ -555,13 +706,16 @@ export default function WorkflowPanel() {
       return next;
     });
     // 4. 尝试从后端获取最新 artifact（后端可能已保存部分结果）
-    if (sessionId) {
+    const stopSid = sessionId;
+    if (stopSid) {
       setTimeout(async () => {
         for (const s of stageOrder) {
           try {
-            const artResult = await getArtifact(sessionId, s);
+            const artResult = await getArtifact(stopSid, s);
             if (artResult?.artifact) {
-              setStageStates(prev => {
+              // 500ms 内用户可能已切会话：令牌不匹配则整批放弃，不得回填上一会话的"已停止"
+              if (!owns(token)) return;
+              commitStageStates(token, prev => {
                 const cur = prev[s];
                 if (!cur || cur.status === 'completed') return prev;
                 // 检查 artifact 是否含有效内容
@@ -579,20 +733,21 @@ export default function WorkflowPanel() {
   };
 
   // ─ 模型不可用兜底：刷新阶段产物（拿到种子化条目）并弹出引导弹窗 ──
-  const refreshStageArtifact = async (sid: string, stageId: string) => {
+  const refreshStageArtifact = async (token: SessionToken, sid: string, stageId: string) => {
     try {
       const artResult = await getArtifact(sid, stageId);
       if (artResult?.artifact) {
-        updateStageState(stageId, { artifact: artResult.artifact });
+        commitStageState(token, stageId, { artifact: artResult.artifact });
       }
     } catch {
       /* 阶段尚无产物，忽略 */
     }
   };
 
-  const showModelUnavailable = (sid: string, stageId: string, detail: ModelUnavailableDetail) => {
+  const showModelUnavailable = (token: SessionToken, sid: string, stageId: string, detail: ModelUnavailableDetail) => {
+    if (!owns(token)) return;
     setModelFallback(prev => prev ?? { stage: stageId, detail });
-    void refreshStageArtifact(sid, stageId);
+    void refreshStageArtifact(token, sid, stageId);
   };
 
   // 阶段结束后扫描失败条目：存在 model_unavailable 时同样给出引导（每次运行最多弹一次）
@@ -621,10 +776,12 @@ export default function WorkflowPanel() {
   };
 
   // ── 执行单个阶段 ──
-  const runStage = async (sid: string, stageId: string, inputData: Record<string, unknown>) => {
+  // 令牌由调用方（执行链启动处）传入：链内不得重取，否则用户切走会话后，
+  // 本链下一个阶段会捕获到新归属的令牌并把旧会话数据写进当前界面（design D9）。
+  const runStage = async (token: SessionToken, sid: string, stageId: string, inputData: Record<string, unknown>) => {
     if (stoppedRef.current) throw new Error('Stopped');
-    updateStageState(stageId, { status: 'running', progress: 0, progressMessage: '启动中...', error: null });
-    setActiveStage(stageId);
+    commitStageState(token, stageId, { status: 'running', progress: 0, progressMessage: '启动中...', error: null });
+    commitSessionView(token, { activeStage: stageId });
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -634,17 +791,17 @@ export default function WorkflowPanel() {
 
       for await (const event of parseStreamEvents(response)) {
         if (event.type === 'progress') {
-          updateStageState(stageId, {
+          commitStageState(token, stageId, {
             progress: event.percent || 0,
             progressMessage: event.message || '',
           });
           // 处理素材预览和逐个完成事件
           if (event.data?.assets_preview) {
-            updateStageState(stageId, { artifact: event.data.assets_preview });
+            commitStageState(token, stageId, { artifact: event.data.assets_preview });
           }
           if (event.data?.asset_complete) {
             const assetUpdate = event.data.asset_complete as Record<string, unknown>;
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const nextArtifact = applyAssetUpdateToArtifact(
                 prev[stageId]?.artifact as ArtifactLike,
                 assetUpdate,
@@ -657,7 +814,7 @@ export default function WorkflowPanel() {
           // 处理剧本逐幕增量事件
           if (event.data?.beat_sheet) {
             const beatSheet = event.data.beat_sheet;
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const prevArt = (prev[stageId]?.artifact || {}) as Record<string, unknown>;
               return {
                 ...prev,
@@ -670,7 +827,7 @@ export default function WorkflowPanel() {
           }
           if (event.data?.act_complete) {
             const actData = event.data.act_complete;
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const prevArt = (prev[stageId]?.artifact || {}) as Record<string, unknown>;
               const prevActs = Array.isArray(prevArt.completed_acts) ? prevArt.completed_acts : [];
               return {
@@ -689,7 +846,7 @@ export default function WorkflowPanel() {
           // 处理分镜逐场完成事件
           if (event.data?.scene_shots_complete) {
             const sceneData = event.data.scene_shots_complete as { shots?: unknown[] };
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const prevArt = (prev[stageId]?.artifact || {}) as Record<string, unknown>;
               const prevShots = Array.isArray(prevArt.shots) ? prevArt.shots : [];
               return {
@@ -719,13 +876,13 @@ export default function WorkflowPanel() {
             artifact = event.data.assets_preview;
           }
 
-          updateStageState(stageId, {
+          commitStageState(token, stageId, {
             status: newStatus,
             progress: 100,
             progressMessage: newStatus === 'waiting' ? '等待确认' : '已完成',
             artifact,
           });
-          if (artifact) maybeShowFallbackFromArtifact(stageId, artifact);
+          if (artifact && owns(token)) maybeShowFallbackFromArtifact(stageId, artifact);
         } else if (event.type === 'error') {
           // 取消/停止类错误：尝试获取部分结果而不是直接报错
           const isCancelError = /cancel|取消|停止/i.test(event.content || '');
@@ -738,7 +895,7 @@ export default function WorkflowPanel() {
             // 如果有已完成的内容，显示为 waiting 状态
             const hasDone = hasDoneArtifactItems(artifact);
             if (hasDone) {
-              updateStageState(stageId, {
+              commitStageState(token, stageId, {
                 status: 'waiting',
                 progress: 100,
                 progressMessage: '已停止（保留已完成内容）',
@@ -748,7 +905,7 @@ export default function WorkflowPanel() {
               return; // 不抛异常，让工作流正常停下
             }
           }
-          updateStageState(stageId, {
+          commitStageState(token, stageId, {
             status: 'error',
             error: event.content || 'Unknown error',
             progressMessage: '执行失败',
@@ -760,27 +917,29 @@ export default function WorkflowPanel() {
       if ((error as { name?: string }).name !== 'AbortError') {
         if (error instanceof ModelUnavailableError) {
           // 预检失败：刷新阶段产物（种子化条目）并弹出上传兜底引导
-          showModelUnavailable(sid, stageId, error.detail);
+          showModelUnavailable(token, sid, stageId, error.detail);
         }
-        updateStageState(stageId, {
+        commitStageState(token, stageId, {
           status: 'error',
           error: (error as Error).message,
           progressMessage: '执行失败',
         });
       }
+      // 控制流继续向上抛：令牌失效只丢写入，不得中断执行链（design D11）
       throw error;
     }
   };
 
   // ── 启动新项目 ──
   const handleStartProject = async (params: ProjectParams, autoOverride?: boolean) => {
-    if (isRunning) return;
-    stoppedRef.current = false;
+    if (chainRunningRef.current) return;
     const useAutoMode = autoOverride !== undefined ? autoOverride : autoMode;
     if (autoOverride !== undefined) handleAutoModeChange(autoOverride);
+    // 启动新项目 MUST 复用同一复位语义（tasks 2.4），不另摘一份初值；
+    // 控制态（stoppedRef / isRunning）按 D11 在复位后直接置，不受令牌约束。
+    resetSessionView(null);
+    chainRunningRef.current = true;
     setIsRunning(true);
-    setStageStates(initStageStates());
-    setProjectParams(params);
 
     try {
       const result = await startProject({
@@ -805,7 +964,9 @@ export default function WorkflowPanel() {
         expand_idea: params.expand_idea,
         episodes: params.episodes,
       });
-      setSessionId(result.session_id);
+      // 链启动点取一次令牌并贯穿整个阶段循环（design D9）
+      const token = enterSession(result.session_id);
+      commitSessionView(token, { projectParams: params });
 
       // 添加到历史
       setHistory(prev => [
@@ -847,7 +1008,7 @@ export default function WorkflowPanel() {
 
       for (const stageId of stageOrder) {
         if (stoppedRef.current) break;
-        await runStage(result.session_id, stageId, inputData);
+        await runStage(token, result.session_id, stageId, inputData);
 
         // 剧本生成完成后，用实际场景数更新 scene_number
         if (stageId === 'script_generation') {
@@ -861,25 +1022,26 @@ export default function WorkflowPanel() {
         }
 
         const status = await getProjectStatus(result.session_id);
+        // 写入由漏斗按令牌丢弃；即使用户已切走，本链仍必须跑完（后端继续执行，design D11）
         const stageStatus = status?.status?.[stageId];
-        setGlobalStatusMap(status.status || {});
+        commitSessionView(token, { globalStatusMap: status.status || {} });
         // waiting: 等待用户介入（如选择角色/图片），不能自动 continue
         // completed: 阶段完成，等待确认进入下一阶段
         if (stageStatus === 'completed' || stageStatus === 'session_completed') {
           if (autoModeRef.current) {
             // 代理模式：自动确认并继续
             await continueWorkflow(result.session_id);
-            updateStageState(stageId, { status: 'completed', progressMessage: '已自动确认' });
+            commitStageState(token, stageId, { status: 'completed', progressMessage: '已自动确认' });
           } else {
-            updateStageState(stageId, { status: 'completed' });
-            setActiveStage(stageId);
+            commitStageState(token, stageId, { status: 'completed' });
+            commitSessionView(token, { activeStage: stageId });
             setIsRunning(false);
             return;
           }
         } else if (stageStatus === 'waiting') {
           // 用户需要介入，停止自动执行
-          updateStageState(stageId, { status: 'waiting' });
-          setActiveStage(stageId);
+          commitStageState(token, stageId, { status: 'waiting' });
+          commitSessionView(token, { activeStage: stageId });
           setIsRunning(false);
           return;
         }
@@ -887,6 +1049,7 @@ export default function WorkflowPanel() {
     } catch (error: unknown) {
       if (!stoppedRef.current) console.error('Workflow error:', error);
     } finally {
+      chainRunningRef.current = false;
       setIsRunning(false);
     }
   };
@@ -894,23 +1057,24 @@ export default function WorkflowPanel() {
   // ── 确认阶段并继续 ──
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 处理器每渲染重建（闭包捕获最新 state）；onConfirmActiveStage 的 useCallback 仅为满足 react-hooks/refs 的结构包装，不追求记忆化收益
   const handleConfirmStage = async (stageId: string) => {
-    if (!sessionId || isRunning) return;
+    if (!sessionId || chainRunningRef.current) return;
+    // 本函数是一条新执行链的起点：在此取一次归属令牌贯穿全程（design D9）
+    const token = currentToken();
     // 点击「确认并继续」= 明确要继续：清除历史停止标记（否则 runStage 会直接抛 Stopped）
     stoppedRef.current = false;
+    chainRunningRef.current = true;
     setIsRunning(true);
 
     try {
       const result = await continueWorkflow(sessionId);
-      updateStageState(stageId, { status: 'completed', progressMessage: '已确认' });
+      commitStageState(token, stageId, { status: 'completed', progressMessage: '已确认' });
 
       // 更新顶栏状态
-      if (result.status_map) {
-        setGlobalStatusMap(result.status_map);
-      }
-      setCompletedStagesFromSession(prev => [...prev, stageId]);
-      if (result.next_stage) {
-        setCurrentStageFromSession(result.next_stage);
-      }
+      commitSessionView(token, {
+        globalStatusMap: result.status_map,
+        completedStages: prev => [...prev, stageId],
+        currentStage: result.next_stage ?? undefined,
+      });
 
       if (result.next_stage) {
         const idx = stageOrder.indexOf(stageId);
@@ -975,31 +1139,28 @@ export default function WorkflowPanel() {
         for (let i = idx + 1; i < stageOrder.length; i++) {
           if (stoppedRef.current) break;
           const nextStage = stageOrder[i];
-          await runStage(sessionId, nextStage, inputData);
+          await runStage(token, sessionId, nextStage, inputData);
 
           const status = await getProjectStatus(sessionId);
-          setGlobalStatusMap(status.status || {});
+          // 写入统一经漏斗按令牌丢弃；本链 MUST NOT 因归属变化而提前 return（design D11）
+          commitSessionView(token, { globalStatusMap: status.status || {} });
           const nStageStatus = status?.status?.[nextStage];
           // waiting: 等待用户介入（如选择角色/图片），不能自动 continue
           // completed: 阶段完成，等待确认进入下一阶段，可以自动 continue
           if (nStageStatus === 'completed' || nStageStatus === 'session_completed') {
             if (autoModeRef.current) {
               await continueWorkflow(sessionId);
-              updateStageState(nextStage, { status: 'completed', progressMessage: '已自动确认' });
-              setCompletedStagesFromSession(prev => [...prev, nextStage]);
-              setCurrentStageFromSession(nextStage);
+              commitStageState(token, nextStage, { status: 'completed', progressMessage: '已自动确认' });
+              commitSessionView(token, { completedStages: prev => [...prev, nextStage], currentStage: nextStage });
             } else {
-              updateStageState(nextStage, { status: 'completed' });
-              setCompletedStagesFromSession(prev => [...prev, nextStage]);
-              setCurrentStageFromSession(nextStage);
-              setActiveStage(nextStage);
+              commitStageState(token, nextStage, { status: 'completed' });
+              commitSessionView(token, { completedStages: prev => [...prev, nextStage], currentStage: nextStage, activeStage: nextStage });
               break;
             }
           } else if (nStageStatus === 'waiting') {
             // 用户需要介入，停止自动执行
-            updateStageState(nextStage, { status: 'waiting' });
-            setCurrentStageFromSession(nextStage);
-            setActiveStage(nextStage);
+            commitStageState(token, nextStage, { status: 'waiting' });
+            commitSessionView(token, { currentStage: nextStage, activeStage: nextStage });
             break;
           }
         }
@@ -1014,7 +1175,7 @@ export default function WorkflowPanel() {
         console.warn('Continue interrupted:', message || err?.name);
         try {
           const status = await getProjectStatus(sessionId);
-          setGlobalStatusMap(status.status || {});
+          commitSessionView(token, { globalStatusMap: status.status || {} });
         } catch {
           /* ignore */
         }
@@ -1022,6 +1183,7 @@ export default function WorkflowPanel() {
         console.error('Continue error:', error);
       }
     } finally {
+      chainRunningRef.current = false;
       setIsRunning(false);
     }
   };
@@ -1035,6 +1197,8 @@ export default function WorkflowPanel() {
   // ── 用户介入修改 ──
   const handleIntervene = async (stageId: string, modifications: Record<string, unknown>) => {
     if (!sessionId) return;
+    // 介入同样是一条执行链的起点：链内写入均用本令牌（design D9）
+    const token = currentToken();
     const isBackgroundItemRegeneration =
       (stageId === 'character_design' && (
         Array.isArray(modifications.regenerate_characters) ||
@@ -1080,16 +1244,16 @@ export default function WorkflowPanel() {
         : undefined;
     if (!isBackgroundItemRegeneration) {
       setIsRunning(true);
-      updateStageState(stageId, { status: 'running', progress: 0, progressMessage: '处理中...', ...(artifactPatch ? { artifact: artifactPatch } : {}) });
+      commitStageState(token, stageId, { status: 'running', progress: 0, progressMessage: '处理中...', ...(artifactPatch ? { artifact: artifactPatch } : {}) });
     } else if (artifactPatch) {
-      updateStageState(stageId, { artifact: artifactPatch });
+      commitStageState(token, stageId, { artifact: artifactPatch });
     }
     try {
       const response = await intervene(sessionId, stageId, inputData);
       for await (const event of parseStreamEvents(response)) {
         if (event.type === 'progress') {
           if (!isBackgroundItemRegeneration) {
-            updateStageState(stageId, {
+            commitStageState(token, stageId, {
               progress: event.percent || 0,
               progressMessage: event.message || '',
             });
@@ -1097,7 +1261,7 @@ export default function WorkflowPanel() {
           // 处理 asset_complete 实时事件
           if (event.data?.asset_complete) {
             const assetUpdate = event.data.asset_complete as Record<string, unknown>;
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const nextArtifact = applyAssetUpdateToArtifact(
                 prev[stageId]?.artifact as ArtifactLike,
                 assetUpdate,
@@ -1110,7 +1274,7 @@ export default function WorkflowPanel() {
           // 处理剧本逐幕增量事件 (介入模式)
           if (event.data?.beat_sheet) {
             const beatSheet = event.data.beat_sheet;
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const prevArt = (prev[stageId]?.artifact || {}) as Record<string, unknown>;
               return {
                 ...prev,
@@ -1123,7 +1287,7 @@ export default function WorkflowPanel() {
           }
           if (event.data?.act_complete) {
             const actData = event.data.act_complete;
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const prevArt = (prev[stageId]?.artifact || {}) as Record<string, unknown>;
               const prevActs = Array.isArray(prevArt.completed_acts) ? prevArt.completed_acts : [];
               return {
@@ -1142,7 +1306,7 @@ export default function WorkflowPanel() {
           // 处理分镜逐场完成事件 (介入模式)
           if (event.data?.scene_shots_complete) {
             const sceneData = event.data.scene_shots_complete as { shots?: unknown[] };
-            setStageStates(prev => {
+            commitStageStates(token, prev => {
               const prevArt = (prev[stageId]?.artifact || {}) as Record<string, unknown>;
               const prevShots = Array.isArray(prevArt.shots) ? prevArt.shots : [];
               return {
@@ -1161,9 +1325,9 @@ export default function WorkflowPanel() {
         } else if (event.type === 'stage_complete') {
           const artResult = await getArtifact(sessionId, stageId);
           if (isBackgroundItemRegeneration) {
-            updateStageState(stageId, { artifact: artResult.artifact });
+            commitStageState(token, stageId, { artifact: artResult.artifact });
           } else {
-            updateStageState(stageId, { artifact: artResult.artifact, status: 'waiting' });
+            commitStageState(token, stageId, { artifact: artResult.artifact, status: 'waiting' });
           }
         } else if (event.type === 'error') {
           console.error('Intervention error:', event.content);
@@ -1172,7 +1336,7 @@ export default function WorkflowPanel() {
     } catch (error: unknown) {
       console.error('Intervention error:', error);
       if (error instanceof ModelUnavailableError) {
-        showModelUnavailable(sessionId as string, stageId, error.detail);
+        showModelUnavailable(token, sessionId as string, stageId, error.detail);
       }
     } finally {
       if (!isBackgroundItemRegeneration) {
@@ -1180,10 +1344,11 @@ export default function WorkflowPanel() {
       }
     }
   };
-
-  // ── 本地更新产物（不触发服务端调用） ──
+  
+  // ── 本地更新产物（不触发服务端调用）──
   const handleUpdateArtifact = (stageId: string, patch: Record<string, unknown>) => {
-    setStageStates(prev => ({
+    // 同步写入（无 await）：取当前归属即可，它代表用户此刻正在看的会话
+    commitStageStates(currentToken(), prev => ({
       ...prev,
       [stageId]: {
         ...prev[stageId],
@@ -1195,6 +1360,8 @@ export default function WorkflowPanel() {
   // ── 保存用户选择到服务端 ──
   const handleSaveSelections = async (stageId: string, selections: Record<string, unknown>): Promise<void> => {
     if (!sessionId) return;
+    // 本函数在 `await saveSelections` 之后仍有写入：取链起点令牌防止跨会话串染（design D9）
+    const token = currentToken();
     try {
       // 构建更新: 把用户选择写回 artifact 中每个 item 的 selected 字段
       const art = (stageStates[stageId]?.artifact || {}) as Record<string, unknown>;
@@ -1254,7 +1421,7 @@ export default function WorkflowPanel() {
       // 服务端持久化
       await saveSelections(sessionId, stageId, patch);
       // 保存成功后标记为已完成，顶栏显示对勾
-      updateStageState(stageId, { status: 'completed' });
+      commitStageState(token, stageId, { status: 'completed' });
 
       // 如果是分镜阶段保存，刷新第3和第4阶段的 artifact
       console.log('[handleSaveSelections] stageId:', stageId, 'patch:', patch);
@@ -1291,7 +1458,7 @@ export default function WorkflowPanel() {
         });
 
         // 更新第4阶段的 artifact
-        updateStageState('reference_generation', {
+        commitStageState(token, 'reference_generation', {
           artifact: { session_id: sessionId, scenes: newScenes },
           status: 'completed'
         });
@@ -1322,7 +1489,7 @@ export default function WorkflowPanel() {
         });
 
         // 更新第5阶段的 artifact
-        updateStageState('video_generation', {
+        commitStageState(token, 'video_generation', {
           artifact: { session_id: sessionId, clips: newClips },
           status: 'completed'
         });
@@ -1337,12 +1504,15 @@ export default function WorkflowPanel() {
   // ── 重新生成当前阶段 ──
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 处理器每渲染重建（闭包捕获最新 state）；onRegenerateActiveStage 的 useCallback 仅为满足 react-hooks/refs 的结构包装，不追求记忆化收益
   const handleRegenerate = async (stageId: string) => {
-    if (!sessionId || isRunning) return;
+    if (!sessionId || chainRunningRef.current) return;
+    // 重生成的链起点：此令牌贯穿 getArtifact / runStage / getProjectStatus 后的全部写入（design D9）
+    const token = currentToken();
     stoppedRef.current = false;
+    chainRunningRef.current = true;
     setIsRunning(true);
 
     // 清空当前阶段状态
-    updateStageState(stageId, {
+    commitStageState(token, stageId, {
       status: 'running',
       progress: 0,
       progressMessage: '重新生成中...',
@@ -1353,7 +1523,7 @@ export default function WorkflowPanel() {
     // 将该阶段之后的所有阶段重置为 pending
     const idx = stageOrder.indexOf(stageId);
     for (let i = idx + 1; i < stageOrder.length; i++) {
-      updateStageState(stageOrder[i], {
+      commitStageState(token, stageOrder[i], {
         status: 'pending',
         progress: 0,
         progressMessage: '',
@@ -1390,16 +1560,17 @@ export default function WorkflowPanel() {
         }
       } catch { /* ignore */ }
 
-      await runStage(sessionId, stageId, inputData);
+      await runStage(token, sessionId, stageId, inputData);
 
       const status = await getProjectStatus(sessionId);
       if (status?.status?.[stageId] === 'waiting') {
-        updateStageState(stageId, { status: 'waiting' });
-        setActiveStage(stageId);
+        commitStageState(token, stageId, { status: 'waiting' });
+        commitSessionView(token, { activeStage: stageId });
       }
     } catch (error: unknown) {
       if (!stoppedRef.current) console.error('Regenerate error:', error);
     } finally {
+      chainRunningRef.current = false;
       setIsRunning(false);
     }
   };
@@ -1411,8 +1582,15 @@ export default function WorkflowPanel() {
   }, [activeStage, handleRegenerate]);
 
   const handleGoHome = () => {
-    setActiveStage(null);
+    // 回主界面 MUST 走统一复位（tasks 2.2）：不清则顶栏仍按 hasSession 保留上一会话元素
+    resetSessionView(null);
     router.push('/');
+  };
+
+  // 载入失败后的重试：失败态下 handleResumeProject 的同会话早退已被 sessionLoadError 跳过，
+  // 因此会正常走"复位 + 取数"，并在这里拿到新代令牌（design D5/D7）。
+  const retryLoadSession = (sid: string) => {
+    void handleResumeProject(sid);
   };
 
   // ── 删除历史记录 ──
@@ -1555,7 +1733,9 @@ export default function WorkflowPanel() {
       : undefined;
 
     return (
-      <div id="stage-artifact-area" className="h-full">
+      // key 绑定会话身份（tasks 5.1）：切会话时整枝卸载重建，阶段组件内的
+      // editDescs/selectedVersions/drafts/episodeDraft 等本地态不会跳到新会话的同号条目上。
+      <div id="stage-artifact-area" key={`session:${sessionId ?? 'none'}`} className="h-full">
       <Component
         state={state}
         sessionId={sessionId || ''}
@@ -1581,6 +1761,35 @@ export default function WorkflowPanel() {
 
   const showHome = activeStage === null;
 
+  // 渲染优先级固定为 sessionLoadError > sessionLoading > showHome（design D5）：
+  // 复位会把 activeStage 置 null，若不先判载入态，切会话瞬间会闪一下首页。
+  const mainContent = sessionLoadError && sessionId ? (
+    <div className="flex h-full items-center justify-center p-6">
+      <div className="max-w-md text-center">
+        <p className="text-sm text-gray-700">{sessionLoadError}</p>
+        <button
+          onClick={() => retryLoadSession(sessionId)}
+          className="mt-4 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors"
+        >
+          重试
+        </button>
+      </div>
+    </div>
+  ) : sessionLoading ? (
+    <div className="flex h-full items-center justify-center p-6">
+      <p className="text-sm text-gray-500">正在载入该会话…</p>
+    </div>
+  ) : showHome ? (
+    <HomePage
+      onStartProject={handleStartProject}
+      onResumeProject={handleResumeProject}
+      onDeleteSession={handleDeleteSession}
+      history={history}
+    />
+  ) : (
+    renderStageContent()
+  );
+
   return (
     <div className="flex h-screen w-full min-w-0 flex-col bg-gray-50/50">
       <TopBar
@@ -1599,16 +1808,7 @@ export default function WorkflowPanel() {
       />
 
       <main className="flex-1 min-w-0 overflow-hidden">
-        {showHome ? (
-          <HomePage
-            onStartProject={handleStartProject}
-            onResumeProject={handleResumeProject}
-            onDeleteSession={handleDeleteSession}
-            history={history}
-          />
-        ) : (
-          renderStageContent()
-        )}
+        {mainContent}
       </main>
 
       {modelFallback && (
@@ -1620,9 +1820,13 @@ export default function WorkflowPanel() {
             const target = modelFallback.stage;
             setModelFallback(null);
             setActiveStage(target);
-            setTimeout(() => {
-              document.getElementById('stage-artifact-area')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }, 60);
+            // 子树可能因会话重建而尚未挂载（tasks 5.2）：定位不到时再试一次
+            const scrollToArtifact = () => {
+              const el = document.getElementById('stage-artifact-area');
+              if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            };
+            setTimeout(scrollToArtifact, 60);
+            setTimeout(scrollToArtifact, 240);
           }}
           onChangeModel={() => {
             setModelFallback(null);
@@ -1631,7 +1835,7 @@ export default function WorkflowPanel() {
           onRetry={() => {
             const target = modelFallback.stage;
             setModelFallback(null);
-            if (sessionId) runStage(sessionId, target, {}).catch(() => {});
+            if (sessionId) runStage(currentToken(), sessionId, target, {}).catch(() => {});
           }}
         />
       )}
