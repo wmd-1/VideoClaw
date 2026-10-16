@@ -50,6 +50,9 @@ export function mergeAssetUpdateItem(item: Record<string, unknown>, assetUpdate:
     if (isFillable(assetUpdate[key])) merged[key] = assetUpdate[key];
   }
   if (assetUpdate.error !== undefined) merged.error = assetUpdate.error;
+  // 失败类别与 error 同位合并：否则事件里带 error_type 而客户端产物丢了它，
+  // 执行期看得到原因、刷新后反而消失（openspec design D6）
+  if (assetUpdate.error_type !== undefined) merged.error_type = assetUpdate.error_type;
   return merged;
 }
 
@@ -64,6 +67,7 @@ export function rewriteItemFromUpdate(assetUpdate: Record<string, unknown>): Rec
     if (isFillable(assetUpdate[key])) item[key] = assetUpdate[key];
   }
   if (assetUpdate.error !== undefined) item.error = assetUpdate.error;
+  if (assetUpdate.error_type !== undefined) item.error_type = assetUpdate.error_type;
   return item;
 }
 

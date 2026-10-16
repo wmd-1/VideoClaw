@@ -19,6 +19,9 @@ interface ClipItem {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';
   rewrite_result?: RewriteResult;
+  /** 失败原因与类别（由后端逐条失败分类写入；未尝试的占位片段不带这两个字段） */
+  error?: string;
+  error_type?: string;
   /** 后端动态 JSON 附加字段（按消费处声明） */
   episode?: number;
   episode_title?: string;
@@ -207,7 +210,16 @@ function ClipRow({
             </span>
           )}
           {isFailed && (
-            <span className="text-[10px] bg-red-50 text-red-500 px-1.5 py-0.5 rounded">失败</span>
+            <span className="text-[10px] bg-red-50 text-red-500 px-1.5 py-0.5 rounded" title={clip.error || undefined}>失败</span>
+          )}
+          {/* 条目级失败原因：无原因的占位片段不渲染，避免把“未尝试”误读为失败原因 */}
+          {isFailed && clip.error && (
+            <span
+              className="min-w-0 max-w-[260px] truncate text-[10px] text-red-400"
+              title={`${clip.error_type ? clip.error_type + '：' : ''}${clip.error}`}
+            >
+              {clip.error_type ? `${clip.error_type}：` : ''}{clip.error}
+            </span>
           )}
           {/* 编辑/保存按钮 */}
           {canEdit && !isStageRunning && (

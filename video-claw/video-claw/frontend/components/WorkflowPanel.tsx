@@ -750,23 +750,54 @@ export default function WorkflowPanel() {
     void refreshStageArtifact(token, sid, stageId);
   };
 
+  /**
+   * 该阶段实际使用的模型字段（用于弹窗说出"是哪个模型"）。
+   * 选字段口径与后端 `_preflight_stage_models` 一致：视频阶段按 generation mode，并保留 legacy 回退。
+   */
+  const stageModelField = (stageId: string): string => {
+    const params = projectParams as Record<string, unknown> | null | undefined;
+    if (stageId === 'character_design') return 'image_t2i_model';
+    if (stageId === 'reference_generation') {
+      // 参考图主要用图生图；该字段为空时回退到文生图
+      return params?.image_it2i_model ? 'image_it2i_model' : 'image_t2i_model';
+    }
+    if (stageId === 'video_generation') {
+      const byMode: Record<string, string> = {
+        first_frame: 'video_first_frame_model',
+        start_end_frame: 'video_start_end_model',
+        reference: 'video_reference_model',
+      };
+      const modeField = byMode[String(params?.video_generation_mode || 'first_frame')] || byMode.first_frame;
+      if (params?.[modeField]) return modeField;
+      return params?.video_model ? 'video_model' : modeField;
+    }
+    return '';
+  };
+
   // 阶段结束后扫描失败条目：存在 model_unavailable 时同样给出引导（每次运行最多弹一次）
   const maybeShowFallbackFromArtifact = (stageId: string, artifact: unknown) => {
     if (!artifact || typeof artifact !== 'object') return;
     const art = artifact as Record<string, unknown>;
-    const groups = [art.characters, art.settings, art.scenes];
+    // 遍历已知条目容器，而非只认图片阶段的三类键（否则视频/改写阶段的模型级失败静默无提示）
+    const groups = [art.characters, art.settings, art.scenes, art.clips, art.items];
     for (const group of groups) {
       if (!Array.isArray(group)) continue;
       const failed = group.find((item: unknown) => (item as Record<string, unknown> | null)?.error_type === 'model_unavailable') as Record<string, unknown> | undefined;
       if (failed) {
+        const field = stageModelField(stageId);
+        const model = field ? String((projectParams as Record<string, unknown> | null | undefined)?.[field] ?? '') : '';
+        // 兜底文案按模型类型分流（按字段前缀，不再重复维护一份阶段白名单）
+        const fallbackReason = field.startsWith('image_')
+          ? '存在因模型不可用而失败的条目，可上传图片继续该步骤'
+          : '存在因模型不可用而失败的条目，请更换可用的视频模型后重试';
         setModelFallback(prev => prev ?? {
           stage: stageId,
           detail: {
             code: 'model_unavailable',
             stage: stageId,
-            field: '',
-            model: '',
-            reason: (failed.error as string) || '存在因模型不可用而失败的条目，可上传图片继续该步骤',
+            field,
+            model,
+            reason: (failed.error as string) || fallbackReason,
             error_code: 'runtime_failed',
           },
         });

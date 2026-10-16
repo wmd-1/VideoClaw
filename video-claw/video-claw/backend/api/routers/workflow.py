@@ -29,14 +29,34 @@ VIDEO_MODE_TO_MODEL_FIELD = {
 }
 
 
-def _active_video_model(values: dict) -> str:
+_DEFAULT_VIDEO_MODEL_ATTR = {
+    "video_first_frame_model": "VIDEO_FIRST_FRAME_MODEL",
+    "video_start_end_model": "VIDEO_START_END_MODEL",
+    "video_reference_model": "VIDEO_REFERENCE_MODEL",
+}
+
+
+def _video_mode_field(values: dict) -> str:
+    """当前 video_generation_mode 对应的模型字段名（唯一的 mode→field 映射使用点）。"""
     mode = values.get("video_generation_mode") or "first_frame"
-    model_field = VIDEO_MODE_TO_MODEL_FIELD.get(mode, "video_first_frame_model")
-    default_attr = {
-        "video_first_frame_model": "VIDEO_FIRST_FRAME_MODEL",
-        "video_start_end_model": "VIDEO_START_END_MODEL",
-        "video_reference_model": "VIDEO_REFERENCE_MODEL",
-    }.get(model_field, "VIDEO_MODEL")
+    return VIDEO_MODE_TO_MODEL_FIELD.get(mode, "video_first_frame_model")
+
+
+def _active_video_model_field(values: dict) -> str:
+    """_active_video_model 实际取到值的字段名。
+
+    取值顺序与 _active_video_model 严格一致（含 legacy `video_model` 回退），
+    因此预检报错的 field 一定等于本次真正会使用的模型来源（避免“检 A 用 B”）。
+    """
+    field = _video_mode_field(values)
+    if not values.get(field) and values.get("video_model"):
+        return "video_model"
+    return field
+
+
+def _active_video_model(values: dict) -> str:
+    model_field = _video_mode_field(values)
+    default_attr = _DEFAULT_VIDEO_MODEL_ATTR.get(model_field, "VIDEO_MODEL")
     # Legacy session compatibility: fall back to the old single video_model field when mode-specific fields are absent.
     return values.get(model_field) or values.get("video_model") or getattr(settings, default_attr, "") or ""
 
@@ -55,7 +75,9 @@ def _require_model_fields(values: dict) -> None:
         )
 
 
-# 需要图像模型可用性预检的阶段（模型字段，按阶段）
+# 需要图像模型可用性预检的阶段（模型字段，按阶段）。
+# 第 5 阶段（video_generation）的字段随 video_generation_mode 变化，在 _preflight_stage_models 内
+# 复用 _active_video_model_field / _active_video_model 解析，不在此重复列一份映射。
 PREFLIGHT_STAGE_MODEL_FIELDS = {
     "character_design": ("image_t2i_model",),
     "reference_generation": ("image_t2i_model", "image_it2i_model"),
@@ -63,14 +85,23 @@ PREFLIGHT_STAGE_MODEL_FIELDS = {
 
 
 def _preflight_stage_models(stage: str, values: dict) -> None:
-    """第 2/4 阶段执行前的模型可用性预检；不可用时返回 409 结构化错误（不启动生成）。"""
-    fields = PREFLIGHT_STAGE_MODEL_FIELDS.get(stage)
-    if not fields:
-        return
+    """阶段执行前的模型可用性预检；不可用时返回 409 结构化错误（不启动生成）。
+
+    范围声明：本预检只判定**配置层面**的可用性（未注册 / 供应商缺失或不完整 / 凭据未配），
+    MUST NOT 被当成实时连通性检查——模型配置齐备但服务不可达时预检会放行，
+    该类故障由运行期逐条失败分类呈现（openspec: video-stage-model-unavailable-fallback design D5）。
+    """
+    if stage == "video_generation":
+        # 只校验本次生成方式实际会用的那一个视频模型（含 legacy 回退后的真实来源）
+        field_pairs = ((_active_video_model_field(values), _active_video_model(values)),)
+    else:
+        fields = PREFLIGHT_STAGE_MODEL_FIELDS.get(stage)
+        if not fields:
+            return
+        field_pairs = tuple((field, values.get(field) or "") for field in fields)
     from models.config_model import model_availability
 
-    for field in fields:
-        model = values.get(field) or ""
+    for field, model in field_pairs:
         availability = model_availability(model)
         if not availability["available"]:
             raise HTTPException(

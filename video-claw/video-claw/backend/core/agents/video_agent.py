@@ -111,7 +111,12 @@ class VideoDirectorAgent(AgentInterface):
                       video_fps: Optional[int] = None,
                       video_short_edge: Optional[int] = None,
                       audio_reference_url: Optional[str] = None) -> tuple:
-        """生成单个视频片段，返回 (segment_id, path_or_None, rewrite_result_or_None)。
+        """生成单个视频片段，返回 (segment_id, path_or_None, rewrite_result_or_None, failure_or_None)。
+
+        failure 为该片段未成功时的**可判别原因**（openspec: video-stage-model-unavailable-fallback）：
+        模型/服务不可用→ {"error_type": "model_unavailable", "error": ...}；
+        取消与缺图→ 各自的非模型类别；其他异常→ 只带 error 不带 error_type。
+        成功或未开始尝试时为 None。
 
         video_duration 为会话级时长覆盖（未设置时沿用分镜时长）；
         video_fps/video_short_edge 为会话级高级参数（未设置时不注入）；
@@ -119,21 +124,28 @@ class VideoDirectorAgent(AgentInterface):
         """
         if self.cancellation_check and self.cancellation_check():
             logger.info(f"VideoDirectorAgent: {segment_id} 跳过（用户取消）")
-            return segment_id, None, None
+            return segment_id, None, None, {"error_type": "cancelled", "error": "用户取消"}
 
         reference_image_paths = reference_image_paths or []
         if video_generation_mode == "reference":
             missing_refs = [path for path in reference_image_paths if not os.path.exists(path)]
             if not reference_image_paths or missing_refs:
                 logger.warning("Reference images missing for %s: %s", segment_id, missing_refs or reference_image_paths)
-                return segment_id, None, None
+                return segment_id, None, None, {
+                    "error_type": "missing_reference_images",
+                    "error": f"参考图缺失: {(missing_refs or reference_image_paths)[:2]}"
+                }
         elif not img_path or not os.path.exists(img_path):
             logger.warning(f"Image missing for {segment_id}: {img_path}")
-            return segment_id, None, None
+            return segment_id, None, None, {
+                "error_type": "missing_input_image",
+                "error": f"输入图缺失: {img_path}"
+            }
 
         save_path = self._next_version_path(sid, segment_id)
         # 会话级时长覆盖：未设置时沿用分镜时长
         duration = video_duration or duration
+        failure_marker: Optional[dict] = None
         try:
             from models.video_client import VideoClient
             client = VideoClient()
@@ -165,7 +177,7 @@ class VideoDirectorAgent(AgentInterface):
                 short_edge=video_short_edge,
                 audio_reference_url=audio_reference_url,
             )
-            return segment_id, save_path, rewrite_result
+            return segment_id, save_path, rewrite_result, None
         except Exception as e:
             logger.error(f"Video gen failed for {segment_id}: {e}")
             if os.path.exists(save_path):
@@ -173,7 +185,15 @@ class VideoDirectorAgent(AgentInterface):
                     os.remove(save_path)
                 except Exception:
                     pass
-        return segment_id, None, None
+            # 失败标记：模型级错误（鉴权/模型不存在/连接失败/超时等）→ error_type=model_unavailable，供前端弹窗与排障
+            # 分类必须在现场做：异常一旦在这里被吞掉，外层就再也拿不到它（openspec design D1）
+            from models.custom_common import classify_model_unavailable
+
+            if classify_model_unavailable(e):
+                failure_marker = {"error_type": "model_unavailable", "error": str(e)[:300]}
+            else:
+                failure_marker = {"error": str(e)[:300]}
+        return segment_id, None, None, failure_marker
 
     # ─── 提示词组装 ───
 
@@ -449,9 +469,11 @@ class VideoDirectorAgent(AgentInterface):
         return preview
 
     def _build_payload(self, sid: str, segments: list, video_clips: Optional[list] = None,
-                       rewrite_results: Optional[dict] = None) -> dict:
+                       rewrite_results: Optional[dict] = None,
+                       failure_markers: Optional[dict] = None) -> dict:
         clips = []
         clip_map = {c.get("id"): c for c in (video_clips or []) if isinstance(c, dict) and c.get("id")}
+        failure_markers = failure_markers or {}
         existing_rewrite_results = self._collect_rewrite_results(video_clips)
         rewrite_results = rewrite_results or {}
         for idx, seg in enumerate(segments, 1):
@@ -473,6 +495,19 @@ class VideoDirectorAgent(AgentInterface):
             rewrite_result = rewrite_results.get(segment_id) or existing_rewrite_results.get(segment_id)
             if rewrite_result:
                 item["rewrite_result"] = rewrite_result
+            # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
+            # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
+            if item["status"] == "failed":
+                marker = failure_markers.get(segment_id)
+                if not marker:
+                    prev_clip = clip_map.get(segment_id) or {}
+                    if prev_clip.get("error_type") or prev_clip.get("error"):
+                        marker = {"error_type": prev_clip.get("error_type"), "error": prev_clip.get("error")}
+                if marker:
+                    if marker.get("error_type"):
+                        item["error_type"] = marker["error_type"]
+                    if marker.get("error"):
+                        item["error"] = marker["error"]
             clips.append(item)
         return {
             "payload": {
@@ -540,6 +575,8 @@ class VideoDirectorAgent(AgentInterface):
         
         video_clips = artifacts.get('video_generation', {}).get('clips', [])
         rewrite_results_map = self._collect_rewrite_results(video_clips)
+        # 逐片段失败原因（segment_id → {error_type?, error?}），随最终产物一并落盘（openspec design D1）
+        clip_failures_map: dict = {}
 
         # 2. 获取参考图路径映射 (从 Reference Generation)
         ref_art = artifacts.get('reference_generation', {})
@@ -602,13 +639,21 @@ class VideoDirectorAgent(AgentInterface):
                             futs[fut] = seg_id
                         for fut in as_completed(futs):
                             sid_done = futs[fut]
+                            failure = None
                             try:
-                                _, res_path, rewrite_result = fut.result()
+                                _, res_path, rewrite_result, failure = fut.result()
                                 if rewrite_result:
                                     rewrite_results_map[sid_done] = rewrite_result
                             except Exception as e:
                                 logger.error(f"Regen future error for {sid_done}: {e}")
                                 res_path = None
+                                # 任务本身抛异常（非 _generate_one 内部已分类的路径）时在此分类，口径与现场一致
+                                from models.custom_common import classify_model_unavailable
+
+                                if classify_model_unavailable(e):
+                                    failure = {"error_type": "model_unavailable", "error": str(e)[:300]}
+                                else:
+                                    failure = {"error": str(e)[:300]}
                             done += 1
                             pct = 5 + int(90 * done / max(1, len(regen_ids)))
                             if res_path:
@@ -630,6 +675,11 @@ class VideoDirectorAgent(AgentInterface):
                                     "status": "failed",
                                     "selected": "", "versions": [],
                                 }
+                                if failure:
+                                    clip_failures_map[sid_done] = failure
+                                    asset_complete.update(
+                                        {k: v for k, v in failure.items() if k in ("error_type", "error")}
+                                    )
                                 if rewrite_results_map.get(sid_done):
                                     asset_complete["rewrite_result"] = rewrite_results_map[sid_done]
                                 self._report_progress("视频生成", f"失败: {sid_done}", pct, data={
@@ -641,7 +691,7 @@ class VideoDirectorAgent(AgentInterface):
                 # 同步到 session artifacts
                 self._update_session_video_data(sid, segments, style_prompt)
                 
-                return self._build_payload(sid, segments, video_clips, rewrite_results_map)
+                return self._build_payload(sid, segments, video_clips, rewrite_results_map, clip_failures_map)
 
         # ═══ 正常流程：全量生成 ═══
         self._report_progress("视频生成", "正在准备数据...", 2)
@@ -694,13 +744,20 @@ class VideoDirectorAgent(AgentInterface):
                     futs[fut] = seg_id
                 for fut in as_completed(futs):
                     sid_done = futs[fut]
+                    failure = None
                     try:
-                        _, res_path, rewrite_result = fut.result()
+                        _, res_path, rewrite_result, failure = fut.result()
                         if rewrite_result:
                             rewrite_results_map[sid_done] = rewrite_result
                     except Exception as e:
                         logger.error(f"Video future error for {sid_done}: {e}")
                         res_path = None
+                        from models.custom_common import classify_model_unavailable
+
+                        if classify_model_unavailable(e):
+                            failure = {"error_type": "model_unavailable", "error": str(e)[:300]}
+                        else:
+                            failure = {"error": str(e)[:300]}
                     done += 1
                     pct = 5 + int(90 * done / max(1, len(tasks)))
                     if res_path:
@@ -722,6 +779,11 @@ class VideoDirectorAgent(AgentInterface):
                             "status": "failed",
                             "selected": "", "versions": [],
                         }
+                        if failure:
+                            clip_failures_map[sid_done] = failure
+                            asset_complete.update(
+                                {k: v for k, v in failure.items() if k in ("error_type", "error")}
+                            )
                         if rewrite_results_map.get(sid_done):
                             asset_complete["rewrite_result"] = rewrite_results_map[sid_done]
                         self._report_progress("视频生成", f"失败: {sid_done}", pct, data={
@@ -739,4 +801,4 @@ class VideoDirectorAgent(AgentInterface):
         self._update_session_video_data(sid, segments, style_prompt)
         
         self._report_progress("视频生成", "完成", 100)
-        return self._build_payload(sid, segments, video_clips, rewrite_results_map)
+        return self._build_payload(sid, segments, video_clips, rewrite_results_map, clip_failures_map)
