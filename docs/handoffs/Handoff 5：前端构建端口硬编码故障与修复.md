@@ -167,6 +167,12 @@ docker rmi vc-fedeps:tmp   # 收尾：不留临时镜像标签
 
 ## 5. 与其他工件的关系
 
+> **引用说明**：本文中提到的两个 change 均已归档，名称在 `openspec/changes/` 下已查不到——
+> `frontend-build-port-fail-fast` → `openspec/changes/archive/2026-10-14-frontend-build-port-fail-fast`（主规格 `frontend-build-port-source`）；
+> `home-file-upload-relative-proxy` → `openspec/changes/archive/2026-10-14-home-file-upload-relative-proxy`（主规格 `frontend-api-addressing`）。
+> 代码注释一律引** capability 名**（永久有效）而非 change 名；另 `openspec/` 整体不入版本库，
+> 所以主规格只作为本地可追溯引用，不是新接入者的必读入口（入口仍是本文与 README）。
+
 - **机制性防护已立项并实施**：上述“默认值不能静默兜底”“绕过脚本的 `docker build` 必须失败”由
   OpenSpec change **`frontend-build-port-fail-fast`** 承接（proposal / specs / design / tasks 齐备，
   `openspec validate` 通过；代码与文档已在本批提交里实施，实测记录见 §3.3.2；验收后可归档）。

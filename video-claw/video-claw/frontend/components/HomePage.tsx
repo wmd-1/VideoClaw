@@ -273,7 +273,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       // 同源相对路径：由 next.config.ts 的 rewrites 代理到后端（与其余 /api/* 接口一致）。
       // 曾经这里拼接一个全仓从未定义的构建期寻址变量并回退硬编码本机端口，Docker 部署下
       // 浏览器必打该端口（宿主机无监听）→ ERR_CONNECTION_REFUSED。
-      // 见 OpenSpec change home-file-upload-relative-proxy（capability: frontend-api-addressing）。
+      // 该寻址约束记在 OpenSpec capability「frontend-api-addressing」（非流式请求走同源相对路径 + 服务端 rewrite 代理）。
       const response = await fetch('/api/upload_file', {
         method: 'POST',
         body: formData,
