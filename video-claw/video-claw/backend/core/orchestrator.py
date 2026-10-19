@@ -13,6 +13,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -146,6 +147,9 @@ class WorkflowState:
         self.updated_at: datetime = datetime.now()
         self.meta: Dict[str, Any] = {}
         self.stage_progress: Dict[str, Dict[str, Any]] = {}
+        # 执行归属凭据：引擎将本会话某阶段置 running 的进程启动标识（跳进程必陈旧）。
+        # 仅用于磁盘恢复判定，不进 /status 快照（to_dict 不含此字段）。
+        self.boot_id: Optional[str] = None
 
     def to_dict(self) -> Dict:
         return {
@@ -182,6 +186,9 @@ class WorkflowEngine:
             os.path.dirname(os.path.abspath(__file__)), '..', 'code', 'data', 'sessions'
         )
         os.makedirs(self._session_dir, exist_ok=True)
+        # 进程启动标识：一次性生成，作为跨进程陈旧 running 的归属判据（D1）。
+        # MUST 在 _load_sessions_from_disk 之前生成，使启动批量加载即可用当前进程 id 判定。
+        self._boot_id = uuid.uuid4().hex
         self._load_sessions_from_disk()
 
     def get_or_create_state(self, session_id: str) -> WorkflowState:
@@ -195,6 +202,8 @@ class WorkflowEngine:
             return self.sessions[session_id]
 
     def get_state(self, session_id: str) -> Optional[WorkflowState]:
+        need_save = False
+        loaded: Optional[WorkflowState] = None
         with self._state_lock:
             # 先从内存中获取
             if session_id in self.sessions:
@@ -231,16 +240,53 @@ class WorkflowEngine:
                     state.stage_progress = data.get('stage_progress', {})
                     state.meta = _extract_session_meta(data)
                     state.updated_at = data.get('updated_at', 0)
+                    # 恢复归属凭据并对无主陈旧 running 归一（D2：懒加载入口同样受控）。
+                    state.boot_id = data.get('boot_id')
+                    need_save = self._recover_stale_running(state)
 
                     # 缓存到内存
                     self.sessions[session_id] = state
-                    return state
+                    loaded = state
                 except json.JSONDecodeError as e:
                     logger.warning(f"Session file {session_id} is corrupted, ignoring: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to load session {session_id} from disk: {e}")
 
+        # 归一写盘在锁外触发（D2），避免持锁做磁盘 IO；RLock 重入仅用于一致性保护。
+        if loaded is not None:
+            if need_save:
+                self.save_session_to_disk(session_id)
+            return loaded
         return None
+
+    def _recover_stale_running(self, state: WorkflowState) -> bool:
+        """将无主的陈旧 running 阶段归一为 stopped（可重做的终态），产物/versions/selected 不动。
+
+        判据（D1）：阶段为 running 且其归属凭据与当前进程不一致（含旧会话缺 boot_id）。
+        有主（boot_id == 当前进程，含本进程内正在跑）不改。同进程内“boot_id 匹配但执行悬空”
+        属 workflow-poll-timeout-visibility 职责，本函数不处理（D6）。MUST 在 _state_lock 内调用。
+        返回是否发生了改动（幂等：归一后不再是 running，重复调用自然 no-op）。
+        """
+        changed = False
+        for stage_value, st in list(state.status.items()):
+            if st == "running" and state.boot_id != self._boot_id:
+                state.status[stage_value] = "stopped"
+                reason = "服务重启导致执行中断（非用户手动停止）"
+                prog = state.stage_progress.setdefault(stage_value, {})
+                prog["step"] = reason
+                prog["message"] = reason
+                prog["interrupted_by_restart"] = True
+                changed = True
+                logger.warning(
+                    "stale-running-recovery: session=%s stage=%s running→stopped "
+                    "(owner boot_id=%s, current=%s)",
+                    state.session_id, stage_value, state.boot_id, self._boot_id,
+                )
+        if changed:
+            state.boot_id = None
+            state.error = None
+            state.updated_at = datetime.now()
+        return changed
 
     def get_stop_event(self, session_id: str) -> threading.Event:
         with self._state_lock:
@@ -1082,6 +1128,8 @@ class WorkflowEngine:
                 active_registered = True
                 state.current_stage = stage
                 state.status[stage.value] = "running"
+                # 归属凭据与“真正持有执行权”同生命周期：在同一临界区写入，与随后的首次落盘原子发生（D6）。
+                state.boot_id = self._boot_id
                 state.updated_at = datetime.now()
                 state.stage_progress[stage.value] = {
                     "phase": stage.value,
@@ -1164,6 +1212,8 @@ class WorkflowEngine:
                     "percent": 100,
                     "updated_at": time.time(),
                 }
+                # 阶段进入终态：清除归属凭据（不再持有执行权），恢复逻辑不会再看到它的 running。
+                state.boot_id = None
                 # 立即保存状态到磁盘，确保前端能获取到最新状态
                 self.save_session_to_disk(state.session_id)
             return result
@@ -1181,6 +1231,7 @@ class WorkflowEngine:
                     "percent": state.stage_progress.get(stage.value, {}).get("percent", 0),
                     "updated_at": time.time(),
                 }
+                state.boot_id = None
                 self.save_session_to_disk(state.session_id)
             raise
 
@@ -1198,6 +1249,7 @@ class WorkflowEngine:
                     "updated_at": time.time(),
                 }
                 # 确保保存错误状态
+                state.boot_id = None
                 self.save_session_to_disk(state.session_id)
             raise
         finally:
@@ -1612,6 +1664,8 @@ class WorkflowEngine:
             if state:
                 data["current_stage"] = state.current_stage.value
                 data["status"] = state.status
+                # 持久化执行归属凭据（跳进程必陈旧的判据）；终态/无主为 None，旧会话无此键同样视为 None。
+                data["boot_id"] = state.boot_id
                 # 这里的 state.artifacts 应该是已经经过 _sync_artifacts_cross_stages 处理的最新的内存对象
                 data["artifacts"] = state.artifacts
                 data["stage_progress"] = state.stage_progress
@@ -1683,7 +1737,12 @@ class WorkflowEngine:
                 state.error = data.get("error")
                 state.updated_at = data.get("updated_at", 0)
                 state.meta = _extract_session_meta(data)
+                # 恢复归属凭据并对无主陈旧 running 归一（D2：启动批量入口同样受控）。
+                state.boot_id = data.get("boot_id")
                 self.sessions[sid] = state
+                recovered = self._recover_stale_running(state)
+                if recovered:
+                    self.save_session_to_disk(sid)
             except json.JSONDecodeError:
                 logger.warning(f"Skipping corrupted session file: {filename}")
             except Exception as e:

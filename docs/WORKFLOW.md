@@ -351,6 +351,11 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 - 阶段状态由产物完整性**自动重算**：例如第 4 阶段所有 `scenes` 都有 `selected` 即 `completed`；
 - 前端与 Agent 均可通过 `GET /api/project/{sid}/status` 恢复现场（后端重启/断线重连后可用）。
+- **陈旧 `running` 的归一**：会话持久化记录执行归属凭据（`boot_id`，进程启动标识）。服务重启后在两个装载入口
+  （启动批量、首次访问懒加载）对“归属与当前进程不符（含旧会话缺字段）”的 `running` 归一为 `stopped`（可重做的
+  终态），产物/`versions`/`selected` 不动、不判为失败；同进程内在跑的执行（`boot_id` 匹配）与后台单条重生成（不置
+  阶段 `running`）不受影响。中断原因写入日志/落盘（`stage_progress.interrupted_by_restart`）；前端 stopped 展示
+  维持既有“已停止”语义（不读该原因）。
 
 ### 10.2 用户介入的四种形式
 
