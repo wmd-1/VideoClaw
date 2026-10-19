@@ -99,7 +99,7 @@ ok('其他阶段事件（无新键）合并后不会多出改写相关键', () =
   assert.equal(next.clips[0].status, 'done');
 });
 
-// 8. 草稿按内容裁剪（I-2/2.1）：仅清除正文变化条目的草稿，内容未变条目保留
+// 9. 草稿按内容裁剪（I-2/2.1）：仅清除正文变化条目的草稿，内容未变条目保留
 ok('正文变化条目清草稿；内容未变条目草稿保留（不依赖数组引用）', () => {
   const prevItems = [
     { id: 'A', rewritten_prompt: 'old-A' },
@@ -115,7 +115,7 @@ ok('正文变化条目清草稿；内容未变条目草稿保留（不依赖数�
   assert.equal(out.B, 'draft-B', '内容未变条目的草稿应原样保留');
 });
 
-// 9. truncated/status 等事件视图字段变化不触发清草稿（D1/2.2）
+// 10. truncated/status 等事件视图字段变化不触发清草稿（D1/2.2）
 ok('仅 truncated/status 变化、正文不变时草稿全部保留', () => {
   const prevItems = [{ id: 'A', rewritten_prompt: 'BODY', truncated: true, status: 'done' }];
   const nextItems = [{ id: 'A', rewritten_prompt: 'BODY', truncated: false, status: 'running' }];
@@ -125,7 +125,7 @@ ok('仅 truncated/status 变化、正文不变时草稿全部保留', () => {
   assert.equal(out, drafts, '无草稿变化时应返回入参引用（避免多余渲染）');
 });
 
-// 10. 条目移除视为变化 → 清该条草稿（前提：后端无删除路径，全量重生成才会出现）
+// 11. 条目移除视为变化 → 清该条草稿（前提：后端无删除路径，全量重生成才会出现）
 ok('条目从列表移除时其草稿被清除', () => {
   const prevItems = [{ id: 'A', rewritten_prompt: 'a' }, { id: 'B', rewritten_prompt: 'b' }];
   const nextItems = [{ id: 'A', rewritten_prompt: 'a' }];
@@ -134,7 +134,7 @@ ok('条目从列表移除时其草稿被清除', () => {
   assert.ok(!('B' in out), '移除条目草稿被清');
 });
 
-// 11. 合并按 id 补回 prev-only 条目（M-4/3.1）：轮询快照缺条目时界面不闪没
+// 12. 合并按 id 补回 prev-only 条目（M-4/3.1）：轮询快照缺条目时界面不闪没
 ok('prev 有而 next 缺的条目按 id 补回尾部，正文不丢（无空壳）', () => {
   const prev = { items: [
     { id: 'seg_01_01', status: 'done', rewritten_prompt: 'BODY-1' },
@@ -151,7 +151,7 @@ ok('prev 有而 next 缺的条目按 id 补回尾部，正文不丢（无空壳�
   assert.equal(seg2.rewritten_prompt, 'BODY-2', '补回条目沿用本地正文，不产生空壳');
 });
 
-// 12. 补回不重复、不打乱 next 自身顺序（已有 id 的条目以 next 为准只出现一次）
+// 13. 补回不重复、不打乱 next 自身顺序（已有 id 的条目以 next 为准只出现一次）
 ok('补回只追加 prev-only 条目，不与 next 重复且保持 next 顺序在前', () => {
   const prev = { items: [
     { id: 'X', status: 'done', rewritten_prompt: 'old-X' },
@@ -163,6 +163,29 @@ ok('补回只追加 prev-only 条目，不与 next 重复且保持 next 顺序�
   const merged = preserveRewriteBodies(prev, incoming);
   assert.deepEqual(merged.items.map(i => i.id), ['X', 'Y'], 'next 在前方、prev-only 在尾部，X 不重复');
   assert.equal(merged.items[0].rewritten_prompt, 'new-X', 'X 以后端正文为准');
+});
+
+// 14. running 事件不冲掉已有正文与 versions（prompt-rewrite-item-running-events 2.2）
+ok('running 事件置为改写中但不冲掉旧正文与 versions', () => {
+  const art = { items: [{ id: 'seg_01_01', status: 'done', rewritten_prompt: 'BODY-A', versions: ['v1'], selected: '' }] };
+  const running = { type: 'items', id: 'seg_01_01', status: 'running', name: '第1集-片段1', input_mode: 'I2VA' };
+  const next = applyAssetUpdateToArtifact(art, running, true);
+  assert.equal(next.items[0].status, 'running');
+  assert.equal(next.items[0].rewritten_prompt, 'BODY-A', 'running 无正文不得冲掉旧正文');
+  assert.deepEqual(next.items[0].versions, ['v1'], 'running 不追加/清空 versions');
+});
+
+// 15. running 事件对未预存条目按 id 追加为改写中、不含正文（首跑 2.1）
+ok('running 事件新建条目为改写中、不含正文、带渲染字段', () => {
+  const next = applyAssetUpdateToArtifact(
+    null,
+    { type: 'items', id: 'seg_01_02', status: 'running', name: '片段2', original_prompt: '雨夜' },
+    true,
+  );
+  assert.equal(next.items.length, 1);
+  assert.equal(next.items[0].status, 'running');
+  assert.ok(!next.items[0].rewritten_prompt, 'running 事件不含正文');
+  assert.equal(next.items[0].name, '片段2');
 });
 
 console.log(`\n全部 ${n} 项前端合并语义断言通过`);

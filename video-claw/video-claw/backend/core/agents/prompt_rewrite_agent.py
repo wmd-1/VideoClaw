@@ -559,6 +559,28 @@ class PromptRewriteAgent(AgentInterface):
             )
 
             item = self._make_item(segment, "", mode, grounding_meta, prev_item)
+            # 条目级「改写中」事件：进入 _rewrite_one（含 1+2 次调用的重试环）之前发一次，
+            # 沿用 _event_item_summary 但剔除 rewritten_prompt / truncated（D1/D2：只带身份与渲染
+            # 字段、不带正文）；status=running 不在 wrapped_progress_callback 的落盘集合内，天然不写盘。
+            # 串行执行模型下每条恰好 running→终态 两条；重试在 _rewrite_one 内部，不在此处再发。
+            running_summary = {
+                key: value
+                for key, value in _event_item_summary(item).items()
+                if key not in ("rewritten_prompt", "truncated")
+            }
+            self._report_progress(
+                "提示词改写",
+                f"分镜 {segment['id']} 改写中",
+                round(i / total * 100),
+                data={
+                    "asset_complete": {
+                        "type": "items",
+                        "id": segment['id'],
+                        "status": "running",
+                        **running_summary,
+                    }
+                },
+            )
             try:
                 rewritten, violations, rejected = await self._rewrite_one(
                     segment, mode, system_prompt, guide, llm_model, sections

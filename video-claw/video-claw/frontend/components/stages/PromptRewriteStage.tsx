@@ -292,6 +292,7 @@ export default function PromptRewriteStage({
                 'ml-auto text-[10px] px-1.5 py-0.5 rounded font-medium',
                 item.status === 'done' ? 'bg-green-50 text-green-600'
                   : item.status === 'failed' ? 'bg-red-50 text-red-600'
+                  : item.status === 'running' ? 'bg-blue-50 text-blue-600'
                   : 'bg-amber-50 text-amber-600',
               )}>
                 {STATUS_LABEL[item.status || 'pending']}

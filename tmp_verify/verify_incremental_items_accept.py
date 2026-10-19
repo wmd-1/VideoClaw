@@ -85,22 +85,29 @@ items = (state.artifacts.get("prompt_rewrite") or {}).get("items") or []
 
 print("=" * 78)
 print("【1】事件字段扩展与顺序")
-check("1.1 每条完成都发事件且顺序与分镜一致", [e["id"] for e in EVENTS] == [f"seg_01_0{i}" for i in (1, 2, 3)],
-      str([e["id"] for e in EVENTS]))
-check("1.2 事件包含全部必需正文字段", all(REQUIRED <= set(e.keys()) for e in EVENTS),
-      "缺: " + str(sorted(REQUIRED - set(EVENTS[0].keys()))) if not all(REQUIRED <= set(e.keys()) for e in EVENTS) else "")
-check("1.3 既有键未被动（type/id/status/error 仍在）",
-      all({"type", "id", "status", "error"} <= set(e.keys()) for e in EVENTS))
+# 自 prompt-rewrite-item-running-events 起，每条处理会先额外发一条 running 事件（不含正文/error/truncated）。
+# 本套件的字段完整性断言针对“终态事件”（done/failed），故先过滤出终态事件；running 事件的存在与语义
+# 由 verify_running_events.py 专门覆盖。此为“同步更新”而非放宽（终态事件仍须携带全部必需字段）。
+TERMINAL = [e for e in EVENTS if e.get("status") in ("done", "failed")]
+check("1.0 每条处理额外发一条 running 事件（running 数 == 终态数）",
+      len([e for e in EVENTS if e.get("status") == "running"]) == len(TERMINAL) == 3,
+      f"running={len([e for e in EVENTS if e.get('status')=='running'])} terminal={len(TERMINAL)}")
+check("1.1 每条完成都发终态事件且顺序与分镜一致", [e["id"] for e in TERMINAL] == [f"seg_01_0{i}" for i in (1, 2, 3)],
+      str([e["id"] for e in TERMINAL]))
+check("1.2 终态事件包含全部必需正文字段", all(REQUIRED <= set(e.keys()) for e in TERMINAL),
+      "缺: " + str(sorted(REQUIRED - set(TERMINAL[0].keys()))) if not all(REQUIRED <= set(e.keys()) for e in TERMINAL) else "")
+check("1.3 终态事件既有键未被动（type/id/status/error 仍在）",
+      all({"type", "id", "status", "error"} <= set(e.keys()) for e in TERMINAL))
 check("1.4 done 事件带非空正文", all(e.get("rewritten_prompt") for e in EVENTS if e["status"] == "done"))
-check("1.5 input_mode 与 duration 可读", EVENTS[0].get("input_mode") == "T2VA" and EVENTS[0].get("duration") == 8,
-      f"{EVENTS[0].get('input_mode')} / {EVENTS[0].get('duration')}")
+check("1.5 input_mode 与 duration 可读", TERMINAL[0].get("input_mode") == "T2VA" and TERMINAL[0].get("duration") == 8,
+      f"{TERMINAL[0].get('input_mode')} / {TERMINAL[0].get('duration')}")
 
 print("\n【2】截断标记与上限")
-long_e = next((e for e in EVENTS if e.get("truncated")), None)
+long_e = next((e for e in TERMINAL if e.get("truncated")), None)
 check("2.1 超长正文被标记 truncated 且长度=上限",
       long_e is not None and len(long_e["rewritten_prompt"]) == EVENT_BODY_LIMIT,
       f"limit={EVENT_BODY_LIMIT} 实长={len(long_e['rewritten_prompt']) if long_e else None}")
-short_e = next((e for e in EVENTS if not e.get("truncated")), None)
+short_e = next((e for e in TERMINAL if not e.get("truncated")), None)
 check("2.2 未超限条目 truncated=False 且正文完整", short_e is not None and short_e["truncated"] is False)
 check("2.3 截断前缀是最终完整正文的前缀（不跳变）",
       long_e is not None and any(
