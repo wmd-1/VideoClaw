@@ -5,6 +5,7 @@ import { AlertCircle, CheckCircle, Loader, RefreshCw, Save, Sparkles, XCircle, W
 import clsx from 'clsx';
 import type { StageViewProps } from './types';
 import StageProgress from './StageProgress';
+import { pruneDraftsByContent } from '@/lib/assetMerge';
 
 interface RewriteItem {
   id: string;
@@ -115,12 +116,22 @@ export default function PromptRewriteStage({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [instructions, setInstructions] = useState<Record<string, string>>({});
 
-  // 编辑草稿（按条目 id）：切换/重生成后以最新产物为准。
-  // items 变化即清空草稿：渲染期完成（替代 effect 内同步 setState，避免级联渲染）
-  const [draftsSyncKey, setDraftsSyncKey] = useState(items);
-  if (draftsSyncKey !== items) {
-    setDraftsSyncKey(items);
-    setDrafts({});
+  // 编辑草稿（按条目 id）：仅清除「正文实际变化」条目的草稿，内容未变条目的草稿保留（I-2）。
+  // 清理依据是条目内容签名而非产物对象/数组引用身份：轮询、SSE 增量、后台重生成回填都会
+  // 产生新 items 引用，旧实现据此全量清空草稿，用户在其他条目未保存的草稿会被连带清掉。
+  // 签名只取 id + rewritten_prompt，truncated/status 等事件视图字段变化不触发清理（D1/2.2）。
+  // 渲染期完成同步（替代 effect 内 setState，避免级联渲染）。
+  const contentSignature = useMemo(
+    () => items.map(i => `${i.id}\u0000${String(i.rewritten_prompt ?? '')}`).join('\n'),
+    [items],
+  );
+  const [draftsSync, setDraftsSync] = useState<{ sig: string; items: RewriteItem[] }>(
+    () => ({ sig: contentSignature, items }),
+  );
+  if (draftsSync.sig !== contentSignature) {
+    const prevItems = draftsSync.items;
+    setDraftsSync({ sig: contentSignature, items });
+    setDrafts(prevDrafts => pruneDraftsByContent(prevDrafts, prevItems, items));
   }
 
   const pendingCount = items.filter(i => i.status === 'pending').length;

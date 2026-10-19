@@ -138,5 +138,46 @@ export function preserveRewriteBodies(prevArtifact: ArtifactLike, incomingArtifa
     }
     return item;
   });
-  return { ...incomingArtifact, items };
+  // M-4：轮询快照可能在服务端 merge 前发出、晚于 SSE 事件到达，导致这份快照不含 SSE 刚追加的条目。
+  // 把 prev 有而 next 缺失的条目按 id 补回尾部，消除“条目闪没”；2s 后下一轮轮询会带上真实快照自然对齐。
+  // 补回项本就是本地已合并过正文的条目，原样带上即可（沿用“缺失才保留本地值”，不产生空壳）。
+  // 前提：后端无合法条目删除路径（分镜集合在阶段内固定），否则补回会让删除看似不生效。
+  const nextIds = new Set<string>(
+    nextVal.map((rawItem: Record<string, unknown>) => rawItem.id as string),
+  );
+  const prevOnly = prevVal.filter(
+    (item: Record<string, unknown>) => !nextIds.has(item.id as string),
+  );
+  const merged = [
+    ...items,
+    ...prevOnly.map((item: Record<string, unknown>) => ({ ...item })),
+  ];
+  return { ...incomingArtifact, items: merged };
+}
+
+/**
+ * 草稿清理（I-2）：产物更新时只清除“正文实际变化”条目的草稿，内容未变条目的草稿原样保留。
+ * 判定以条目内容（id + rewritten_prompt）为依据， MUST NOT 依赖产物/数组引用身份；
+ * `truncated`/`status` 等事件视图字段变化不影响（签名只取 rewritten_prompt）。
+ * 条目移除视为变化（清掉该条草稿）。无需改动时返回入参引用，便于 React 短路多余渲染。
+ * 抽为纯函数以便容器外确定性断言（与组件内同一实现，不复制）。
+ */
+export function pruneDraftsByContent(
+  prevDrafts: Record<string, string>,
+  prevItems: Array<{ id: string; rewritten_prompt?: unknown }>,
+  nextItems: Array<{ id: string; rewritten_prompt?: unknown }>,
+): Record<string, string> {
+  const prevBody = new Map<string, string>(prevItems.map(i => [i.id, String(i.rewritten_prompt ?? '')]));
+  const nextBody = new Map<string, string>(nextItems.map(i => [i.id, String(i.rewritten_prompt ?? '')]));
+  const next: Record<string, string> = {};
+  let touched = false;
+  for (const [id, draft] of Object.entries(prevDrafts)) {
+    // 条目仍存在且正文与上一帧一致 → 保留草稿；正文变化或条目移除 → 清除
+    if (nextBody.has(id) && prevBody.get(id) === nextBody.get(id)) {
+      next[id] = draft;
+    } else {
+      touched = true;
+    }
+  }
+  return touched ? next : prevDrafts;
 }

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   applyAssetUpdateToArtifact,
   preserveRewriteBodies,
+  pruneDraftsByContent,
 } from '../video-claw/video-claw/frontend/lib/assetMerge.ts';
 
 let n = 0;
@@ -96,6 +97,72 @@ ok('其他阶段事件（无新键）合并后不会多出改写相关键', () =
     assert.ok(!keys.includes(banned), `其他阶段条目不应多出 ${banned} 键`);
   }
   assert.equal(next.clips[0].status, 'done');
+});
+
+// 8. 草稿按内容裁剪（I-2/2.1）：仅清除正文变化条目的草稿，内容未变条目保留
+ok('正文变化条目清草稿；内容未变条目草稿保留（不依赖数组引用）', () => {
+  const prevItems = [
+    { id: 'A', rewritten_prompt: 'old-A' },
+    { id: 'B', rewritten_prompt: 'body-B' },
+  ];
+  const nextItems = [
+    { id: 'A', rewritten_prompt: 'new-A' },   // 重生成：正文变化
+    { id: 'B', rewritten_prompt: 'body-B' },   // 未变
+  ];
+  const drafts = { A: 'draft-A', B: 'draft-B' };
+  const out = pruneDraftsByContent(drafts, prevItems, nextItems);
+  assert.ok(!('A' in out), '正文变化的条目草稿应被清除');
+  assert.equal(out.B, 'draft-B', '内容未变条目的草稿应原样保留');
+});
+
+// 9. truncated/status 等事件视图字段变化不触发清草稿（D1/2.2）
+ok('仅 truncated/status 变化、正文不变时草稿全部保留', () => {
+  const prevItems = [{ id: 'A', rewritten_prompt: 'BODY', truncated: true, status: 'done' }];
+  const nextItems = [{ id: 'A', rewritten_prompt: 'BODY', truncated: false, status: 'running' }];
+  const drafts = { A: 'draft-A' };
+  const out = pruneDraftsByContent(drafts, prevItems, nextItems);
+  assert.equal(out.A, 'draft-A', '事件视图字段变化不得误清草稿');
+  assert.equal(out, drafts, '无草稿变化时应返回入参引用（避免多余渲染）');
+});
+
+// 10. 条目移除视为变化 → 清该条草稿（前提：后端无删除路径，全量重生成才会出现）
+ok('条目从列表移除时其草稿被清除', () => {
+  const prevItems = [{ id: 'A', rewritten_prompt: 'a' }, { id: 'B', rewritten_prompt: 'b' }];
+  const nextItems = [{ id: 'A', rewritten_prompt: 'a' }];
+  const out = pruneDraftsByContent({ A: 'dA', B: 'dB' }, prevItems, nextItems);
+  assert.equal(out.A, 'dA', '未变条目保留');
+  assert.ok(!('B' in out), '移除条目草稿被清');
+});
+
+// 11. 合并按 id 补回 prev-only 条目（M-4/3.1）：轮询快照缺条目时界面不闪没
+ok('prev 有而 next 缺的条目按 id 补回尾部，正文不丢（无空壳）', () => {
+  const prev = { items: [
+    { id: 'seg_01_01', status: 'done', rewritten_prompt: 'BODY-1' },
+    { id: 'seg_01_02', status: 'done', rewritten_prompt: 'BODY-2' },
+  ] };
+  // 轮询快照晚于 SSE 到达，不含刚追加的 seg_01_02
+  const incoming = { items: [
+    { id: 'seg_01_01', status: 'done', rewritten_prompt: 'BODY-1' },
+  ] };
+  const merged = preserveRewriteBodies(prev, incoming);
+  const ids = merged.items.map(i => i.id);
+  assert.ok(ids.includes('seg_01_02'), '补回 prev-only 条目，不出现闪没');
+  const seg2 = merged.items.find(i => i.id === 'seg_01_02');
+  assert.equal(seg2.rewritten_prompt, 'BODY-2', '补回条目沿用本地正文，不产生空壳');
+});
+
+// 12. 补回不重复、不打乱 next 自身顺序（已有 id 的条目以 next 为准只出现一次）
+ok('补回只追加 prev-only 条目，不与 next 重复且保持 next 顺序在前', () => {
+  const prev = { items: [
+    { id: 'X', status: 'done', rewritten_prompt: 'old-X' },
+    { id: 'Y', status: 'done', rewritten_prompt: 'Y' },
+  ] };
+  const incoming = { items: [
+    { id: 'X', status: 'done', rewritten_prompt: 'new-X' },
+  ] };
+  const merged = preserveRewriteBodies(prev, incoming);
+  assert.deepEqual(merged.items.map(i => i.id), ['X', 'Y'], 'next 在前方、prev-only 在尾部，X 不重复');
+  assert.equal(merged.items[0].rewritten_prompt, 'new-X', 'X 以后端正文为准');
 });
 
 console.log(`\n全部 ${n} 项前端合并语义断言通过`);
