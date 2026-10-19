@@ -114,6 +114,8 @@ interface TopBarProps {
   onModelConfigChange?: (config: ModelConfig) => void;
   /** 项目状态（如 running, waiting, completed, stopped, idle, error 等） */
   projectStatus?: string;
+  /** 当前阶段本地状态同步超时（workflow-poll-timeout-visibility）：顶栏显示“同步超时”角标 */
+  timedOut?: boolean;
 }
 
 /* ─── 模型选择下拉面板 ─── */
@@ -488,6 +490,7 @@ export default function TopBar({
   modelConfig,
   onModelConfigChange,
   projectStatus,
+  timedOut,
 }: TopBarProps) {
   const enabledStages = useEnabledStages();
   const visibleStages = STAGES.filter(s => enabledStages.includes(s.id));
@@ -610,8 +613,19 @@ export default function TopBar({
           </button>
         )}
 
-        {/* 项目状态 */}
-        {hasSession && projectStatus && (
+        {/* 本地状态同步超时角标（与面板内横幅同时可见） */}
+        {timedOut && (
+          <div
+            className="px-2 py-1 rounded-lg text-xs font-medium flex items-center gap-1 bg-amber-50 text-amber-700 ring-1 ring-amber-200"
+            title="本地状态同步已超时，实际执行状态尚未确认"
+          >
+            <AlertCircle className="w-3 h-3" />
+            <span>同步超时</span>
+          </div>
+        )}
+
+        {/* 项目状态（超时态下由上方“同步超时”角标取代“执行中”，故 timedOut 时不渲染本徽标） */}
+        {hasSession && projectStatus && !timedOut && (
           <div
             className={clsx(
               'px-2 py-1 rounded-lg text-xs font-medium flex items-center gap-1',

@@ -188,4 +188,22 @@ ok('running 事件新建条目为改写中、不含正文、带渲染字段', ()
   assert.equal(next.items[0].name, '片段2');
 });
 
+// 16. syncState 与产物合并层正交（workflow-poll-timeout-visibility 5.1）：
+// syncState 是 StageState 层的本地同步态；合并层从干净输入 MUST NOT 凭空引入 syncState（否则会被当作阶段状态消费）。
+ok('合并层不凭空引入 syncState（与阶段状态正交）', () => {
+  const prev = { items: [{ id: 'seg_01_01', status: 'done', rewritten_prompt: 'BODY-1' }] };
+  const incoming = { items: [{ id: 'seg_01_01', status: 'done', rewritten_prompt: 'BODY-1' }] };
+  const merged = preserveRewriteBodies(prev, incoming);
+  assert.ok(!('syncState' in merged), 'artifact 顶层不得多出 syncState');
+  assert.ok(merged.items.every(it => !('syncState' in it)), '条目不得多出 syncState');
+  const next = applyAssetUpdateToArtifact(
+    { items: [{ id: 'x', status: 'done', rewritten_prompt: 'B' }] },
+    { type: 'items', id: 'x', status: 'running' },
+    true,
+  );
+  assert.ok(!('syncState' in next), '事件合并输出不得多出 syncState');
+  assert.ok(!('syncState' in next.items[0]), '条目不得多出 syncState');
+  assert.equal(next.items[0].status, 'running', 'status 仍由事件驱动，与 syncState 无关');
+});
+
 console.log(`\n全部 ${n} 项前端合并语义断言通过`);

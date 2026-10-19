@@ -7,6 +7,12 @@ export interface StageState {
   /** 后端下发的阶段产物为动态 JSON，各阶段组件按自身结构消费时局部断言 */
   artifact: unknown;
   error: string | null;
+  /**
+   * 与 status 正交的“本地同步状态”（workflow-poll-timeout-visibility D1）：
+   * 轮询耗尽未确认时置 'timed_out'，不改动 status（避免波及所有按状态分支）。
+   * 缺省/'synced' 表示同步正常。仅前端内存态、不落盘（刷新后回默认 synced）。
+   */
+  syncState?: 'synced' | 'timed_out';
 }
 
 export interface StageViewProps {

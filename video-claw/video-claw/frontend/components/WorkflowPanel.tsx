@@ -203,6 +203,8 @@ export default function WorkflowPanel() {
   // sessionLoadError > sessionLoading > showHome，否则复位置空 activeStage 会闪一下首页。
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
+  // 超时态“停止任务”失败反馈（后端不可达时保留横幅不静默清除，tasks 4.3）
+  const [timeoutStopError, setTimeoutStopError] = useState<string | null>(null);
   /**
    * 执行链并发闸门。与 `isRunning` **必须分开**：isRunning 是会话视图态（切会话时要复位，
    * 否则"执行中/停止"会当成上一会话的残留跟着走），而本 ref 跟的是"本标签页有没有链在跑"，
@@ -351,6 +353,8 @@ export default function WorkflowPanel() {
     pollRef.current.add(key);
     // 轮询在调用入门时取当前归属快照作为贯穿整轮轮询的令牌（design D9）
     const token = currentToken();
+    // 进入一轮同步：清除上一轮可能遗留的超时态（“重新查询”复用同一函数时）。
+    commitStageState(token, stageId, { syncState: 'synced' });
     for (let i = 0; i < 300; i++) {  // 增加轮询次数（最多10分钟）
       await new Promise(r => setTimeout(r, 2000));
       if (!pollRef.current.has(key)) return;
@@ -461,6 +465,11 @@ export default function WorkflowPanel() {
           commitStageState(token, stageId, update);
         }
       } catch { /* retry */ }
+    }
+    // 循环自然耗尽：阶段仍停在 running 未推进 → 进入与“执行中/失败”都不同的“状态同步超时”正交态（D1/D2）。
+    // 不改动 status、不判失败；仅叠加 syncState，使面板/顶栏显示“尚未确认”横幅与恢复动作。
+    if (owns(token)) {
+      commitStageState(token, stageId, { syncState: 'timed_out' });
     }
     pollRef.current.delete(key);
   }, [commitSessionView, commitStageState, currentToken, owns]);
@@ -697,9 +706,9 @@ export default function WorkflowPanel() {
           // 如果已有 artifact 数据（如部分已生成的视频片段），保留为 waiting 状态以便用户操作
           const hasArtifact = hasDoneArtifactItems(next[s]?.artifact);
           if (hasArtifact) {
-            next[s] = { ...next[s], status: 'waiting', error: null, progressMessage: '已停止（保留已完成内容）' };
+            next[s] = { ...next[s], status: 'waiting', error: null, progressMessage: '已停止（保留已完成内容）', syncState: 'synced' };
           } else {
-            next[s] = { ...next[s], status: 'error', error: '已手动停止', progressMessage: '已停止' };
+            next[s] = { ...next[s], status: 'error', error: '已手动停止', progressMessage: '已停止', syncState: 'synced' };
           }
         }
       }
@@ -730,6 +739,20 @@ export default function WorkflowPanel() {
         }
       }, 500);
     }
+  };
+
+  // 超时横幅专用“停止任务”：先探后端可达性——失败则保留超时横幅 + 错误反馈（MUST NOT 静默清除，tasks 4.3）；
+  // 成功则复用既有 handleStop 路径标记 stopped（其内已将 running 阶段的 syncState 置 synced 以清除横幅）。
+  const handleTimeoutStop = async () => {
+    if (!sessionId) return;
+    try {
+      await stopProject(sessionId);
+    } catch {
+      setTimeoutStopError('停止请求失败：后端不可达或无响应，超时提示已保留，可再次重试。');
+      return;
+    }
+    setTimeoutStopError(null);
+    await handleStop();
   };
 
   // ─ 模型不可用兜底：刷新阶段产物（拿到种子化条目）并弹出引导弹窗 ──
@@ -1767,6 +1790,30 @@ export default function WorkflowPanel() {
       // key 绑定会话身份（tasks 5.1）：切会话时整枝卸载重建，阶段组件内的
       // editDescs/selectedVersions/drafts/episodeDraft 等本地态不会跳到新会话的同号条目上。
       <div id="stage-artifact-area" key={`session:${sessionId ?? 'none'}`} className="h-full">
+      {state?.syncState === 'timed_out' && (
+        <div className="mx-4 mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm text-amber-800 font-medium">
+              本地状态同步已超时，实际执行状态尚未确认（后台任务可能仍在运行）。
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => { setTimeoutStopError(null); if (sessionId) void pollForCompletion(sessionId, activeStage); }}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
+              >
+                重新查询
+              </button>
+              <button
+                onClick={() => { void handleTimeoutStop(); }}
+                className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 ring-1 ring-red-200 text-xs font-medium hover:bg-red-100 transition-colors"
+              >
+                停止任务
+              </button>
+            </div>
+          </div>
+          {timeoutStopError && <p className="text-xs text-red-600">{timeoutStopError}</p>}
+        </div>
+      )}
       <Component
         state={state}
         sessionId={sessionId || ''}
@@ -1836,6 +1883,7 @@ export default function WorkflowPanel() {
         modelConfig={modelConfig}
         onModelConfigChange={handleModelConfigChange}
         projectStatus={projectStatus}
+        timedOut={activeStage ? stageStates[activeStage]?.syncState === 'timed_out' : false}
       />
 
       <main className="flex-1 min-w-0 overflow-hidden">
