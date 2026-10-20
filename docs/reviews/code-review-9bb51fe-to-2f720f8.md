@@ -55,7 +55,7 @@
 | M-1/M-4/M-5/M-6/M-7 | 已修复 | `8e41fed`；共享分隔符夹具、宿主构建双重断言、确定性别名匹配、单进程前提校验、阶段化兜底文案；容器内/前端验证见 `review-fifth-minor-followups/VERIFICATION.md` |
 | S-2 `upload_image.item_id` / `session_id` | 已修复 | `53fb947`；标识白名单 + 读写装载删除复用 + realpath 预检/复核；`verify_upload_path_safety.py` 36 项 ALL PASS，存量 17 个会话/条目 ID 扫描无不合法项 |
 | M-3 openai `url` 变体服务端接受性 | **未取证（保持未关闭）** | 无可用 openai 兼容端点；代码注释与 `custom-adapter-remote-inputs/VERIFICATION.md` 已标注未取证 |
-| 浏览器取证（拼装后的真实前端） | 部分完成 | 首页/临时工作台/一键 Pipeline 均无白屏与控制台 error，`/code/` 请求无 404/403（截图 `tmp_verify/verify_33_*.png`）；唯一视频为 44 字节测试残留导致解码失败，与挂载无关。5.3 弹窗与 3.2 三类上传浏览器实测尚待构造场景 |
+| 浏览器取证（拼装后的真实前端） | 已完成 | 3.3 首页/临时工作台/Pipeline 无白屏与控制台 error，`/code/` 无 404/403；5.3 三类弹窗与 3.2 三类上传实测通过（截图 `tmp_verify/verify_33_*.png`、`verify_53_*.png`、`verify_32_*.png`）；唯一视频为 44 字节测试残留导致解码失败，与挂载无关 |
 
 ---
 
@@ -287,7 +287,7 @@
 
 ## 七、结论（Assessment）
 
-**Ready to merge?** **Yes（附条件）**：C-1/I-1 与 M-1~M-7、S-1/S-2 已修复并附验证证据；M-3 未取证、5.3/3.2 浏览器取证待补，不阻塞代码合并。
+**Ready to merge?** **Yes（附条件）**：C-1/I-1 与 M-1~M-7、S-1/S-2 已修复并附验证证据；M-3 未取证（无可用 openai 兼容端点），不阻塞代码合并。
 
 **说明**：上方「修复更新（2026-10-20）」已记录各项修复提交与证据；以下理由保留评审当时的判断供追溯。
 
