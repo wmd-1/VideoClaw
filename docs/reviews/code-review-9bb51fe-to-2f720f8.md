@@ -57,6 +57,8 @@
 | M-3 openai `url` 变体服务端接受性 | **未取证（保持未关闭）** | 无可用 openai 兼容端点；代码注释与 `custom-adapter-remote-inputs/VERIFICATION.md` 已标注未取证 |
 | 浏览器取证（拼装后的真实前端） | 已完成 | 3.3 首页/临时工作台/Pipeline 无白屏与控制台 error，`/code/` 无 404/403；5.3 三类弹窗与 3.2 三类上传实测通过（截图 `tmp_verify/verify_33_*.png`、`verify_53_*.png`、`verify_32_*.png`）；唯一视频为 44 字节测试残留导致解码失败，与挂载无关 |
 
+四个修复变更已于 2026-10-20 归档到 `openspec/changes/archive/2026-10-20-*`；主规格已同步（新增 `user-input-path-guard`、`script-generation` capability）。
+
 ---
 
 ## 一、优点（Strengths）
