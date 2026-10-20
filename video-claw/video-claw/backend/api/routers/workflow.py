@@ -12,6 +12,7 @@ from api.services.project_helpers import (
     stream_workflow_task,
 )
 from config import settings
+from core.orchestrator import validate_upload_identifier
 
 router = APIRouter(tags=["Workflow"])
 
@@ -179,6 +180,10 @@ async def start_project(req: ProjectStartRequest):
 
 @router.post("/api/project/{session_id}/execute/{stage}")
 async def execute_stage(session_id: str, stage: str, request: Request):
+    try:
+        validate_upload_identifier(session_id, "session_id")
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
     try:
         body = await request.json()
     except Exception:

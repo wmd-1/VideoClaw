@@ -30,6 +30,27 @@ from core.agents import (
 
 logger = logging.getLogger(__name__)
 
+# 上传目标标识白名单（openspec: artifact-upload-path-safety）：
+# session_id / item_id 必须是字母、数字、下划线、连字符。
+UPLOAD_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# base 可能带 char_/set_ 前缀，长度上限放宽到 80，字符集不变。
+UPLOAD_BASE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def _is_valid_upload_identifier(value: Any, pattern: re.Pattern = UPLOAD_ID_PATTERN) -> bool:
+    return isinstance(value, str) and bool(pattern.fullmatch(value))
+
+
+def validate_upload_identifier(value: Any, field: str, pattern: re.Pattern = UPLOAD_ID_PATTERN) -> str:
+    """校验上传目标标识；非法即抛带字段名的 ValueError（路由映射 400）。"""
+    if not _is_valid_upload_identifier(value, pattern):
+        raise ValueError(f"{field} 标识格式非法（仅允许字母、数字、下划线、连字符，长度受限）")
+    return value
+
+
+def _is_within(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
 
 class WorkflowStage(str, Enum):
     """工作流阶段"""
@@ -192,6 +213,7 @@ class WorkflowEngine:
         self._load_sessions_from_disk()
 
     def get_or_create_state(self, session_id: str) -> WorkflowState:
+        validate_upload_identifier(str(session_id), "session_id")
         with self._state_lock:
             if session_id not in self.sessions:
                 loaded_state = self.get_state(session_id)
@@ -202,6 +224,9 @@ class WorkflowEngine:
             return self.sessions[session_id]
 
     def get_state(self, session_id: str) -> Optional[WorkflowState]:
+        if not _is_valid_upload_identifier(session_id):
+            logger.warning("Invalid session identifier rejected before disk read: %r", session_id)
+            return None
         need_save = False
         loaded: Optional[WorkflowState] = None
         with self._state_lock:
@@ -1548,6 +1573,9 @@ class WorkflowEngine:
         filename: str = "",
     ) -> Dict[str, Any]:
         """Save a user-provided image and attach it to the target artifact item."""
+        # 必须在 get_state（读盘）/创建目录/写文件之前校验
+        validate_upload_identifier(str(session_id), "session_id")
+        validate_upload_identifier(str(item_id), "item_id")
         allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
         ext = os.path.splitext(filename or "")[1].lower() or ".png"
         if ext not in allowed_exts:
@@ -1613,18 +1641,49 @@ class WorkflowEngine:
     def _next_upload_path(session_id: str, cfg: Dict[str, str], ext: str) -> tuple[str, str]:
         from config import settings
 
-        save_dir = os.path.join(settings.RESULT_DIR, "image", str(session_id), cfg["dir"])
-        os.makedirs(save_dir, exist_ok=True)
+        validate_upload_identifier(str(session_id), "session_id")
+        base = str(cfg.get("base") or "")
+        validate_upload_identifier(base, "item_id", UPLOAD_BASE_PATTERN)
+
+        image_root = os.path.join(os.path.realpath(settings.RESULT_DIR), "image")
+        save_dir = os.path.join(image_root, str(session_id), cfg["dir"])
+
+        # 预检：realpath 会解析已存在的符号链接组件；根外立即拒绝，不创建目录
+        if not _is_within(os.path.realpath(save_dir), image_root):
+            raise ValueError("上传路径越界（仅允许写入会话上传目录）")
+
+        missing_dirs = []
+        probe = save_dir
+        while probe and not os.path.exists(probe):
+            missing_dirs.append(probe)
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+            real_save_dir = os.path.realpath(save_dir)
+            if not _is_within(real_save_dir, image_root):
+                raise ValueError("上传路径越界（仅允许写入会话上传目录）")
+        except Exception:
+            for directory in missing_dirs:
+                try:
+                    os.rmdir(directory)
+                except OSError:
+                    break
+            raise
 
         pattern = re.compile(rf"^{re.escape(cfg['base'])}_upload_v(\d+)\.", re.IGNORECASE)
         max_version = 0
-        for name in os.listdir(save_dir):
+        for name in os.listdir(real_save_dir):
             match = pattern.match(name)
             if match:
                 max_version = max(max_version, int(match.group(1)))
         version = f"v{max_version + 1}"
         upload_filename = f"{cfg['base']}_upload_{version}{ext}"
-        absolute_path = os.path.join(save_dir, upload_filename)
+        absolute_path = os.path.join(real_save_dir, upload_filename)
+        if not _is_within(os.path.realpath(os.path.dirname(absolute_path)), image_root):
+            raise ValueError("上传路径越界（仅允许写入会话上传目录）")
         relative_path = os.path.relpath(absolute_path, settings.BASE_DIR)
         return absolute_path, relative_path
 
@@ -1634,6 +1693,8 @@ class WorkflowEngine:
         """保存 / 更新会话到磁盘（原子写入）"""
         import shutil
         import tempfile
+
+        validate_upload_identifier(str(session_id), "session_id")
 
         with self._state_lock:
             path = os.path.join(self._session_dir, f"{session_id}.json")
@@ -1706,6 +1767,11 @@ class WorkflowEngine:
                 with open(fpath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 sid = data["session_id"]
+                if not _is_valid_upload_identifier(sid):
+                    logger.warning(
+                        "Skipping session with invalid identifier: %r (%s)", sid, filename
+                    )
+                    continue
                 state = WorkflowState(sid)
                 try:
                     state.current_stage = WorkflowStage(data.get("current_stage", "init"))
@@ -1753,6 +1819,10 @@ class WorkflowEngine:
         import shutil
 
         from config import settings
+
+        if not _is_valid_upload_identifier(session_id):
+            logger.warning("Invalid session identifier rejected before delete: %r", session_id)
+            return False
 
         with self._state_lock:
             if session_id in self._active_sessions:
