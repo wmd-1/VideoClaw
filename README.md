@@ -198,7 +198,8 @@ cd video-claw/video-claw/frontend
 npm ci                                    # npm 12+ 报 EALLOWREMOTE 时改用 npm ci --allow-remote=all
 # NEXT_PUBLIC_BACKEND_PORT / BACKEND_INTERNAL_URL 的端口必须与仓库根 .env 的 BACKEND_PORT 一致
 export BACKEND_PORT=$(grep -E '^BACKEND_PORT=' ../../../.env 2>/dev/null | cut -d= -f2 | tr -d ' ')
-BACKEND_INTERNAL_URL=http://backend:${BACKEND_PORT:-8000} NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT:-8000} npm run build
+BACKEND_INTERNAL_URL=http://backend:${BACKEND_PORT} NEXT_PUBLIC_BACKEND_PORT=${BACKEND_PORT} npm run build
+# 缺少上述任一变量时构建会直接失败（prebuild + next.config.ts 双重断言），仅设 BACKEND_PORT 不满足宿主路径
 # 清空式组装（保留目录本身，避免 Docker 挂载 inode 失效；首次或改前端后执行）
 mkdir -p .next-runtime && rm -rf .next-runtime/* .next-runtime/.[!.]*
 cp -a .next/standalone/. .next-runtime/
@@ -238,7 +239,8 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 - **改后端代码免重建**：`docker-compose.yml` 将后端源码逐项只读（`:ro`）挂载进容器 `/app`（不能整目录挂载，会遮蔽镜像内的 `.venv`、`docker-entrypoint.sh`、`config.yaml` 软链等）。改完执行 `docker compose restart backend` 生效；依赖文件（`pyproject.toml` / `uv.lock`）不挂载，改依赖需重建镜像。
 - **改前端代码免重建**：前端是 standalone 编译产物，按「快速开始」步骤 2 重新构建并组装 `.next-runtime/`（采用**清空式**组装：保留目录本身，避免 Docker 挂载 inode 失效）后 `docker compose restart frontend` 生效；若改用了删除目录重建的组装方式，则需 `docker rm -f video-claw-frontend && docker compose up -d frontend` 重建容器。compose 以 `create_host_path: false` 只读挂载该目录——未构建时 `up` 会直接报错而不是静默建空目录。
 - **注意**：standalone 产物在**构建时**固化 rewrites 代理地址与 SSE 直连端口，运行时环境变量不生效，因此**两条构建路径**都必须让端口与 `.env` 的 `BACKEND_PORT` 一致：镜像路径用 `./build-frontend.sh`（自动从 `.env` 读取）；宿主机 `npm run build` 路径按「快速开始」步骤 2 显式带 `BACKEND_INTERNAL_URL=http://backend:<BACKEND_PORT>` 与 `NEXT_PUBLIC_BACKEND_PORT=<BACKEND_PORT>`。端口不一致时前端不报错、但经转发的 API 全部 500、SSE 直连失败，且只能靠重新构建修复。
-- **缺端口就失败（不再是默认 8000）**：`./build-frontend.sh` 在环境变量与 `.env` 都取不到 `BACKEND_PORT` 时退出码 1 且不启动构建；绕过脚本直接 `docker build -f Dockerfile.frontend`（不带 `--build-arg BACKEND_PORT=...`）会在 builder 阶段断言失败。例外：`docker build --target deps`（取 node_modules 的免网络手法，见 `docs/handoffs/Handoff 5` §3.2）不受该断言影响。
+- **缺端口就失败（不再是默认 8000）**：`./build-frontend.sh` 在环境变量与 `.env` 都取不到 `BACKEND_PORT` 时退出码 1 且不启动构建；绕过脚本直接 `docker build -f Dockerfile.frontend`（不带 `--build-arg BACKEND_PORT=...`）会在 builder 阶段断言失败；宿主 `npm run build` 由 `prebuild` 脚本与 `next.config.ts` 的 `PHASE_PRODUCTION_BUILD` 断言双重检查，缺少 `BACKEND_INTERNAL_URL` 或 `NEXT_PUBLIC_BACKEND_PORT`（仅设 `BACKEND_PORT` 不够）时直接失败。例外：`docker build --target deps`（取 node_modules 的免网络手法，见 `docs/handoffs/Handoff 5` §3.2）不受该断言影响。
+- **后端执行模型（单进程前提）**：会话执行归属（`boot_id`）只支持单进程。`api/app.py` 启动时检测 `WEB_CONCURRENCY` / `UVICORN_WORKERS` 与 CLI `--workers`/`--workers=N`/`-w`，任一 >1 即拒绝启动；gunicorn 等外部进程管理器另行拉起多实例、或多实例共享同一会话目录均不受支持（检测范围与边界以启动错误信息为准）。
 
 ## 配置说明
 

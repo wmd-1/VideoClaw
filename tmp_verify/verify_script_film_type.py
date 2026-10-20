@@ -310,6 +310,25 @@ bad = {k: ScriptWriterAgent._normalize_subject_mode(k) for k, v in mode_cases.it
        if ScriptWriterAgent._normalize_subject_mode(k) != v}
 check("I2 _normalize_subject_mode 白名单归一化（含理由句防误命中）", not bad, str(bad))
 
+deterministic_film_cases = {
+    "营销宣传片": "营销",
+    "宣传片讲营销": "宣传",
+    "introduction and promo": "介绍",
+    "promo marketing": "宣传",
+}
+bad = {k: ScriptWriterAgent._normalize_film_type(k) for k, v in deterministic_film_cases.items()
+       if ScriptWriterAgent._normalize_film_type(k) != v}
+check("I4 别名匹配按最早出现且同位置取更长（不依赖字典顺序）", not bad, str(bad))
+
+deterministic_mode_cases = {
+    "人物故事旁白描述": "人物故事",
+    "旁白描述人物故事": "旁白描述",
+    "voiceover narration": "旁白描述",
+}
+bad = {k: ScriptWriterAgent._normalize_subject_mode(k) for k, v in deterministic_mode_cases.items()
+       if ScriptWriterAgent._normalize_subject_mode(k) != v}
+check("I5 主体形式别名匹配同样确定性（最早出现优先）", not bad, str(bad))
+
 parse_cases = {
     '{"film_type": "介绍", "subject_mode": "旁白描述"}': ("介绍", "旁白描述"),
     '{"film_type": "promo", "subject_mode": "character story"}': ("宣传", "人物故事"),

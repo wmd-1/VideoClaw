@@ -67,6 +67,28 @@ _SUBJECT_MODE_ALIASES = {
     "story": "人物故事",
 }
 
+
+def _match_alias_by_position(text: str, aliases: dict[str, str]) -> Optional[str]:
+    """确定性包含匹配：最早出现优先，同位置取更长别名。
+
+    结果不依赖字典/集合的枚举顺序；同一位置同长度只可能是同一个别名。
+    """
+    best_pos: Optional[int] = None
+    best_alias = ""
+    best_canonical: Optional[str] = None
+    for alias, canonical in aliases.items():
+        pos = text.find(alias)
+        if pos < 0:
+            continue
+        if (
+            best_pos is None
+            or pos < best_pos
+            or (pos == best_pos and len(alias) > len(best_alias))
+        ):
+            best_pos, best_alias, best_canonical = pos, alias, canonical
+    return best_canonical
+
+
 class ScriptWriterAgent(AgentInterface):
     MIN_EPISODE_LINES = 25
     MAX_EPISODE_LINES = 30
@@ -116,11 +138,9 @@ class ScriptWriterAgent(AgentInterface):
             return text
         if text in _FILM_TYPE_ALIASES:
             return _FILM_TYPE_ALIASES[text]
-        # 包含匹配：LLM 可能在类型词前后附加理由文字，按白名单顺序取首个命中
-        for alias, canonical in _FILM_TYPE_ALIASES.items():
-            if alias in text:
-                return canonical
-        return None
+        # 包含匹配：LLM 可能在类型词前后附加理由文字；按“最早出现、同位置取更长”
+        # 的确定性规则（不依赖字典枚举顺序）
+        return _match_alias_by_position(text, _FILM_TYPE_ALIASES)
 
     @staticmethod
     def _normalize_subject_mode(raw: Any) -> Optional[str]:
@@ -134,11 +154,8 @@ class ScriptWriterAgent(AgentInterface):
             return text
         if text in _SUBJECT_MODE_ALIASES:
             return _SUBJECT_MODE_ALIASES[text]
-        # 包含匹配：白名单按“具体优先”排序，避免理由句中的泛词误命中
-        for alias, canonical in _SUBJECT_MODE_ALIASES.items():
-            if alias in text:
-                return canonical
-        return None
+        # 包含匹配：同样按“最早出现、同位置取更长”的确定性规则
+        return _match_alias_by_position(text, _SUBJECT_MODE_ALIASES)
 
     @classmethod
     def _parse_classification(cls, raw_text: str) -> tuple:

@@ -777,7 +777,7 @@ export default function WorkflowPanel() {
    * 该阶段实际使用的模型字段（用于弹窗说出"是哪个模型"）。
    * 选字段口径与后端 `_preflight_stage_models` 一致：视频阶段按 generation mode，并保留 legacy 回退。
    */
-  const stageModelField = (stageId: string): string => {
+  const stageModelField = (stageId: string): string | null => {
     const params = projectParams as Record<string, unknown> | null | undefined;
     if (stageId === 'character_design') return 'image_t2i_model';
     if (stageId === 'reference_generation') {
@@ -794,7 +794,7 @@ export default function WorkflowPanel() {
       if (params?.[modeField]) return modeField;
       return params?.video_model ? 'video_model' : modeField;
     }
-    return '';
+    return null;
   };
 
   // 阶段结束后扫描失败条目：存在 model_unavailable 时同样给出引导（每次运行最多弹一次）
@@ -809,16 +809,18 @@ export default function WorkflowPanel() {
       if (failed) {
         const field = stageModelField(stageId);
         const model = field ? String((projectParams as Record<string, unknown> | null | undefined)?.[field] ?? '') : '';
-        // 兜底文案按模型类型分流（按字段前缀，不再重复维护一份阶段白名单）
-        const fallbackReason = field.startsWith('image_')
+        // 兜底文案按模型类型分流；未知阶段使用不指向具体模型的通用文案（M-7）
+        const fallbackReason = field?.startsWith('image_')
           ? '存在因模型不可用而失败的条目，可上传图片继续该步骤'
-          : '存在因模型不可用而失败的条目，请更换可用的视频模型后重试';
+          : field?.startsWith('video_')
+            ? '存在因模型不可用而失败的条目，请更换可用的视频模型后重试'
+            : '存在因模型不可用而失败的条目，请检查模型配置或更换模型后重试';
         setModelFallback(prev => prev ?? {
           stage: stageId,
           detail: {
             code: 'model_unavailable',
             stage: stageId,
-            field,
+            field: field ?? undefined,
             model,
             reason: (failed.error as string) || fallbackReason,
             error_code: 'runtime_failed',

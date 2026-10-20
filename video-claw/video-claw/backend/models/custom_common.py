@@ -10,7 +10,7 @@ import mimetypes
 import os
 import re
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 models_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.dirname(models_dir)
@@ -24,6 +24,27 @@ from config import Config  # noqa: E402 - sys.path 引导后导入
 logger = logging.getLogger(__name__)
 
 PROTOCOLS = ("openai", "vllm-omni", "sglang")
+
+# 列表型能力参数（tasks）分隔符：前后端共享口径（英文逗号/竖线/中文逗号/顿号）。
+TASK_LIST_SEPARATORS = re.compile(r"[,，|、]+")
+
+
+def parse_task_list(raw: Any) -> List[str]:
+    """解析 tasks 等列表型能力参数：去空白、去重、保序（大小写归一为小写）。"""
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(item) for item in raw]
+    else:
+        parts = TASK_LIST_SEPARATORS.split(str(raw or ""))
+    parsed: List[str] = []
+    seen = set()
+    for part in parts:
+        token = part.strip().lower()
+        if token and token not in seen:
+            seen.add(token)
+            parsed.append(token)
+    return parsed
+
+
 DEFAULT_HTTP_TIMEOUT = 300.0
 DEFAULT_VIDEO_POLL_INTERVAL = 5.0
 DEFAULT_VIDEO_POLL_TIMEOUT = 1800.0

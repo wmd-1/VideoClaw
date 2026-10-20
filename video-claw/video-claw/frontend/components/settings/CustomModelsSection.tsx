@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { AlertCircle, CheckCircle, Loader2, Plus, Trash2, Zap } from 'lucide-react';
 import { testCustomModel, type ModelTestResult } from '@/lib/workflowApi';
+import { invalidTaskTokens } from '@/lib/capabilityParams';
 
 /** 环境变量覆盖信息（GET /api/config 返回） */
 export interface EnvOverrides {
@@ -71,16 +72,7 @@ export const ABILITY_OPTIONS = [
 const inputClass =
   'h-9 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-700 outline-none focus:border-blue-300 disabled:bg-gray-50 disabled:text-gray-400';
 
-/** 视频模型 tasks 合法值（与后端 models/custom_video._supported_tasks 的过滤口径一致，评审 M-2） */
-const VIDEO_TASK_VALUES = ['t2va', 'fl2va', 'ref2va'];
-
-function invalidTaskTokens(raw: string | undefined | null): string[] {
-  return String(raw || '')
-    .split(/[,，|]+/)
-    .map(t => t.trim().toLowerCase())
-    .filter(Boolean)
-    .filter(t => !VIDEO_TASK_VALUES.includes(t));
-}
+/** 视频模型 tasks 合法值与分隔符口径见 `@/lib/capabilityParams`（评审 M-1）。 */
 
 function EnvBadge() {
   return (

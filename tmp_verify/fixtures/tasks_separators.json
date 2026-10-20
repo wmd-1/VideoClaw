@@ -1,0 +1,34 @@
+{
+  "cases": [
+    {
+      "name": "中文逗号",
+      "input": "t2va，fl2va",
+      "expected": ["t2va", "fl2va"],
+      "invalid": []
+    },
+    {
+      "name": "混合分隔符/空白/重复",
+      "input": "t2va, fl2va| ref2va 、 t2va",
+      "expected": ["t2va", "fl2va", "ref2va"],
+      "invalid": []
+    },
+    {
+      "name": "大小写归一",
+      "input": "T2VA|FL2VA",
+      "expected": ["t2va", "fl2va"],
+      "invalid": []
+    },
+    {
+      "name": "非法 token",
+      "input": "t2va, bogus",
+      "expected": ["t2va", "bogus"],
+      "invalid": ["bogus"]
+    },
+    {
+      "name": "仅分隔符",
+      "input": " , | 、 ",
+      "expected": [],
+      "invalid": []
+    }
+  ]
+}

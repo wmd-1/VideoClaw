@@ -34,6 +34,7 @@ from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
     connection_hint,
     guess_mime_type,
     make_http_client,
+    parse_task_list,
     video_dimensions,
     video_size,
 )
@@ -400,13 +401,7 @@ class CustomVideoClient:
 
     def _supported_tasks(self) -> List[str]:
         """模型声明的本服务实例支持的任务集合（capabilities.tasks，对应推理服务的 --task-type partition）。未声明返回空。"""
-        raw = self._capabilities().get("tasks")
-        if isinstance(raw, str):
-            items = [part.strip().lower() for part in raw.replace("|", ",").split(",")]
-        elif isinstance(raw, (list, tuple, set)):
-            items = [str(part).strip().lower() for part in raw]
-        else:
-            items = []
+        items = parse_task_list(self._capabilities().get("tasks"))
         return [item for item in items if item in ("t2va", "fl2va", "ref2va")]
 
     def _align_task_to_partitions(

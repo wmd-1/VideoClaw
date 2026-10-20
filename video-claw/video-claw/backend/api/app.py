@@ -18,6 +18,42 @@ setup_concurrent_logging()
 
 logger = logging.getLogger(__name__)
 
+
+def assert_single_process_premise() -> None:
+    """执行归属判据（boot_id）只支持单进程；多 worker 启动必须显式失败。
+
+    覆盖 WEB_CONCURRENCY / UVICORN_WORKERS 与 sys.argv 中的 --workers/-w（含 = 形式）。
+    外部进程管理器另行拉起多实例不在检测范围，需在部署文档声明不受支持。
+    """
+    violations = []
+    for env_name in ("WEB_CONCURRENCY", "UVICORN_WORKERS"):
+        raw = os.environ.get(env_name, "").strip()
+        if raw.isdigit() and int(raw) > 1:
+            violations.append(f"{env_name}={raw}")
+    argv = sys.argv[1:]
+    for index, arg in enumerate(argv):
+        if (
+            arg in ("--workers", "-w")
+            and index + 1 < len(argv)
+            and argv[index + 1].isdigit()
+            and int(argv[index + 1]) > 1
+        ):
+            violations.append(f"{arg} {argv[index + 1]}")
+        elif arg.startswith("--workers="):
+            value = arg.split("=", 1)[1].strip()
+            if value.isdigit() and int(value) > 1:
+                violations.append(arg)
+    if violations:
+        raise RuntimeError(
+            "执行归属判据仅支持单进程，检测到多 worker 配置: "
+            f"{', '.join(violations)}。"
+            "请移除 WEB_CONCURRENCY/UVICORN_WORKERS 或 --workers/-w 参数后重启；"
+            "多实例共享会话目录不受支持。"
+        )
+
+
+assert_single_process_premise()
+
 from api.routers import (  # noqa: E402 - sys.path 引导后导入
     configuration_router,
     files_router,
