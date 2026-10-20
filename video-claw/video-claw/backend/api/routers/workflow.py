@@ -119,7 +119,10 @@ def _preflight_stage_models(stage: str, values: dict) -> None:
 
 @router.post("/api/project/start")
 async def start_project(req: ProjectStartRequest):
-    final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
+    try:
+        final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
     _require_model_fields(req.model_dump())
 
     session_id = str(int(time.time() * 1000))

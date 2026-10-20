@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from api.media_paths import guard_uploaded_document_name
 from config import settings
 from models.file_reader import FileReader
 
@@ -32,28 +33,6 @@ def _path_size(path: str) -> int:
                 except OSError:
                     continue
     return total
-
-
-def get_allowed_media_roots() -> list[str]:
-    """媒体参考允许引用的根目录（均已 realpath）：CODE_DIR 与 TEMP_DIR。
-
-    上传接口（/api/upload_media）将本地件落在 TEMP_DIR，适配层再将位于 TEMP_DIR 的合法
-    上传件复制到 CODE_DIR 下的静态可访问目录；两者之外的路径均视为越界。
-    """
-    return [os.path.realpath(settings.CODE_DIR), os.path.realpath(settings.TEMP_DIR)]
-
-
-def resolve_within_allowed_dirs(path: str) -> Optional[str]:
-    """将候选路径 realpath 规范化，若落在允许目录（CODE_DIR/TEMP_DIR）内则返回规范化
-    绝对路径，否则返回 None。用于阻断任意文件读取与 `..`/符号链接逃逸（C1）。
-    """
-    if not path:
-        return None
-    real = os.path.realpath(path)
-    for root in get_allowed_media_roots():
-        if real == root or real.startswith(root + os.sep):
-            return real
-    return None
 
 
 @router.post("/api/upload_file")
@@ -136,14 +115,18 @@ def merge_uploaded_file_into_idea(idea: str, file_path: Optional[str]) -> str:
     if not file_path:
         return idea
 
-    full_path = os.path.join(settings.TEMP_DIR, file_path)
+    safe_name = guard_uploaded_document_name(file_path)
+    temp_root = os.path.realpath(settings.TEMP_DIR)
+    full_path = os.path.realpath(os.path.join(temp_root, safe_name))
+    if full_path != temp_root and not full_path.startswith(temp_root + os.sep):
+        raise ValueError("file_path 路径越界（仅允许上传目录内的文件）")
     if not os.path.exists(full_path):
         logger.warning(f"上传的文件未找到: {full_path}")
         return idea
 
     content = FileReader.extract_text(full_path)
     if content:
-        original_filename = "_".join(file_path.split("_")[1:])
+        original_filename = "_".join(safe_name.split("_")[1:])
         prompt_fragment = FileReader.format_as_prompt(original_filename, content)
         idea = f"{idea}\n\n{prompt_fragment}"
     logger.info(f"成功处理上传文件: {full_path}")

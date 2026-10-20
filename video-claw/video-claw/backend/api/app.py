@@ -34,7 +34,7 @@ from api.routers import (  # noqa: E402 - sys.path 引导后导入
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Video-Claw API")
-    logger.info("Code directory mounted at /code: %s", settings.CODE_DIR)
+    logger.info("Result directory mounted at /code/result: %s", settings.RESULT_DIR)
     yield
     logger.info("Video-Claw API shutdown complete")
 
@@ -51,7 +51,8 @@ app.add_middleware(
 logger.info("CORS enabled for origins: %s", ["*"])
 
 os.makedirs(settings.CODE_DIR, exist_ok=True)
-app.mount("/code", StaticFiles(directory=settings.CODE_DIR), name="code")
+os.makedirs(settings.RESULT_DIR, exist_ok=True)
+app.mount("/code/result", StaticFiles(directory=settings.RESULT_DIR), name="code")
 
 app.include_router(health_router)
 app.include_router(files_router)

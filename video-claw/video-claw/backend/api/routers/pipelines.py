@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from api.media_paths import guard_media_input
 from api.schemas.pipelines import (
     ActionTransferPipelineRequest,
     DigitalHumanPipelineRequest,
@@ -34,6 +35,30 @@ def _split_abilities(ability: Optional[str]) -> Optional[list[str]]:
         return None
     items = [item.strip() for item in ability.split(",") if item.strip()]
     return items or None
+
+
+# 用户可控媒体字段：首选名 + 管线实际接受的别名（openspec: user-input-path-guard）。
+# 别名的 HTTP 可达性当前不存在（typed 请求模型忽略额外字段），此处仍保留纵深防御，
+# 其判定在守卫单元矩阵中断言。
+_PIPELINE_MEDIA_KEYS = (
+    "image_path",
+    "image_asset",
+    "video_path",
+    "video_asset",
+    "character_image_path",
+    "character_asset",
+    "goods_image_path",
+    "goods_asset",
+)
+
+
+def _guard_pipeline_media_params(params: dict) -> None:
+    """在创建任务/复制文件之前校验媒体入参；失败抛 ValueError（路由转 400）。"""
+    for key in _PIPELINE_MEDIA_KEYS:
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            guard_media_input(value, key)
+
 
 TEMPLATE_DIR = os.path.join(str(BASE_DIR), "templates")
 DEMO_IMAGE_PATH = os.path.join(TEMPLATE_DIR, "demo", "default_image.png")
@@ -275,17 +300,31 @@ async def start_standard_pipeline(req: StandardPipelineRequest, background_tasks
 
 @router.post("/api/pipelines/action_transfer/tasks")
 async def start_action_transfer_pipeline(req: ActionTransferPipelineRequest, background_tasks: BackgroundTasks):
-    return _start_task(background_tasks, "action_transfer", req.model_dump(exclude_none=True))
+    params = req.model_dump(exclude_none=True)
+    try:
+        _guard_pipeline_media_params(params)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return _start_task(background_tasks, "action_transfer", params)
 
 
 @router.post("/api/pipelines/digital_human/tasks")
 async def start_digital_human_pipeline(req: DigitalHumanPipelineRequest, background_tasks: BackgroundTasks):
-    return _start_task(background_tasks, "digital_human", req.model_dump(exclude_none=True))
+    params = req.model_dump(exclude_none=True)
+    try:
+        _guard_pipeline_media_params(params)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return _start_task(background_tasks, "digital_human", params)
 
 
 @router.post("/api/pipelines/{pipeline}/tasks")
 async def start_generic_pipeline(pipeline: str, req: GenericPipelineRequest, background_tasks: BackgroundTasks):
     normalized = "standard" if pipeline == "quick_create" else pipeline
+    try:
+        _guard_pipeline_media_params(req.params)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
     return _start_task(background_tasks, normalized, req.params)
 
 

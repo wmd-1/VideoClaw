@@ -84,11 +84,13 @@ def split_script(text: str, split_mode: str = "paragraph") -> list[str]:
 
 
 def copy_input_file(path: str, output_dir: str, prefix: str) -> str:
-    if path.startswith(("http://", "https://", "file://", "data:")):
+    from api.media_paths import guard_media_input, remote_media_kind
+
+    # 远程形态由共享分类器判定（含 oss://，大小写不敏感）；file:// 必须先经守卫剥前缀
+    if remote_media_kind(path):
         return path
-    src = Path(path)
-    if not src.exists():
-        raise FileNotFoundError(f"Input file not found: {path}")
+    safe = guard_media_input(path, "input_path")
+    src = Path(safe)
     dst = Path(output_dir) / f"{prefix}{src.suffix.lower()}"
     shutil.copy2(src, dst)
     return str(dst)

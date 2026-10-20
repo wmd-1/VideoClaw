@@ -1,17 +1,16 @@
 import json
 import logging
 import os
-import re
 import shutil
 import threading
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 
-from api.routers.files import resolve_within_allowed_dirs
+from api.media_paths import guard_media_input, guard_media_inputs, resolve_within_allowed_dirs
 from api.schemas.sandbox import (
     SandboxI2IRequest,
     SandboxLLMRequest,
@@ -172,7 +171,7 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     """将音频参考转换为推理服务端可访问的资源地址（D1，不得静默丢弃）。
 
     - 已是 HTTP(S)/data: URL 时原样返回；
-    - 本地文件：先经 realpath 规范化并校验位于 CODE_DIR/TEMP_DIR 白名单内（C1），
+    - 本地文件：先经 realpath 规范化并校验位于允许根（CODE_DIR/result、TEMP_DIR）内（C1），
       否则拒绝；位于 CODE_DIR 静态目录内则直接组装绝对 URL；位于 TEMP_DIR 的合法上传件
       先复制到 result/sandbox/uploads，再按 backend 对外基址（request.base_url）+ /code 组装；
     - 越界路径（任意绝对路径 / `..` 逃逸 / 符号链接逃逸）与无法定位文件时抛错（明确报错而非退化）。
@@ -194,10 +193,11 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     source = next((path for path in candidates if os.path.isfile(path)), None)
     if not source:
         raise ValueError(f"音频参考文件不存在: {value}")
-    # C1 白名单校验：realpath 规范化后必须位于 CODE_DIR/TEMP_DIR 内，阻断越界/`..`/符号链接逃逸
+    # C1 白名单校验：realpath 规范化后必须位于允许根（CODE_DIR/result、TEMP_DIR）内，
+    # 阻断越界/`..`/符号链接逃逸
     safe_source = resolve_within_allowed_dirs(source)
     if not safe_source:
-        raise ValueError(f"音频参考路径越界（仅允许 code/temp 目录内的文件）: {value}")
+        raise ValueError(f"音频参考路径越界（仅允许 result/temp 目录内的文件）: {value}")
     if not safe_source.startswith(code_dir + os.sep):
         # 位于 TEMP_DIR 的合法上传件 → 复制到 /code 静态可访问目录供推理端拉取
         upload_dir = os.path.realpath(SANDBOX_MEDIA_UPLOAD_DIR)
@@ -209,51 +209,8 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
     return base_url.rstrip("/") + "/code/" + relative
 
 
-# 远程媒体形态：适配层不读本地盘，按各自协议远程消费（与 audio_url 口径一致）。
-# 注意：file:// 不在此列——本仓库适配层对 file:// 会剥前缀后本地 open 并外传
-# （models/custom_common.to_data_url、DashScope SDK），属本地读取形态，必须与裸路径同口径走白名单（评审 C-1）。
-_REMOTE_MEDIA_PREFIXES = ("http://", "https://", "data:", "oss://")
-
-
-def _strip_file_uri(value: str) -> str:
-    """file:// URI → 本地绝对路径（与 models/custom_common.to_data_url 的剥前缀口径一致，含 /C:/ Windows 形态）。"""
-    local = value[len("file://"):]
-    if re.match(r"^/[A-Za-z]:", local):
-        local = local[1:]
-    return local
-
-
-def _guard_media_input(value: str, field: str) -> str:
-    """沙盒媒体入参统一守卫（I-A）：远程形态原样透传，本地路径限定 CODE_DIR/TEMP_DIR 白名单。
-
-    适配层会直接 open 本地路径并上传到远端推理服务，零鉴权下越界路径即任意文件读取+外传；
-    因此发起生成前必须拒绝越界/符号链接逃逸/不存在的本地文件。相对路径按 CODE_DIR 解析（与音频一致）。
-    http(s)/data:/oss:// 形态不读本地盘，原样交给适配层（图片/视频参考的 URL 输入模式依赖此路径）；
-    file:// 是本地读取形态，剥前缀后与裸路径同口径走白名单。
-    """
-    value = (value or "").strip()
-    if not value:
-        return value
-    if value.startswith(_REMOTE_MEDIA_PREFIXES):
-        return value
-    if value.startswith("file://"):
-        value = _strip_file_uri(value)
-    candidates = [value] if os.path.isabs(value) else [
-        os.path.join(os.path.realpath(settings.CODE_DIR), value),
-        os.path.join(os.path.realpath(settings.CODE_DIR), "result", value),
-    ]
-    source = next((path for path in candidates if os.path.isfile(path)), None)
-    if source is None:
-        raise ValueError(f"{field} 文件不存在: {value}")
-    safe = resolve_within_allowed_dirs(source)
-    if not safe:
-        raise ValueError(f"{field} 路径越界（仅允许 code/temp 目录内的文件）: {value}")
-    return safe
-
-
-def _guard_media_inputs(values: Optional[List[str]], field: str) -> List[str]:
-    """逐条套用统一守卫，保留输入顺序；空值项直接丢弃。"""
-    return [_guard_media_input(item, field) for item in (values or []) if (item or "").strip()]
+# 媒体入参守卫已迁到 api.media_paths（user-input-path-guard）：sandbox、pipelines、
+# project start 共用同一实现，避免按端点各写一份造成漂移。
 
 
 # 请求模型
@@ -359,7 +316,7 @@ async def sandbox_vlm(req: SandboxVLMRequest):
     client = VLM()
     # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起请求前拒绝
     try:
-        image_paths = _guard_media_inputs(req.images, "图片")
+        image_paths = guard_media_inputs(req.images, "图片")
     except ValueError as e:
         logger.warning("Sandbox VLM media input rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
@@ -441,7 +398,7 @@ async def sandbox_i2i(req: SandboxI2IRequest):
     client = ImageClient()
     # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起生成前拒绝
     try:
-        image_path = _guard_media_input(req.image or "", "参考图片")
+        image_path = guard_media_input(req.image or "", "参考图片")
     except ValueError as e:
         logger.warning("Sandbox I2I media input rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
@@ -494,8 +451,8 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
         audio_reference_url = (
             _resolve_media_reference_url(str(request.base_url), req.audio_url) if req.audio_url else None
         )
-        image_path = _guard_media_input(req.image or "", "参考图片")
-        reference_video_paths = _guard_media_inputs(req.reference_videos, "参考视频")
+        image_path = guard_media_input(req.image or "", "参考图片")
+        reference_video_paths = guard_media_inputs(req.reference_videos, "参考视频")
     except ValueError as e:
         logger.warning("Sandbox video media reference rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
