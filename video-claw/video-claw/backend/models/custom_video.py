@@ -23,6 +23,7 @@ if backend_dir not in sys.path:
 
 import httpx  # noqa: E402 - sys.path 引导后导入
 
+from api.media_paths import remote_media_kind  # noqa: E402 - sys.path 引导后导入
 from config import Config  # noqa: E402 - sys.path 引导后导入
 from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
     DEFAULT_VIDEO_POLL_INTERVAL,
@@ -38,6 +39,28 @@ from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
 )
 
 logger = logging.getLogger(__name__)
+
+_FORM_LABELS = {
+    "http://": "http",
+    "https://": "https",
+    "data:": "data",
+    "oss://": "oss",
+}
+
+# 协议能力矩阵：参考输入支持哪些远程形态（local 恒支持，不列入）。
+# sglang 仅图片参考的 http(s) 经真机确认可作 conditions[].uri；视频条件 type 语义未取证，
+# 远程视频参考一律前置拒绝，不得以 type:image 下发。
+_VIDEO_REFERENCE_FORMS = {
+    "sglang": {"image": {"http", "https"}, "video": set()},
+    "vllm-omni": {"image": set(), "video": set()},
+    "openai": {"image": set(), "video": set()},
+}
+
+
+def _reference_form(value: str) -> str:
+    """参考输入形态：local / http / https / data / oss。"""
+    kind = remote_media_kind(value)
+    return _FORM_LABELS.get(kind, "local") if kind else "local"
 
 
 class CustomVideoClient:
@@ -102,6 +125,10 @@ class CustomVideoClient:
         缺省时请求与既有实现完全一致（向后兼容）。
         """
         duration = self._clamp_duration(duration)
+        # 参考输入按协议能力矩阵前置分流：不支持远程形态时在任何 open()/HTTP 前失败
+        self._assert_reference_support(
+            image_path, last_image_path, reference_image_paths, reference_video_paths
+        )
         # 服务实例可能只加载单个 DiT partition（vllm-omni `--task-type fl2va|ref2va`）：
         # 按能力声明的支持任务收敛输入布局，避免 task 与 partition 不符被服务端 500 拒绝
         image_path, last_image_path, reference_image_paths = self._align_task_to_partitions(
@@ -486,6 +513,46 @@ class CustomVideoClient:
             payload["audio_flow_shift"] = float(sampling["audio_flow_shift"])
         return json.dumps(payload)
 
+    def _assert_reference_support(
+        self,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        reference_image_paths: Optional[List[str]],
+        reference_video_paths: Optional[List[str]],
+    ) -> None:
+        """按协议能力矩阵前置拒绝不支持的远程参考形态（custom-adapter-remote-inputs）。"""
+        forms = _VIDEO_REFERENCE_FORMS.get(self._protocol)
+        if forms is None:
+            return
+        images = [p for p in [image_path, last_image_path, *(reference_image_paths or [])] if p]
+        videos = [p for p in (reference_video_paths or []) if p]
+        for value in images:
+            form = _reference_form(value)
+            if form == "local" or form in forms["image"]:
+                continue
+            if self._protocol == "sglang":
+                raise ValueError(
+                    f"自定义视频模型 {self._model}（sglang）不支持 {form} 形态的参考图输入；"
+                    "请上传本地文件，或改用支持该形态的协议"
+                )
+            raise ValueError(
+                f"自定义视频模型 {self._model}（{self._protocol}）不支持 URL 参考输入；"
+                "请上传本地文件或改用支持 URL 引用的协议"
+            )
+        for value in videos:
+            form = _reference_form(value)
+            if form == "local" or form in forms["video"]:
+                continue
+            if self._protocol == "sglang":
+                raise ValueError(
+                    "当前未支持远程视频参考条件（conditions[].type 仅支持 image）；"
+                    "请上传本地视频文件，或改用支持参考视频的协议"
+                )
+            raise ValueError(
+                f"自定义视频模型 {self._model}（{self._protocol}）不支持 URL 参考输入；"
+                "请上传本地文件或改用支持 URL 引用的协议"
+            )
+
     def _file_uri(self, path: str) -> str:
         """将本地路径转为 file:// URI（sglang conditions 的服务端可见引用形态）。"""
         if path.startswith("file://"):
@@ -499,6 +566,9 @@ class CustomVideoClient:
         配置基址后将 CODE_DIR 内的产物拼为 `{base}/code/<相对路径>`，仅对位于 CODE_DIR 内且真实存在的文件生效。
         """
         uris: List[str] = []
+        if remote_media_kind(path):
+            # 远程形态保留原始 URL，不拼接 file:// 伪 URI，形态数量为 1
+            return [path]
         base = str(getattr(Config, "MEDIA_REF_BASE_URL", "") or "").strip().rstrip("/")
         if base:
             code_dir = os.path.realpath(str(Config.CODE_DIR))
@@ -704,7 +774,7 @@ class CustomVideoClient:
                     protocol_fields=protocol_fields,
                     drop_size=drop_size,
                 )
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, OSError) as exc:
                 last_error = str(exc)
                 continue
             if response.status_code >= 400:
@@ -781,8 +851,18 @@ class CustomVideoClient:
         refs = self._media_reference_paths(reference_image_paths, reference_video_paths)
         task = self._task_for_input(image_path, last_image_path, refs)
         tail_only = bool(last_image_path) and not image_path
+        file_specs = self._image_file_specs(
+            image_path, last_image_path, reference_image_paths, reference_video_paths
+        )
+        if self._protocol == "sglang" and any(
+            remote_media_kind(p)
+            for p in [image_path, last_image_path, *(reference_image_paths or []), *(reference_video_paths or [])]
+            if p
+        ):
+            # 远程形态无法用 multipart 承载；conditions 变体已覆盖全部引用
+            file_specs = []
         variants = self._create_variants(
-            self._image_file_specs(image_path, last_image_path, reference_image_paths, reference_video_paths),
+            file_specs,
             task,
             duration,
             tail_only=tail_only,
@@ -826,7 +906,7 @@ class CustomVideoClient:
                 )
                 if response.status_code not in RETRYABLE_STATUS_CODES:
                     response.raise_for_status()
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, OSError) as exc:
                 last_error = str(exc)
                 last_exc = exc
         raise RuntimeError(

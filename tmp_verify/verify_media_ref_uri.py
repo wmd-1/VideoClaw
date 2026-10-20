@@ -127,6 +127,71 @@ check("已配置基址时提示检查可达性而非改配置", "10.0.0.9:8500" 
 check("无关错误不追加提示", CustomVideoClient._reference_hint("HTTP 400: target is required") == "")
 Config.MEDIA_REF_BASE_URL = ""
 
+# 7) 远程参考输入：sglang 图片 http 透传 / 视频前置拒绝 / 其他协议拒绝
+remote_img = "https://example.com/remote.png"
+captured.clear()
+sglang_remote = client("sglang")
+sglang_remote._client.post = make_post(500)
+try:
+    sglang_remote._create_job(
+        prompt="p", image_path=None, last_image_path=None,
+        reference_image_paths=[remote_img], size="1344x768", duration=5,
+        negative_prompt=None, seed=None,
+    )
+except RuntimeError:
+    pass
+check("sglang 远程图片首个请求为 conditions JSON", bool(captured) and "conditions" in (captured[0].get("json") or {}), str(len(captured)))
+check("sglang 远程图片 uri 原样透传", bool(captured) and captured[0]["json"]["conditions"][0]["uri"] == remote_img)
+check("sglang 远程图片 conditions type=image", bool(captured) and captured[0]["json"]["conditions"][0]["type"] == "image")
+check("sglang 远程图片不产生伪 URI", all("file://http" not in str(body) for body in captured))
+check("sglang 远程图片无 multipart 文件变体", all("files" not in body for body in captured))
+check("sglang 远程图片形态数量为 1", sglang_remote._reference_uri_forms(remote_img) == 1)
+
+captured.clear()
+sglang_video = client("sglang")
+sglang_video._client.post = make_post(500)
+video_err = None
+try:
+    sglang_video.generate_video(
+        prompt="p", image_path=None, save_path="/tmp/verify_remote.mp4",
+        reference_video_paths=["https://example.com/a.mp4"],
+    )
+except ValueError as exc:
+    video_err = str(exc)
+check("sglang 远程视频前置拒绝", bool(video_err) and "未支持远程视频参考条件" in str(video_err))
+check("sglang 远程视频无请求", not captured)
+
+for proto in ("vllm-omni", "openai"):
+    captured.clear()
+    other = client(proto)
+    other._client.post = make_post(500)
+    image_err = None
+    try:
+        other.generate_video(prompt="p", image_path=None, save_path="/tmp/verify_remote.mp4", reference_image_paths=["https://example.com/a.png"])
+    except ValueError as exc:
+        image_err = str(exc)
+    check(f"{proto} 远程图片前置拒绝", bool(image_err) and "不支持 URL 参考输入" in str(image_err) and not captured)
+    video_err = None
+    try:
+        other.generate_video(prompt="p", image_path=None, save_path="/tmp/verify_remote.mp4", reference_video_paths=["https://example.com/a.mp4"])
+    except ValueError as exc:
+        video_err = str(exc)
+    check(f"{proto} 远程视频前置拒绝", bool(video_err) and "不支持 URL 参考输入" in str(video_err) and not captured)
+
+for value, label in (("data:image/png;base64,QQ==", "data"), ("oss://bucket/a.png", "oss")):
+    captured.clear()
+    sglang_form = client("sglang")
+    sglang_form._client.post = make_post(500)
+    form_err = None
+    try:
+        sglang_form.generate_video(prompt="p", image_path=None, save_path="/tmp/verify_remote.mp4", reference_image_paths=[value])
+    except ValueError as exc:
+        form_err = str(exc)
+    check(f"sglang 拒绝 {label} 参考图", bool(form_err) and "sglang" in str(form_err) and "不支持" in str(form_err) and not captured)
+
+local_cond = client("sglang")._sglang_conditions_variant(None, None, [inside], "ref2va")
+check("本地视频参考 conditions 维持 type=image（未取证标注）", local_cond[2]["conditions"][0]["type"] == "image")
+
 # 清理
 for path in (inside, outside):
     try:

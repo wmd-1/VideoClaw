@@ -119,7 +119,8 @@ class CustomImageClient:
 
     def _edit_field_variants(self) -> List[Tuple[str, str]]:
         if self._protocol == "openai":
-            # url(data URL) 变体兜底远程形态输入（file 变体无法 open URL；多数 openai 兼容服务按表单字段接受）
+            # url(data URL) 变体兜底远程形态输入（file 变体无法 open URL；多数 openai 兼容服务按表单字段接受，
+            # 服务端接受性尚未真实取证（第五轮 M-3），不得据此宣称已验证）
             return [("image[]", "file"), ("image", "file"), ("url", "dataurl")]
         if self._protocol == "sglang":
             return [("image", "file"), ("url", "dataurl")]
@@ -141,9 +142,10 @@ class CustomImageClient:
             "response_format": "b64_json",
         }
         if mode == "dataurl":
-            # url 字段按 multipart 表单字段发送（无文件名），值使用 data URL
-            value = to_data_url(image_paths[0])
-            return self._client.post("/images/edits", data=data, files={field_name: (None, value)})
+            # 全部图片转为 data URL；同名多值用 list-of-tuples（httpx 0.28 不接受 dict 值传 list）
+            values = [to_data_url(path) for path in image_paths]
+            files = [(field_name, (None, value)) for value in values]
+            return self._client.post("/images/edits", data=data, files=files)
 
         handles = []
         try:
