@@ -57,6 +57,35 @@ interface ScriptEpisode {
   episode_number?: number;
   act_title: string;
   content: string;
+  line_start?: number;
+  line_end?: number;
+}
+
+interface RevisionRemovedItem {
+  name: string;
+  id?: string;
+  asset_count?: number;
+}
+
+interface RevisionEditedItem {
+  name: string;
+  id?: string;
+  current_description?: string;
+  incoming_description?: string;
+}
+
+interface PendingRevision {
+  instruction?: string;
+  scope?: 'all' | 'episode';
+  episode_number?: number | null;
+  summary?: string;
+  diff_episode_numbers?: number[];
+  stale_storyboards?: number[];
+  removed_items?: RevisionRemovedItem[];
+  user_edited_items?: RevisionEditedItem[];
+  duplicate_names?: string[];
+  episodes?: ScriptEpisode[];
+  episode?: ScriptEpisode;
 }
 
 interface ScriptData {
@@ -84,6 +113,8 @@ interface ScriptData {
   new_characters?: ScriptCharacter[];
   new_settings?: ScriptSetting[];
   new_episodes?: ScriptEpisode[];
+  /** 修订预览：仅由 AI 修改流程产生，应用/取消后清除 */
+  pending_revision?: PendingRevision;
   [key: string]: unknown;
 }
 
@@ -118,7 +149,7 @@ function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
   );
 }
 
-export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, showConfirm, isRunning, hasPendingItems, hasNextStageStarted }: StageViewProps) {
+export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onStatusMap, showConfirm, isRunning, hasPendingItems, hasNextStageStarted }: StageViewProps) {
   const data = (state.artifact || {}) as ScriptData;
 
   const isLoglinePhase = data.phase === 'logline_selection' || data.phase === 'logline_confirm' || data.phase === 'mode_selection';
@@ -144,6 +175,11 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
     settings: false,
     episodes: false,
   });
+  const [showRevisionPanel, setShowRevisionPanel] = useState(false);
+  const [revisionInstruction, setRevisionInstruction] = useState('');
+  const [revisionScope, setRevisionScope] = useState<'all' | 'episode'>('all');
+  const [revisionEpisode, setRevisionEpisode] = useState<number | null>(null);
+  const [showApplyConfirm, setShowApplyConfirm] = useState(false);
 
   const handleSmartContinueConfirm = useCallback(() => {
     onIntervene({
@@ -170,6 +206,49 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
     });
     if (!response.ok) throw new Error('保存剧本修改失败');
     return response.json();
+  };
+
+  const revision = data.pending_revision;
+  const revisionEpisodes = Array.isArray(data.episodes) ? data.episodes : [];
+
+  const submitRevision = () => {
+    const instruction = revisionInstruction.trim();
+    if (!instruction) return;
+    const payload: Record<string, unknown> = {
+      action: 'revise_script',
+      instruction,
+      scope: revisionScope,
+    };
+    if (revisionScope === 'episode') {
+      const target = revisionEpisode
+        ?? revisionEpisodes[0]?.episode_number
+        ?? revisionEpisodes[0]?.act_number;
+      if (!target) return;
+      payload.episode_number = Number(target);
+    }
+    onIntervene(payload);
+  };
+
+  const cancelRevision = async () => {
+    try {
+      const result = await patchScriptArtifact({ pending_revision: null });
+      onUpdateArtifact?.({ pending_revision: undefined });
+      // PATCH 已返回重新计算后的状态表：立即回写，避免本地停在 waiting 等下一轮轮询
+      if (result?.status_map) onStatusMap?.(result.status_map);
+      setShowRevisionPanel(false);
+      setShowApplyConfirm(false);
+    } catch (error) {
+      console.error('取消修订失败:', error);
+    }
+  };
+
+  const applyRevision = (confirmRemovals: boolean, confirmOverwrites: boolean) => {
+    onIntervene({
+      action: 'apply_revision',
+      confirm_removals: confirmRemovals,
+      confirm_overwrites: confirmOverwrites,
+    });
+    setShowApplyConfirm(false);
   };
 
   const toggleDeleteMode = (key: keyof typeof deleteMode) => {
@@ -573,6 +652,146 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               </>
             )}
           </div>
+        )}
+
+        {/* ===== AI 修改：预览 ===== */}
+        {revision && (
+          <section className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <Sparkles className="w-4 h-4 text-amber-600" />
+              <h3 className="text-sm font-semibold text-amber-800">修订预览</h3>
+              <span className="text-xs text-amber-600">
+                {revision.scope === 'episode' ? `仅第 ${revision.episode_number ?? '?'} 集` : '全剧'}
+              </span>
+            </div>
+            <p className="text-sm text-gray-700 mb-2">{revision.summary || '（模型未返回摘要）'}</p>
+            {!!revision.diff_episode_numbers?.length && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {revision.diff_episode_numbers.map(num => (
+                  <span key={num} className="px-2 py-0.5 bg-white border border-amber-200 text-amber-700 text-xs rounded-full">
+                    第 {num} 集已改动
+                  </span>
+                ))}
+              </div>
+            )}
+            {!!revision.duplicate_names?.length && (
+              <p className="text-xs text-amber-700 mb-1">同名条目（按出现顺序配对）：{revision.duplicate_names.join('、')}</p>
+            )}
+            {!!revision.removed_items?.length && (
+              <p className="text-xs text-red-600 mb-1">
+                将删除：{revision.removed_items.map(item => `${item.name}（已有资产 ${item.asset_count ?? 0}）`).join('、')}
+              </p>
+            )}
+            {!!revision.user_edited_items?.length && (
+              <p className="text-xs text-red-600 mb-1">
+                将覆盖手改描述：{revision.user_edited_items.map(item => item.name).join('、')}
+              </p>
+            )}
+            {!!revision.stale_storyboards?.length && (
+              <p className="text-xs text-red-600 mb-1">
+                第 {revision.stale_storyboards.join('、')} 集分镜可能已过期，需手动重新生成
+              </p>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                onClick={() => {
+                  if (revision.removed_items?.length || revision.user_edited_items?.length) {
+                    setShowApplyConfirm(true);
+                  } else {
+                    applyRevision(true, true);
+                  }
+                }}
+                disabled={state.status === 'running'}
+                className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 transition-colors"
+              >
+                应用修改
+              </button>
+              <button
+                onClick={cancelRevision}
+                disabled={state.status === 'running'}
+                className="px-4 py-2 text-gray-600 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => setShowRevisionPanel(true)}
+                disabled={state.status === 'running'}
+                className="px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 disabled:opacity-50 transition-colors"
+              >
+                重新输入
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ===== AI 修改：输入 ===== */}
+        {hasContent && !revision && state.status !== 'running' && (
+          <section className="mb-6 bg-white border border-gray-200 rounded-xl p-4">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <Sparkles className="w-4 h-4 text-purple-500" />
+              <h3 className="text-sm font-semibold text-gray-700">AI 修改剧本</h3>
+              <span className="text-xs text-gray-400">输入修改方向，先预览再应用</span>
+            </div>
+            {!showRevisionPanel ? (
+              <button
+                onClick={() => setShowRevisionPanel(true)}
+                className="px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 transition-colors"
+              >
+                输入修改方向
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <textarea
+                  value={revisionInstruction}
+                  onChange={e => setRevisionInstruction(e.target.value)}
+                  placeholder="例如：把第二集的冲突提前到开场，结尾更明确"
+                  className="w-full h-24 border border-gray-200 rounded-xl p-3 text-sm text-gray-700 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 resize-none"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={revisionScope}
+                    onChange={e => setRevisionScope(e.target.value as 'all' | 'episode')}
+                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:border-purple-400"
+                  >
+                    <option value="all">全剧</option>
+                    <option value="episode">仅某一集</option>
+                  </select>
+                  {revisionScope === 'episode' && (
+                    <select
+                      value={revisionEpisode ?? revisionEpisodes[0]?.episode_number ?? revisionEpisodes[0]?.act_number ?? ''}
+                      onChange={e => setRevisionEpisode(Number(e.target.value))}
+                      className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:border-purple-400"
+                    >
+                      {revisionEpisodes.map((ep, index) => {
+                        const num = getEpisodeNumber(ep, index);
+                        return (
+                          <option key={`${num}-${index}`} value={num}>
+                            第 {num} 集：{ep.act_title}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  )}
+                  <button
+                    onClick={submitRevision}
+                    disabled={!revisionInstruction.trim()}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                  >
+                    按此方向修改
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowRevisionPanel(false);
+                      setRevisionInstruction('');
+                    }}
+                    className="px-4 py-2 text-gray-500 bg-gray-50 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors"
+                  >
+                    收起
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {/* ===== 查看模式 ===== */}
@@ -1123,6 +1342,44 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               >
                 <Sparkles className="w-4 h-4 opacity-70" />
                 确认生成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 应用修订确认弹窗 ===== */}
+      {showApplyConfirm && revision && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm shadow-2xl">
+          <div className="bg-white rounded-2xl w-[min(560px,calc(100vw-2rem))] p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-gray-800 mb-4 border-b border-gray-100 pb-3">确认应用修改</h3>
+            <div className="space-y-2 text-sm text-gray-600">
+              {!!revision.removed_items?.length && (
+                <p className="text-red-600">
+                  将删除 {revision.removed_items.length} 个条目：
+                  {revision.removed_items.map(item => `${item.name}（资产 ${item.asset_count ?? 0}）`).join('、')}
+                </p>
+              )}
+              {!!revision.user_edited_items?.length && (
+                <p className="text-red-600">
+                  将覆盖 {revision.user_edited_items.length} 个手改描述：
+                  {revision.user_edited_items.map(item => item.name).join('、')}
+                </p>
+              )}
+              <p className="text-xs text-gray-400">已生成的图片/视频文件不会被删除，只移除产物中的引用。</p>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowApplyConfirm(false)}
+                className="px-5 py-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl text-sm font-bold transition-colors"
+              >
+                返回
+              </button>
+              <button
+                onClick={() => applyRevision(true, true)}
+                className="px-6 py-2.5 bg-amber-600 text-white rounded-xl text-sm font-bold hover:bg-amber-700 transition-colors shadow-md"
+              >
+                确认应用
               </button>
             </div>
           </div>

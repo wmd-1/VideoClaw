@@ -22,6 +22,8 @@ export interface StageViewProps {
   onIntervene: (modifications: Record<string, unknown>) => void;
   onRegenerate: () => void;
   onUpdateArtifact?: (patch: Record<string, unknown>) => void;
+  /** 把轻量 PATCH 返回的服务端状态表回写全局（如取消修订预览） */
+  onStatusMap?: (statusMap: Record<string, StageStatus>) => void;
   onSaveSelections?: (selections: Record<string, unknown>) => Promise<void>;
   /** 是否显示"确认并继续"按钮（后续阶段已执行过时为 false） */
   showConfirm?: boolean;

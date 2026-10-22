@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from prompts.loader import load_prompt_with_fallback
 
+from .. import script_revision
 from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 def _get_script_prompt(name: str, lang: str = "zh") -> str:
     return load_prompt_with_fallback("script", name, lang, "zh")
 
+
+# 全剧修订的上下文字符上限：超出时要求改用单集修订，不静默截断
+SCRIPT_REVISION_MAX_CHARS = 60000
 
 # 片子类型规范枚举：meta.film_type 的唯一合法取值（openspec: script-stage-promo-type-rework）
 FILM_TYPES = ("介绍", "宣传", "营销")
@@ -199,6 +203,218 @@ class ScriptWriterAgent(AgentInterface):
     def _save_progress(self, sid: str, phase: str, data: dict):
         pass
 
+    async def _run_revise_script(self, input_data: Dict[str, Any], intervention: Dict[str, Any]) -> Dict:
+        """按指令修订剧本，只产出预览，不写产物。"""
+        import copy
+
+        sid = input_data.get("session_id", "")
+        instruction = str(intervention.get("instruction") or "").strip()
+        scope = str(intervention.get("scope") or "all")
+        if not instruction:
+            raise ValueError("修改方向不能为空")
+        if scope not in ("all", "episode"):
+            raise ValueError("修改范围必须是 all 或 episode")
+
+        current = self._session_artifact(input_data, "script_generation")
+        if not current:
+            raise ValueError("剧本产物不存在，无法修订")
+        episodes = current.get("episodes") or []
+        if not episodes:
+            raise ValueError("剧本产物不包含剧集")
+
+        target_number: Optional[int] = None
+        target_episode: Optional[dict] = None
+        if scope == "episode":
+            try:
+                target_number = int(intervention.get("episode_number"))
+            except (TypeError, ValueError):
+                raise ValueError("单集修订必须指定合法集号")
+            for episode in episodes:
+                number = episode.get("episode_number", episode.get("act_number"))
+                try:
+                    if int(number) == target_number:
+                        target_episode = episode
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if target_episode is None:
+                raise ValueError(f"第 {target_number} 集不存在")
+        else:
+            total_chars = sum(len(str(ep.get("content", ""))) for ep in episodes)
+            if total_chars > SCRIPT_REVISION_MAX_CHARS:
+                raise ValueError(
+                    f"剧本约 {total_chars} 字符，超出全剧修订上限 "
+                    f"{SCRIPT_REVISION_MAX_CHARS}；请改用单集修订"
+                )
+
+        meta = current.get("meta") if isinstance(current.get("meta"), dict) else {}
+        film_type = self._normalize_film_type(meta.get("film_type")) or DEFAULT_FILM_TYPE
+        subject_mode = self._normalize_subject_mode(meta.get("subject_mode")) or DEFAULT_SUBJECT_MODE
+        is_zh = any("\u4e00" <= char <= "\u9fff" for char in instruction)
+        llm_model = self._require_input(input_data, "llm_model")
+        web_search = input_data.get("web_search", False)
+
+        from models.llm_client import LLM
+
+        llm = LLM()
+        loop = asyncio.get_running_loop()
+
+        def _log(percent: float, message: str):
+            self._report_progress("AI 修改", message, percent)
+
+        async def _call(prompt: str) -> str:
+            return await loop.run_in_executor(
+                None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
+            )
+
+        parsed: Optional[dict] = None
+        if scope == "episode":
+            template = _get_script_prompt(
+                "revise_episode_by_instruction", "zh" if is_zh else "en"
+            )
+            prompt = template.format(
+                instruction=instruction,
+                target_episode=script_revision.build_target_episode_block(target_episode),
+                other_episodes_brief=script_revision.build_episode_brief(episodes, target_number),
+                characters=json.dumps(current.get("characters") or [], ensure_ascii=False),
+                settings=json.dumps(current.get("settings") or [], ensure_ascii=False),
+                film_type=film_type,
+                subject_mode=subject_mode,
+            )
+            _log(20, "正在修订目标集...")
+            for attempt in range(2):
+                raw = await _call(prompt)
+                candidate = self._extract_json_from_text(raw)
+                if isinstance(candidate, dict) and isinstance(candidate.get("episode"), dict):
+                    parsed = candidate
+                    break
+                logger.warning("[ScriptWriter] 单集修订解析失败 attempt=%s", attempt + 1)
+                _log(40, f"修订结果解析失败，重试 {attempt + 1}/2")
+            if parsed is None:
+                raise ValueError("修订结果解析失败，请重试")
+            new_episodes = script_revision.merge_single_episode(episodes, parsed["episode"])
+            script_revision.assert_untouched_episodes(episodes, new_episodes, target_number)
+            new_characters = current.get("characters") or []
+            new_settings = current.get("settings") or []
+            revised = next(
+                ep for ep in new_episodes
+                if int(ep.get("episode_number", ep.get("act_number", 0))) == target_number
+            )
+            preview_body = {"episode": revised}
+        else:
+            template = _get_script_prompt(
+                "revise_script_by_instruction", "zh" if is_zh else "en"
+            )
+            prompt = template.format(
+                instruction=instruction,
+                episodes=json.dumps(episodes, ensure_ascii=False),
+                characters=json.dumps(current.get("characters") or [], ensure_ascii=False),
+                settings=json.dumps(current.get("settings") or [], ensure_ascii=False),
+                film_type=film_type,
+                subject_mode=subject_mode,
+            )
+            _log(20, "正在修订全剧...")
+            for attempt in range(2):
+                raw = await _call(prompt)
+                candidate = self._extract_json_from_text(raw)
+                if isinstance(candidate, dict) and isinstance(candidate.get("episodes"), list):
+                    try:
+                        new_episodes = script_revision.validate_episode_numbers(
+                            episodes, candidate["episodes"]
+                        )
+                    except ValueError as exc:
+                        logger.warning("[ScriptWriter] 全剧修订集号校验失败: %s", exc)
+                        _log(40, f"集号校验失败，重试 {attempt + 1}/2")
+                        continue
+                    parsed = candidate
+                    break
+                _log(40, f"修订结果解析失败，重试 {attempt + 1}/2")
+            if parsed is None:
+                raise ValueError("修订结果集号与原文不一致，已停止本次修订")
+            new_characters = (
+                parsed.get("characters")
+                if isinstance(parsed.get("characters"), list)
+                else (current.get("characters") or [])
+            )
+            new_settings = (
+                parsed.get("settings")
+                if isinstance(parsed.get("settings"), list)
+                else (current.get("settings") or [])
+            )
+            preview_body = {"episodes": new_episodes}
+
+        char_art = self._session_artifact(input_data, "character_design")
+        storyboard_art = self._session_artifact(input_data, "storyboard")
+        diff_numbers = script_revision.diff_episode_numbers(episodes, new_episodes)
+        preview = {
+            "instruction": instruction,
+            "scope": scope,
+            "episode_number": target_number,
+            "summary": str(parsed.get("summary") or "").strip(),
+            "base_version": script_revision.content_fingerprint(current),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "diff_episode_numbers": diff_numbers,
+            "stale_storyboards": script_revision.stale_storyboards(diff_numbers, storyboard_art),
+            "removed_items": (
+                script_revision.removed_items(
+                    current.get("characters") or [], new_characters, char_art.get("characters")
+                )
+                + script_revision.removed_items(
+                    current.get("settings") or [], new_settings, char_art.get("settings"), id_key="setting_id"
+                )
+            ),
+            "user_edited_items": (
+                script_revision.user_edited_items(
+                    current.get("characters") or [], new_characters, char_art.get("characters")
+                )
+                + script_revision.user_edited_items(
+                    current.get("settings") or [], new_settings, char_art.get("settings")
+                )
+            ),
+            "duplicate_names": (
+                script_revision.duplicate_names(new_characters)
+                + script_revision.duplicate_names(new_settings)
+            ),
+            "characters": new_characters,
+            "settings": new_settings,
+        }
+        preview.update(preview_body)
+
+        payload = copy.deepcopy(current)
+        payload["pending_revision"] = preview
+        _log(100, "修订预览已生成")
+        return {"payload": payload, "requires_intervention": True, "stage_completed": False}
+
+    async def _run_apply_revision(self, input_data: Dict[str, Any], intervention: Dict[str, Any]) -> Dict:
+        """应用预览：纯落盘，不再调用 LLM。"""
+        current = self._session_artifact(input_data, "script_generation")
+        if not current:
+            raise ValueError("剧本产物不存在，无法应用修订")
+        preview = current.get("pending_revision")
+        if not isinstance(preview, dict):
+            raise ValueError("没有待应用的修订预览")
+        if preview.get("base_version") != script_revision.content_fingerprint(current):
+            raise ValueError("预览已过期或产物已变化，请重新发起修订")
+        if preview.get("removed_items") and not intervention.get("confirm_removals"):
+            raise ValueError("存在将被删除的角色或场景，请确认后再应用")
+        if preview.get("user_edited_items") and not intervention.get("confirm_overwrites"):
+            raise ValueError("存在将被覆盖的手改描述，请确认后再应用")
+
+        updated = script_revision.apply_preview_to_artifact(
+            current,
+            preview,
+            instruction=str(preview.get("instruction") or ""),
+            scope=str(preview.get("scope") or "all"),
+            episode_number=preview.get("episode_number"),
+        )
+        self._save_result(updated, input_data.get("session_id", ""), True)
+        return {
+            "payload": updated,
+            "requires_intervention": False,
+            "stage_completed": True,
+            "revision_applied": True,
+        }
+
     @classmethod
     def _split_episode_blocks(cls, script_text: str) -> List[dict]:
         episode_re = re.compile(
@@ -307,12 +523,19 @@ class ScriptWriterAgent(AgentInterface):
         return [deduped[num] for num in cls._expected_episode_numbers(expected_episodes) if num in deduped]
 
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
+        if intervention and intervention.get("action") == "revise_script":
+            return await self._run_revise_script(input_data, intervention)
+        if intervention and intervention.get("action") == "apply_revision":
+            return await self._run_apply_revision(input_data, intervention)
+
         if intervention and "modified_script" in intervention:
             modified = intervention["modified_script"]
             sid = input_data.get("session_id", "")
             if isinstance(modified, str):
                 modified = self._extract_json_from_text(modified) or {}
             modified["session_id"] = sid
+            # 手动编辑提交的是完整产物：预览字段一律清除，不随产物落盘
+            modified.pop("pending_revision", None)
             # 类型缺省回填：保证"类型随产物持久化"对人工干预路径同样成立
             modified_meta = modified.get("meta")
             if not isinstance(modified_meta, dict):
@@ -329,6 +552,7 @@ class ScriptWriterAgent(AgentInterface):
         if intervention and intervention.get("action") in ["confirm_continue", "delete_continue"]:
             import copy
             final_data = copy.deepcopy(input_data)
+            final_data.pop("pending_revision", None)
             sid = final_data.get("session_id", "")
             
             if intervention.get("action") == "confirm_continue":
@@ -351,7 +575,7 @@ class ScriptWriterAgent(AgentInterface):
                 return {"payload": result_payload, "requires_intervention": False, "stage_completed": True}
 
             # 处理 delete_continue 的情况，直接丢弃新增内容，保持原有剧本数据不变
-            for key in ["new_episodes", "new_characters", "new_settings", "sequel_idea"]:
+            for key in ["new_episodes", "new_characters", "new_settings", "sequel_idea", "pending_revision"]:
                 final_data.pop(key, None)
             return {"payload": final_data, "requires_intervention": False, "stage_completed": True}
         # ---------------------------------------------------- #
@@ -495,6 +719,7 @@ class ScriptWriterAgent(AgentInterface):
                 })
 
             final_data = copy.deepcopy(input_data)
+            final_data.pop("pending_revision", None)
             final_data["new_episodes"] = new_episodes
             final_data["new_characters"] = new_chars
             final_data["new_settings"] = new_settings

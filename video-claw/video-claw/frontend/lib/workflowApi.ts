@@ -60,7 +60,8 @@ export interface StreamEvent {
   step_desc?: string;
   percent?: number;
   stage?: string;
-  status?: string;
+  /** stage_complete 携带持久化后的状态表；其他事件可能是字符串状态 */
+  status?: string | Record<string, string>;
   requires_intervention?: boolean;
   payload_summary?: unknown;
   content?: string;

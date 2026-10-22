@@ -1383,7 +1383,13 @@ export default function WorkflowPanel() {
           if (isBackgroundItemRegeneration) {
             commitStageState(token, stageId, { artifact: artResult.artifact });
           } else {
-            commitStageState(token, stageId, { artifact: artResult.artifact, status: 'waiting' });
+            // SSE 已携带持久化后的状态表：优先直接使用，避免二次请求失败导致界面不更新
+            const statusMap = typeof event.status === 'object' && event.status
+              ? (event.status as Record<string, string>)
+              : (await getProjectStatus(sessionId))?.status || {};
+            const nextStatus = (statusMap[stageId] as StageStatus) || 'waiting';
+            commitStageState(token, stageId, { artifact: artResult.artifact, status: nextStatus });
+            commitSessionView(token, { globalStatusMap: statusMap });
           }
         } else if (event.type === 'error') {
           console.error('Intervention error:', event.content);
@@ -1823,6 +1829,14 @@ export default function WorkflowPanel() {
         onIntervene={mods => handleIntervene(activeStage, mods)}
         onRegenerate={onRegenerateActiveStage}
         onUpdateArtifact={patch => handleUpdateArtifact(activeStage, patch)}
+        onStatusMap={map => {
+          const token = currentToken();
+          commitSessionView(token, { globalStatusMap: map });
+          // 同步当前阶段本地状态，避免取消后阶段仍显示 waiting 直到下次轮询
+          if (activeStage && map[activeStage]) {
+            commitStageState(token, activeStage, { status: map[activeStage] as StageStatus });
+          }
+        }}
         onSaveSelections={selections => handleSaveSelections(activeStage, selections)}
         showConfirm={showConfirm}
         isRunning={effectiveIsRunning}

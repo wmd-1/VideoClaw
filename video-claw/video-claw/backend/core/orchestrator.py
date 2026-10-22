@@ -18,6 +18,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from core import script_revision
 from core.agents import (
     CharacterDesignerAgent,
     PromptRewriteAgent,
@@ -511,6 +512,82 @@ class WorkflowEngine:
                 "[seed] character_design seeded from script: chars=%d settings=%d",
                 len(seeded["characters"]),
                 len(seeded["settings"]),
+            )
+        return changed
+
+    def _rebuild_stage_items_from_script(self, state: WorkflowState) -> bool:
+        """剧本修订应用后，按新角色/场景集合全量重建阶段 2 条目。
+
+        只在阶段 2 已存在产物时执行；名称归一化后复用旧条目的 id 与资产，
+        新条目沿用剧本侧 character_id/setting_id，消失的条目移出产物。
+        """
+        stage_key = WorkflowStage.CHARACTER_DESIGN.value
+        artifact = state.artifacts.get(stage_key)
+        if not isinstance(artifact, dict):
+            return False
+        script_art = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
+        if not isinstance(script_art, dict):
+            return False
+
+        changed = False
+        for list_key, source_id_key in (
+            ("characters", "character_id"),
+            ("settings", "setting_id"),
+        ):
+            source_items = script_art.get(list_key)
+            if not isinstance(source_items, list):
+                continue
+            existing_items = artifact.get(list_key)
+            if not isinstance(existing_items, list):
+                existing_items = []
+            existing_by_name = {
+                script_revision.normalize_name(item.get("name")): item
+                for item in existing_items
+                if isinstance(item, dict) and item.get("name")
+            }
+            rebuilt = []
+            for item in source_items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                previous = existing_by_name.get(script_revision.normalize_name(name)) or {}
+                item_id = item.get(source_id_key) or previous.get("id") or ""
+                # 同名条目必须复用旧 ID，避免已生成资产失去引用
+                if previous.get("id"):
+                    item_id = previous["id"]
+                if not item_id:
+                    prefix = "char" if list_key == "characters" else "set"
+                    item_id = f"{prefix}_{uuid.uuid4().hex[:6]}"
+                if item.get(source_id_key) != item_id:
+                    item[source_id_key] = item_id
+                    changed = True
+                rebuilt_item = {
+                    **copy.deepcopy(previous),
+                    "id": item_id,
+                    "name": name,
+                    "description": item.get("description", ""),
+                    "selected": previous.get("selected", ""),
+                    "versions": copy.deepcopy(previous.get("versions") or []),
+                    "status": previous.get("status", "pending"),
+                }
+                if list_key == "characters":
+                    rebuilt_item["species"] = item.get(
+                        "species", previous.get("species", "")
+                    )
+                rebuilt.append(rebuilt_item)
+
+            if rebuilt != existing_items:
+                artifact[list_key] = rebuilt
+                changed = True
+
+        if changed:
+            state.artifacts[stage_key] = artifact
+            logger.info(
+                "[revision] character_design rebuilt from script: chars=%d settings=%d",
+                len(artifact.get("characters") or []),
+                len(artifact.get("settings") or []),
             )
         return changed
 
@@ -1192,9 +1269,11 @@ class WorkflowEngine:
                         self._sync_artifacts_cross_stages(state, stage, payload)
                         # 然后清理第一阶段内部的临时增量字段并保存
                         clean_art = copy.deepcopy(payload)
-                        for key in ["new_episodes", "new_characters", "new_settings", "sequel_idea"]:
+                        for key in ["new_episodes", "new_characters", "new_settings", "sequel_idea", "pending_revision"]:
                             clean_art.pop(key, None)
                         state.artifacts[stage.value] = clean_art
+                        if result.get("revision_applied"):
+                            self._rebuild_stage_items_from_script(state)
                 else:
                     # 其他阶段正常执行跨阶段同步和赋值
                     if background_item_regeneration:
@@ -1361,6 +1440,17 @@ class WorkflowEngine:
 
     def _apply_artifact_update(self, state: WorkflowState, stage: str, body: Dict[str, Any]):
         """Apply a user edit to in-memory artifacts before the session is persisted."""
+        if stage == "script_generation":
+            # 取消请求显式携带 pending_revision；正文级编辑使预览失效；
+            # 仅改 title/logline 等元信息时保留预览（与内容指纹口径一致）。
+            current_art = state.artifacts.get(stage)
+            if isinstance(current_art, dict) and (
+                "pending_revision" in body
+                or {"episodes", "characters", "settings"} & set(body)
+            ):
+                current_art.pop("pending_revision", None)
+            # 请求体中的 pending_revision 只作为清除信号，不写入产物（避免 null 空键）
+            body.pop("pending_revision", None)
         merge_keys_by_stage = {
             "character_design": ("characters", "settings"),
             "reference_generation": ("scenes",),
