@@ -99,6 +99,14 @@ interface ScriptData {
   overall_style?: string;
   mood?: string;
   session_id?: string;
+  /** 导入路径元信息（生成路径可缺省） */
+  meta?: {
+    source_format?: string;
+    target_duration_seconds?: number | null;
+    original_text?: string;
+    explicit_cast?: boolean;
+    [key: string]: unknown;
+  };
   /** 阶段推进标识（logline_selection / logline_confirm / mode_selection ...） */
   phase?: string;
   /** logline 六要素候选与已选结果 */
@@ -478,7 +486,30 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
         <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
           <h2 className="text-lg font-semibold text-gray-800">剧本生成</h2>
         </div>
-        <p className="text-sm text-gray-500 mb-6">多轮 LLM 交互，生成结构化剧本数据</p>
+        <p className="text-sm text-gray-500 mb-2">多轮 LLM 交互，生成结构化剧本数据</p>
+        {!!data.meta?.source_format && (
+          <div className="mb-4 space-y-1">
+            <p className="text-xs text-gray-400">
+              导入剧本 ·{" "}
+              {data.meta.source_format === 'act'
+                ? '幕结构（整篇 1 集）'
+                : data.meta.source_format === 'episode'
+                  ? '集结构'
+                  : data.meta.source_format === 'scene'
+                    ? '场结构（整篇 1 集）'
+                    : data.meta.source_format === 'markdown'
+                      ? '标题结构'
+                      : '无分段标记（整篇 1 集）'}
+              {` · ${data.episodes?.length || 0} 集`}
+              {data.meta.target_duration_seconds ? ` · 目标 ${data.meta.target_duration_seconds} 秒` : ''}
+            </p>
+            {(data.episodes || []).some(ep => (ep.content || '').split('\n').filter(Boolean).length > 60) && (
+              <p className="text-xs text-amber-600">
+                部分集行数较多；分镜阶段会按目标时长压缩，不会裁剪原文。
+              </p>
+            )}
+          </div>
+        )}
 
         {/* 运行中 - 进度条 & 已选 Logline & 增量生成结果 */}
         {state.status === 'running' && (

@@ -21,6 +21,8 @@ const HOME_MODEL_SELECT_CLASS = 'bg-white border border-gray-200 rounded-lg px-2
 export interface ProjectParams {
   idea: string;
   file_path?: string; // 上传的文件路径 (由后端返回的文件名)
+  /** 剧本来源：idea=按灵感生成；upload=保真导入上传剧本 */
+  script_source?: 'idea' | 'upload';
   style: string;
   video_ratio: string;
   video_resolution: string;
@@ -99,6 +101,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<{name: string, path: string} | null>(null);
+  const [creationMode, setCreationMode] = useState<'idea' | 'upload'>('idea');
 
   // 管理模式状态
   const [manageMode, setManageMode] = useState(false);
@@ -119,7 +122,11 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         ? selectedReferenceVideo
         : selectedFirstFrameVideo;
   const modelConfigReady = Boolean(selectedLLM && selectedVLM && selectedT2I && selectedI2I && activeVideoModel && selectedRatio && selectedResolution);
-  const canStart = Boolean((idea.trim() || uploadedFile) && modelConfigReady && !configLoading);
+  const canStart = Boolean(
+    (creationMode === 'upload' ? Boolean(uploadedFile) : (idea.trim() || uploadedFile))
+    && modelConfigReady
+    && !configLoading
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -229,6 +236,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
     onStartProject({
       idea,
       file_path: uploadedFile?.path, // 如果上传了文件，传给后端
+      script_source: creationMode,
       style: selectedStyle,
       video_ratio: selectedRatio,
       video_resolution: selectedResolution,
@@ -245,7 +253,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       video_model: activeVideoModel,
       enable_concurrency: enableConcurrency,
       web_search: webSearch,
-      episodes,
+      episodes: creationMode === 'upload' ? undefined : episodes,
     }, auto);
   };
 
@@ -318,22 +326,54 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
 
         {/* 输入区域 */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-6">
-          <textarea
-            value={idea}
-            onChange={e => setIdea(e.target.value)}
-            placeholder="描述你的视频创意... 例如：一只叫Luna的猫意外进入太空站，遇到一个孤独的宇航员"
-            className="w-full bg-transparent text-sm text-gray-800 placeholder-gray-400 resize-none outline-none min-h-[100px]"
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey && (idea.trim() || uploadedFile)) {
-                e.preventDefault();
-                handleStart(false);
-              }
-            }}
-          />
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <span className="text-xs text-gray-500">创作方式</span>
+            <div className="inline-flex rounded-lg bg-gray-100 p-0.5">
+              <button
+                onClick={() => setCreationMode('idea')}
+                className={clsx(
+                  'px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                  creationMode === 'idea' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                )}
+              >
+                灵感生成
+              </button>
+              <button
+                onClick={() => setCreationMode('upload')}
+                className={clsx(
+                  'px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                  creationMode === 'upload' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                )}
+              >
+                导入剧本
+              </button>
+            </div>
+            {creationMode === 'upload' && (
+              <span className="text-xs text-gray-400">按原文保真解析，不重新生成</span>
+            )}
+          </div>
+          {creationMode === 'idea' ? (
+            <textarea
+              value={idea}
+              onChange={e => setIdea(e.target.value)}
+              placeholder="描述你的视频创意... 例如：一只叫Luna的猫意外进入太空站，遇到一个孤独的宇航员"
+              className="w-full bg-transparent text-sm text-gray-800 placeholder-gray-400 resize-none outline-none min-h-[100px]"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey && (idea.trim() || uploadedFile)) {
+                  e.preventDefault();
+                  handleStart(false);
+                }
+              }}
+            />
+          ) : (
+            <div className="min-h-[100px] flex items-center text-sm text-gray-500">
+              上传 Word / TXT / MD / PDF 剧本，系统将按原文保真解析为结构化剧本，并自动提取角色与场景。
+            </div>
+          )}
 
           <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
             <div className="flex items-center gap-3">
-              <div className="relative">
+              <div className={clsx('relative', creationMode === 'upload' && 'hidden')}>
                 <button
                   onClick={() => setShowEpisodesPanel(!showEpisodesPanel)}
                   className={clsx(
@@ -450,7 +490,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                     ? 'bg-blue-50 text-blue-600 border-blue-100 hover:bg-blue-100'
                     : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-200'
                 )}
-                title={uploadedFile ? `已选择: ${uploadedFile.name} (点击取消)` : "上传文档 (Word/TXT/MD)"}
+                title={uploadedFile ? `已选择: ${uploadedFile.name} (点击取消)` : (creationMode === 'upload' ? "导入剧本 (Word/TXT/MD/PDF)" : "上传文档 (Word/TXT/MD)")}
               >
                 {uploading ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -459,7 +499,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                 ) : (
                   <Upload className="w-4 h-4" />
                 )}
-                {uploading ? '上传中...' : uploadedFile ? `已选: ${uploadedFile.name.length > 8 ? uploadedFile.name.substring(0, 8) + '...' : uploadedFile.name}` : '上传文件'}
+                {uploading ? '上传中...' : uploadedFile ? `已选: ${uploadedFile.name.length > 8 ? uploadedFile.name.substring(0, 8) + '...' : uploadedFile.name}` : (creationMode === 'upload' ? '导入剧本' : '上传文件')}
                 {uploadedFile && (
                   <div className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5">
                     <X className="w-2.5 h-2.5" />
@@ -477,22 +517,24 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                 )}
               >
                 <Play className="w-4 h-4" />
-                逐步创作
+                {creationMode === 'upload' ? '开始解析' : '逐步创作'}
               </button>
-              <button
-                onClick={() => handleStart(true)}
-                disabled={!canStart}
-                className={clsx(
-                  'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors',
-                  canStart
-                    ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
-                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                )}
-                title={`自动执行全部 ${enabledStages.length} 个阶段，无需手动确认`}
-              >
-                <Zap className="w-4 h-4" />
-                一键生成
-              </button>
+              {creationMode === 'idea' && (
+                <button
+                  onClick={() => handleStart(true)}
+                  disabled={!canStart}
+                  className={clsx(
+                    'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors',
+                    canStart
+                      ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
+                      : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  )}
+                  title={`自动执行全部 ${enabledStages.length} 个阶段，无需手动确认`}
+                >
+                  <Zap className="w-4 h-4" />
+                  一键生成
+                </button>
+              )}
             </div>
           </div>
           {(configLoading || configError) && (

@@ -1,0 +1,14 @@
+You are a script scene analyzer. Below are act/scene headings and their visual-description snippets.
+Extract filmable locations and bind each to its heading line numbers.
+
+[Rules]
+1. Output JSON only:
+   {{"settings": [{{"name": "location", "description": "space type + lighting + key furnishings", "aliases": ["alias"], "heading_lines": [line_number]}}]}}
+2. "name" MUST be a location phrase from the source text. Emit one entry per location and list all matching heading lines.
+3. Exclude on-screen UI, reports, online-banking pages and progress bars; they are not filmable locations.
+4. Descriptions MUST stay objective and shootable, 30-50 characters; no character actions, expressions or emotions.
+5. Do not rewrite the script; output extraction results only.
+6. No explanations, no Markdown code fences.
+
+[Act/scene headings and visual descriptions]
+{scene_blocks}

@@ -6,6 +6,8 @@ from pydantic import BaseModel
 class ProjectStartRequest(BaseModel):
     idea: str
     file_path: Optional[str] = None
+    # 剧本来源：idea=按灵感生成（默认）；upload=保真导入上传剧本
+    script_source: Optional[str] = "idea"
     style: Optional[str] = None
     video_ratio: Optional[str] = "9:16"
     video_resolution: Optional[str] = "720P"

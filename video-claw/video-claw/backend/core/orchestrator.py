@@ -1274,6 +1274,15 @@ class WorkflowEngine:
                         state.artifacts[stage.value] = clean_art
                         if result.get("revision_applied"):
                             self._rebuild_stage_items_from_script(state)
+                        source_episode_count = result.get("source_episode_count")
+                        if source_episode_count is not None:
+                            try:
+                                state.meta["episodes"] = int(source_episode_count)
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "[execute_stage] invalid source_episode_count=%r",
+                                    source_episode_count,
+                                )
                 else:
                     # 其他阶段正常执行跨阶段同步和赋值
                     if background_item_regeneration:

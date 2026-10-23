@@ -120,16 +120,26 @@ def _preflight_stage_models(stage: str, values: dict) -> None:
 
 @router.post("/api/project/start")
 async def start_project(req: ProjectStartRequest):
-    try:
-        final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
-    except ValueError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+    script_source = (req.script_source or "idea").strip().lower()
+    if script_source not in {"idea", "upload"}:
+        raise HTTPException(400, detail="script_source 必须是 idea 或 upload")
+    if script_source == "upload":
+        if not req.file_path:
+            raise HTTPException(400, detail="导入剧本必须上传文件")
+        # 导入模式：文件内容由剧本阶段保真解析，不拼进 idea
+        final_idea = req.idea or ""
+    else:
+        try:
+            final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
     _require_model_fields(req.model_dump())
 
     session_id = str(int(time.time() * 1000))
     meta = {
         "idea": final_idea,
         "user_textbox_input": req.idea,
+        "script_source": script_source,
         "style": req.style or getattr(settings, "STYLE", None) or "realistic",
         "video_ratio": req.video_ratio or "9:16",
         "video_resolution": req.video_resolution or "720P",
@@ -152,6 +162,8 @@ async def start_project(req: ProjectStartRequest):
         "web_search": req.web_search if req.web_search is not None else False,
         "episodes": req.episodes if req.episodes is not None else 4,
     }
+    if script_source == "upload":
+        meta["file_path"] = req.file_path
     meta["video_model"] = _active_video_model(meta)
     session = workflow_engine.create_session(session_id, meta)
 

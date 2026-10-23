@@ -407,6 +407,8 @@ export function subscribePipelineTask(
 export async function startProject(params: {
   idea: string;
   file_path?: string;
+  /** 剧本来源：idea=按灵感生成；upload=保真导入上传剧本 */
+  script_source?: 'idea' | 'upload';
   style?: string;
   video_ratio?: string;
   video_resolution?: string;

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from prompts.loader import load_prompt_with_fallback
 
-from .. import script_revision
+from .. import script_import, script_revision
 from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
@@ -415,6 +415,170 @@ class ScriptWriterAgent(AgentInterface):
             "revision_applied": True,
         }
 
+    @staticmethod
+    def _resolve_uploaded_document(file_path: str) -> str:
+        """复用上传目录守卫；越界或缺失直接拒绝。"""
+        from api.media_paths import guard_uploaded_document_name
+        from config import settings as app_settings
+
+        safe_name = guard_uploaded_document_name(file_path)
+        temp_root = os.path.realpath(app_settings.TEMP_DIR)
+        full_path = os.path.realpath(os.path.join(temp_root, safe_name))
+        if full_path != temp_root and not full_path.startswith(temp_root + os.sep):
+            raise ValueError("file_path 路径越界（仅允许上传目录内的文件）")
+        if not os.path.exists(full_path):
+            raise ValueError("上传文件不存在，请重新上传")
+        return full_path
+
+    @staticmethod
+    def _scene_blocks(lines: List[str], candidates: List[dict]) -> str:
+        headings = [item for item in candidates if item["level"] in ("act", "scene")]
+        blocks: List[str] = []
+        for index, heading in enumerate(headings):
+            end = headings[index + 1]["line"] if index + 1 < len(headings) else len(lines)
+            body = [line.strip()[:160] for line in lines[heading["line"] + 1:end] if line.strip()][:8]
+            blocks.append(
+                f"行{heading['line']} 标题：{heading['title']}\n画面描述："
+                + ("\n".join(body) or "（无）")
+            )
+        return "\n\n".join(blocks)
+
+    async def _run_import_script(self, input_data: Dict[str, Any]) -> Dict:
+        """保真导入：只做结构解析、角色/场景与元信息提取，不调用生成/评估/修订/删减。"""
+        from models.file_reader import FileReader
+        from models.llm_client import LLM
+
+        sid = input_data.get("session_id", "")
+        session_meta = self._session_meta(input_data)
+        file_path = str(session_meta.get("file_path") or input_data.get("file_path") or "").strip()
+        if not file_path:
+            raise ValueError("导入剧本缺少上传文件")
+        full_path = self._resolve_uploaded_document(file_path)
+
+        self._report_progress("剧本导入", "正在读取上传剧本...", 10)
+        raw_text = FileReader.extract_text(full_path)
+        if not str(raw_text or "").strip():
+            raise ValueError("上传剧本内容为空")
+
+        lines = script_import.split_lines(raw_text)
+        candidates = script_import.detect_candidates(lines)
+        is_zh = any("\u4e00" <= char <= "\u9fff" for char in raw_text[:2000])
+        lang = "zh" if is_zh else "en"
+        llm_model = self._require_input(input_data, "llm_model")
+        web_search = input_data.get("web_search", False)
+        llm = LLM()
+        loop = asyncio.get_running_loop()
+
+        async def _call(prompt: str) -> str:
+            return await loop.run_in_executor(
+                None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
+            )
+
+        # L2：仅在候选歧义时让模型裁决集级分段点，不接触正文
+        llm_starts = None
+        if script_import.needs_llm_decision(candidates):
+            self._report_progress("剧本导入", "正在判定分集边界...", 30)
+            candidate_text = "\n".join(
+                f'{item["line"]}: {item["title"][:40]} [{item["level"]}]'
+                for item in candidates[:200]
+            )
+            try:
+                prompt = _get_script_prompt("structure_probe", lang).format(candidates=candidate_text)
+                parsed = self._extract_json_from_text(await _call(prompt))
+                if isinstance(parsed, dict) and isinstance(parsed.get("episode_start_lines"), list):
+                    llm_starts = [
+                        int(value)
+                        for value in parsed["episode_start_lines"]
+                        if str(value).lstrip("-").isdigit()
+                    ] or None
+            except Exception:
+                logger.warning("[ScriptImport] 结构裁决失败，回退确定性规则", exc_info=True)
+
+        # 场景抽取：只传幕/场标题与画面描述片段
+        self._report_progress("剧本导入", "正在抽取场景...", 50)
+        inferred_settings: List[dict] = []
+        heading_mapping: Dict[int, str] = {}
+        scene_blocks = self._scene_blocks(lines, candidates)
+        if scene_blocks:
+            try:
+                prompt = _get_script_prompt("scene_extract", lang).format(scene_blocks=scene_blocks)
+                parsed = self._extract_json_from_text(await _call(prompt))
+                if isinstance(parsed, dict) and isinstance(parsed.get("settings"), list):
+                    candidate_lines = {item["line"] for item in candidates}
+                    for item in parsed["settings"]:
+                        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                            continue
+                        inferred_settings.append(item)
+                        for line_no in item.get("heading_lines") or []:
+                            try:
+                                value = int(line_no)
+                            except (TypeError, ValueError):
+                                continue
+                            if value in candidate_lines:
+                                heading_mapping[value] = str(item["name"]).strip()
+            except Exception:
+                logger.warning("[ScriptImport] 场景抽取失败，保留空场景", exc_info=True)
+
+        # 元信息与角色/场景补全：不覆盖显式角色设定
+        self._report_progress("剧本导入", "正在提取角色与元信息...", 70)
+        meta_data: Dict[str, Any] = {}
+        try:
+            meta_text = raw_text if len(raw_text) <= 60000 else raw_text[:60000]
+            if len(raw_text) > 60000:
+                logger.warning(
+                    "[ScriptImport] 剧本 %d 字符，元信息/角色提取仅使用前 60000 字符",
+                    len(raw_text),
+                )
+            prompt = _get_script_prompt("import_meta_extract", lang).format(script_text=meta_text)
+            parsed = self._extract_json_from_text(await _call(prompt))
+            if isinstance(parsed, dict):
+                meta_data = parsed
+        except Exception:
+            logger.warning("[ScriptImport] 元信息提取失败，使用默认值", exc_info=True)
+
+        inferred_characters = meta_data.get("characters") if isinstance(meta_data.get("characters"), list) else []
+        meta_settings = meta_data.get("settings") if isinstance(meta_data.get("settings"), list) else []
+        existing_names = {
+            str(item.get("name") or "").strip()
+            for item in inferred_settings
+            if isinstance(item, dict)
+        }
+        for item in meta_settings:
+            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                continue
+            if str(item["name"]).strip() in existing_names:
+                continue
+            inferred_settings.append(item)
+            existing_names.add(str(item["name"]).strip())
+
+        film_type = self._normalize_film_type(meta_data.get("film_type")) or DEFAULT_FILM_TYPE
+        subject_mode = self._normalize_subject_mode(meta_data.get("subject_mode")) or DEFAULT_SUBJECT_MODE
+
+        self._report_progress("剧本导入", "正在组装结构化剧本...", 90)
+        artifact = script_import.build_import_artifact(
+            raw_text,
+            session_id=sid,
+            title=str(meta_data.get("title") or "").strip(),
+            logline=str(meta_data.get("logline") or "").strip(),
+            genre=meta_data.get("genre") if isinstance(meta_data.get("genre"), list) else [],
+            mood=str(meta_data.get("mood") or "").strip(),
+            film_type=film_type,
+            subject_mode=subject_mode,
+            llm_start_lines=llm_starts,
+            inferred_characters=inferred_characters,
+            inferred_settings=inferred_settings,
+            setting_by_heading_line=heading_mapping,
+        )
+        artifact.pop("source_episode_count", None)
+        self._save_result(artifact, sid, is_zh)
+        self._report_progress("剧本导入", "剧本解析完成", 100)
+        return {
+            "payload": artifact,
+            "requires_intervention": False,
+            "stage_completed": True,
+            "source_episode_count": len(artifact.get("episodes") or []),
+        }
+
     @classmethod
     def _split_episode_blocks(cls, script_text: str) -> List[dict]:
         episode_re = re.compile(
@@ -523,6 +687,8 @@ class ScriptWriterAgent(AgentInterface):
         return [deduped[num] for num in cls._expected_episode_numbers(expected_episodes) if num in deduped]
 
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
+        if str(input_data.get("script_source") or "") == "upload" and not intervention:
+            return await self._run_import_script(input_data)
         if intervention and intervention.get("action") == "revise_script":
             return await self._run_revise_script(input_data, intervention)
         if intervention and intervention.get("action") == "apply_revision":

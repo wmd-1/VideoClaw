@@ -103,6 +103,11 @@ class StoryboardAgent(AgentInterface):
             name = str(item.get("name", "")).strip()
             if name:
                 names.append(name)
+            # 导入产物可能带别名（同一地点的其他叫法）
+            for alias in item.get("aliases") or []:
+                text = str(alias).strip()
+                if text:
+                    names.append(text)
         return sorted(set(names), key=len, reverse=True)
 
     @classmethod
@@ -127,13 +132,39 @@ class StoryboardAgent(AgentInterface):
         text: str,
         current_location: str,
         setting_names: List[str],
+        alias_map: Optional[Dict[str, str]] = None,
     ) -> str:
+        mapping = alias_map or {}
         for name in setting_names:
             if cls._setting_matches_text(name, text):
-                return name
+                # 别名只用于匹配，落盘地点必须回规范名，否则下游取不到场景参考图
+                return mapping.get(name, name)
         if current_location:
             return current_location
-        return setting_names[0] if setting_names else ""
+        fallback = setting_names[0] if setting_names else ""
+        return mapping.get(fallback, fallback)
+
+    @staticmethod
+    def _alias_map(settings: List[dict]) -> Dict[str, str]:
+        """别名 -> 规范场景名；规范名自身也映射到自己。"""
+        mapping: Dict[str, str] = {}
+        for item in settings:
+            if not isinstance(item, dict):
+                continue
+            canonical = str(item.get("name", "")).strip()
+            if not canonical:
+                continue
+            mapping[canonical] = canonical
+            for alias in item.get("aliases") or []:
+                text = str(alias).strip()
+                if text:
+                    mapping[text] = canonical
+        return mapping
+
+    @staticmethod
+    def _canonical_location(location: str, alias_map: Dict[str, str]) -> str:
+        text = str(location or "").strip()
+        return alias_map.get(text, text)
 
     @classmethod
     def _parse_scene_header_parts(cls, line: str, setting_names: List[str]) -> Optional[dict]:
@@ -229,14 +260,56 @@ class StoryboardAgent(AgentInterface):
         script_text: str,
         characters: List[dict],
         settings: List[dict],
+        annotations: Optional[List[dict]] = None,
+        scene_spans: Optional[List[dict]] = None,
+        line_offset: Optional[int] = None,
+        baseline_line_count: Optional[int] = None,
     ) -> Tuple[str, List[dict]]:
         character_names = cls._character_names(characters)
         setting_names = cls._setting_names(settings)
         raw_lines = script_text.replace("\r\n", "\n").split("\n")
 
+        alias_map = cls._alias_map(settings)
+
+        # 导入标注是全局行号：只有标注未越界时整体启用，否则回退正则
+        annotation_by_line: Dict[int, dict] = {}
+        if isinstance(annotations, list) and annotations and line_offset is not None:
+            try:
+                max_line = max(
+                    int(item.get("line", -1))
+                    for item in annotations
+                    if isinstance(item, dict)
+                )
+            except (TypeError, ValueError):
+                max_line = -1
+            if baseline_line_count is None or max_line < int(baseline_line_count):
+                for item in annotations:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        annotation_by_line[int(item.get("line"))] = item
+                    except (TypeError, ValueError):
+                        continue
+        use_annotations = bool(annotation_by_line)
+
+        span_by_line: Dict[int, dict] = {}
+        if use_annotations and isinstance(scene_spans, list):
+            for span in scene_spans:
+                if not isinstance(span, dict):
+                    continue
+                try:
+                    from_line = int(span.get("from_line"))
+                    to_line = int(span.get("to_line"))
+                except (TypeError, ValueError):
+                    continue
+                for line_no in range(from_line, min(to_line, from_line + 2000) + 1):
+                    span_by_line[line_no] = span
+
         annotated_lines: List[str] = []
         units: List[dict] = []
-        current_location = setting_names[0] if setting_names else ""
+        current_location = cls._canonical_location(
+            setting_names[0] if setting_names else "", alias_map
+        )
         current_scene_time = ""
         current_scene_space = ""
         current_scene_context = ""
@@ -248,6 +321,68 @@ class StoryboardAgent(AgentInterface):
             line = cls._clean_script_line(cls._strip_markup(stripped))
             if not line:
                 continue
+            global_line = (line_offset or 0) + (line_number - 1)
+            annotation = annotation_by_line.get(global_line) if use_annotations else None
+            if use_annotations:
+                span = span_by_line.get(global_line)
+                if span:
+                    span_setting = str(span.get("setting") or "").strip()
+                    if span_setting and span_setting != current_location:
+                        current_location = span_setting
+                        scene_key += 1
+                        scene_characters = cls._match_characters(line, character_names)
+            if annotation and annotation.get("type") in {
+                "heading",
+                "meta",
+                "cast_block",
+                "subtitle",
+                "end_card",
+            }:
+                if annotation.get("type") == "heading":
+                    span = span_by_line.get(global_line) if use_annotations else None
+                    # scene_spans 缺失或未覆盖该标题时，回退既有场景头解析
+                    if not span:
+                        header_parts = cls._parse_scene_header_parts(stripped, setting_names)
+                        if header_parts:
+                            scene_key += 1
+                            current_location = cls._canonical_location(
+                                header_parts.get("location", current_location), alias_map
+                            )
+                            current_scene_time = header_parts.get("scene_time", "")
+                            current_scene_space = header_parts.get("scene_space", "")
+                            current_scene_context = header_parts.get(
+                                "scene_context", cls._strip_markup(stripped)
+                            )
+                            scene_characters = cls._match_characters(line, character_names)
+                annotated_lines.append(line)
+                continue
+            if annotation and annotation.get("type") == "placeholder":
+                duration = 2
+                unit_id = f"U{len(units) + 1:03d}"
+                units.append(
+                    {
+                        "unit_id": unit_id,
+                        "line_number": line_number,
+                        "text": line,
+                        "duration": duration,
+                        "is_dialogue": False,
+                        "speaker": "",
+                        "tone": "",
+                        "characters": cls._match_characters(line, character_names),
+                        "scene_characters": scene_characters[:],
+                        "scene_key": scene_key,
+                        "location": cls._resolve_location(
+                            line, current_location, setting_names, alias_map
+                        ),
+                        "scene_time": current_scene_time,
+                        "scene_space": current_scene_space,
+                        "scene_context": current_scene_context,
+                        "is_entry": False,
+                    }
+                )
+                # 必须带时长与 U 编号，否则分段规划无法覆盖该单元
+                annotated_lines.append(f"[{duration}秒][{unit_id}] {line}")
+                continue
             if cls._is_metadata_line(line) or cls._is_end_marker(line):
                 annotated_lines.append(line)
                 continue
@@ -255,7 +390,9 @@ class StoryboardAgent(AgentInterface):
             header_parts = cls._parse_scene_header_parts(stripped, setting_names)
             if header_parts:
                 scene_key += 1
-                current_location = header_parts.get("location", current_location)
+                current_location = cls._canonical_location(
+                    header_parts.get("location", current_location), alias_map
+                )
                 current_scene_time = header_parts.get("scene_time", "")
                 current_scene_space = header_parts.get("scene_space", "")
                 current_scene_context = header_parts.get("scene_context", cls._strip_markup(stripped))
@@ -270,6 +407,11 @@ class StoryboardAgent(AgentInterface):
 
             dialogue = cls._dialogue_parts(line)
             is_action = bool(re.match(r"^<action>", stripped, flags=re.I)) or bool(re.search(r"</action>$", stripped, flags=re.I))
+            if annotation and annotation.get("type") == "dialogue":
+                speaker_hint = str(annotation.get("speaker") or "").strip()
+                if speaker_hint:
+                    dialogue = (speaker_hint, str(annotation.get("tone") or ""), line)
+                    is_action = False
             if not dialogue and not is_action:
                 annotated_lines.append(line)
                 continue
@@ -298,7 +440,9 @@ class StoryboardAgent(AgentInterface):
                 "characters": unit_chars,
                 "scene_characters": scene_characters[:],
                 "scene_key": scene_key,
-                "location": cls._resolve_location(line, current_location, setting_names),
+                "location": cls._resolve_location(
+                    line, current_location, setting_names, alias_map
+                ),
                 "scene_time": current_scene_time,
                 "scene_space": current_scene_space,
                 "scene_context": current_scene_context,
@@ -866,6 +1010,33 @@ class StoryboardAgent(AgentInterface):
         )
         return self._fallback_design_segment(ep_n, plan)
 
+    @staticmethod
+    def _apply_duration_budget(
+        units: List[dict],
+        target_seconds: Any,
+        ep_n: int,
+        progress_note: Optional[Callable[[str], None]] = None,
+    ) -> List[dict]:
+        """按目标时长缩放单元时长；单单元不低于 2 秒，触发下限后只提示不硬删。"""
+        try:
+            target = int(target_seconds or 0)
+        except (TypeError, ValueError):
+            target = 0
+        if target <= 0 or not units:
+            return units
+        total = sum(int(unit.get("duration") or 0) for unit in units)
+        if total <= target * 1.2:
+            return units
+        ratio = target / total if total else 1
+        for unit in units:
+            unit["duration"] = max(2, int(round(int(unit.get("duration") or 2) * ratio)))
+        scaled = sum(int(unit.get("duration") or 0) for unit in units)
+        if scaled > target * 1.2 and progress_note:
+            progress_note(
+                f"第 {ep_n} 集内容超出目标时长（{scaled}s > {target}s），已按单元下限压缩"
+            )
+        return units
+
     async def _design_episode_storyboard(
         self,
         ep_n: int,
@@ -877,10 +1048,23 @@ class StoryboardAgent(AgentInterface):
         llm_model: str,
         sid: str,
         progress_note: Optional[Callable[[str], None]] = None,
+        script_context: Optional[dict] = None,
     ) -> List[dict]:
-        annotated_script, units = self._annotate_episode_script(ep_c, characters, settings)
+        context = script_context or {}
+        annotated_script, units = self._annotate_episode_script(
+            ep_c,
+            characters,
+            settings,
+            annotations=context.get("annotations"),
+            scene_spans=context.get("scene_spans"),
+            line_offset=context.get("line_start"),
+            baseline_line_count=context.get("baseline_line_count"),
+        )
         if not units:
             raise Exception(f"第 {ep_n} 集未能识别出动作或台词")
+        self._apply_duration_budget(
+            units, context.get("target_duration_seconds"), ep_n, progress_note
+        )
 
         logger.info("[Storyboard] Episode %s annotated %d script units", ep_n, len(units))
         if progress_note:
@@ -1011,10 +1195,13 @@ class StoryboardAgent(AgentInterface):
         """
         character_names = cls._character_names(characters)
         setting_names = cls._setting_names(settings)
+        alias_map = cls._alias_map(settings)
         raw_lines = [cls._strip_markup(line) for line in script_text.replace("\r\n", "\n").split("\n")]
 
         atomic_shots: List[dict] = []
-        current_location = setting_names[0] if setting_names else ""
+        current_location = cls._canonical_location(
+            setting_names[0] if setting_names else "", alias_map
+        )
         current_scene_time = ""
         current_scene_space = ""
         current_scene_context = ""
@@ -1033,7 +1220,9 @@ class StoryboardAgent(AgentInterface):
             if header_parts:
                 found_scene_header = True
                 scene_key += 1
-                current_location = header_parts.get("location", current_location)
+                current_location = cls._canonical_location(
+                    header_parts.get("location", current_location), alias_map
+                )
                 current_scene_time = header_parts.get("scene_time", "")
                 current_scene_space = header_parts.get("scene_space", "")
                 current_scene_context = header_parts.get("scene_context", line)
@@ -1322,6 +1511,15 @@ class StoryboardAgent(AgentInterface):
             ep_n = ep.get("episode_number", 1)
             ep_t = ep.get("act_title", f"第{ep_n}集")
             ep_c = ep.get("content", "")
+            script_meta = script_data.get("meta") if isinstance(script_data.get("meta"), dict) else {}
+            baseline_text = str(script_meta.get("original_text") or "")
+            script_context = {
+                "annotations": script_data.get("line_annotations"),
+                "scene_spans": script_data.get("scene_spans"),
+                "line_start": ep.get("line_start"),
+                "baseline_line_count": len(baseline_text.split("\n")) if baseline_text else None,
+                "target_duration_seconds": script_meta.get("target_duration_seconds"),
+            }
             report_storyboard_note(f"正在处理第 {ep_n} 集分镜")
             segments = await self._design_episode_storyboard(
                 ep_n,
@@ -1333,6 +1531,7 @@ class StoryboardAgent(AgentInterface):
                 llm_model,
                 sid,
                 progress_note=report_storyboard_note,
+                script_context=script_context,
             )
 
             return {
