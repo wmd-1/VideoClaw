@@ -1,25 +1,24 @@
 'use client';
 
 import { useState, useEffect, useRef, DragEvent } from 'react';
-import { Sparkles, Image, Video, MessageSquare, Zap, Loader2, Copy, Check, Trash2, X, FolderOpen, Upload, Globe, Hexagon } from 'lucide-react';
+import { Sparkles, Image, Video, MessageSquare, Zap, Loader2, Copy, Check, Trash2, X, FolderOpen, Upload, Hexagon } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { VIDEO_RATIOS, VIDEO_RESOLUTIONS, type ModelOption, type ProviderGroup } from '@/config/models';
 import BrandHeader from '@/components/BrandHeader';
 import { DIRECT_API_BASE, fetchSandboxTasks, uploadMedia } from '@/lib/workflowApi';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 
-// 辅助函数：将相对路径转换为完整 URL
+import { apiFetch } from "@/lib/identity";
+import { withBasePathUrl } from "@/lib/basePath";
+// 辅助函数：将后端媒体路径转换为同源 + 部署前缀的 URL（见 lib/basePath）
 const toMediaUrl = (path: string) => {
   if (!path) return '';
-  // 如果已经是完整 URL，直接返回
-  if (path.startsWith('http://') || path.startsWith('https://')) return path;
-  // 相对路径添加 /code/ 前缀（result/xxx 格式）
-  if (path.startsWith('result/')) {
-    return `/code/${path}`;
-  } else if (!path.startsWith('/code/')) {
-    return `/code/result/${path}`;
-  }
-  return path;
+  // 已含 /code/ 的路径（相对、带前导斜杠或带域名的绝对地址）统一归一化
+  if (path.includes('/code/')) return withBasePathUrl(path);
+  // 相对路径添加 /code/ 前缀（result/xxx 格式，兼容带前导斜杠）
+  if (path.startsWith('result/')) return withBasePathUrl(`/code/${path}`);
+  if (path.startsWith('/result/')) return withBasePathUrl(`/code${path}`);
+  return withBasePathUrl(`/code/result/${path}`);
 };
 
 async function readJsonResponse(resp: Response) {
@@ -246,7 +245,8 @@ function ImageUploader({
           />
           {value && isUrl && (
             <div className="relative group">
-              <img src={value} alt="预览" className="max-h-48 rounded-lg border border-gray-200" />
+              {/* 用户可能粘后端下发的 http(s) 绝对地址（含 /code/），统一改写成同源+前缀；外部 CDN 原样 */}
+              <img src={withBasePathUrl(value)} alt="预览" className="max-h-48 rounded-lg border border-gray-200" />
               <button
                 onClick={() => onChange('')}
                 className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
@@ -264,6 +264,7 @@ function ImageUploader({
           {value && !isUrl ? (
             <div className="relative group">
               {previewUrl ? (
+                // 本地 blob 预览（URL.createObjectURL），不经部署前缀
                 <img src={previewUrl} alt="上传的图片" className="max-h-48 rounded-lg border border-gray-200" />
               ) : (
                 <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500 break-all">
@@ -397,7 +398,8 @@ function AudioRefUploader({ value, onChange }: { value: string; onChange: (url: 
           />
           {value && isDirect && (
             <div className="relative group">
-              <audio src={value} controls className="w-full" />
+              {/* 同图片预览：站内 /code/ 绝对地址补前缀，外部地址与 data: 原样 */}
+              <audio src={withBasePathUrl(value)} controls className="w-full" />
               <button
                 onClick={() => onChange('')}
                 className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
@@ -554,7 +556,6 @@ export default function SandboxPage() {
   };
 
   const [selectedModel, setSelectedModel] = useState('');
-  const [webSearch, setWebSearch] = useState(false);
   const [videoRatio, setVideoRatio] = useState('16:9');
   const [videoResolution, setVideoResolution] = useState('720P');
   const [videoDuration, setVideoDuration] = useState(5);
@@ -574,7 +575,7 @@ export default function SandboxPage() {
   // 获取历史记录
   const fetchHistory = async () => {
     try {
-      const resp = await fetch('/api/sandbox/history');
+      const resp = await apiFetch('/api/sandbox/history');
       const data = await readJsonResponse(resp);
       if (data.success) {
         setHistory(data.records);
@@ -714,7 +715,7 @@ export default function SandboxPage() {
   const deleteRecord = async (id: string) => {
     setDeleting(id);
     try {
-      const resp = await fetch(`/api/sandbox/history/${id}`, { method: 'DELETE' });
+      const resp = await apiFetch(`/api/sandbox/history/${id}`, { method: 'DELETE' });
       const data = await readJsonResponse(resp);
       if (data.success) {
         setHistory(history.filter(r => r.id !== id));
@@ -786,10 +787,6 @@ export default function SandboxPage() {
       switch (activeTool) {
         case 'llm':
           apiUrl = '/api/sandbox/llm';
-          // web_search 只对 LLM 有效
-          if (webSearch) {
-            body.web_search = true;
-          }
           break;
         case 'vlm':
           apiUrl = '/api/sandbox/vlm';
@@ -815,7 +812,7 @@ export default function SandboxPage() {
           break;
       }
 
-      const response = await fetch(apiUrl, {
+      const response = await apiFetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -932,20 +929,6 @@ export default function SandboxPage() {
                       ))}
                     </select>
                   </div>
-                  {/* 联网搜索开关 */}
-                  {activeTool === 'llm' && (
-                    <button
-                      onClick={() => setWebSearch(!webSearch)}
-                      className={`ml-4 px-4 py-2.5 rounded-lg border-2 flex items-center gap-2 transition-colors ${
-                        webSearch
-                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                          : 'border-gray-200 text-gray-500 hover:border-gray-300'
-                      }`}
-                    >
-                      <Globe className="w-4 h-4" />
-                      <span className="text-sm font-medium">联网搜索</span>
-                    </button>
-                  )}
                 </div>
               </div>
 

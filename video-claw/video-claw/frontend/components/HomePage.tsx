@@ -1,7 +1,7 @@
 ﻿'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, Play, Settings2, Clock, ArrowRight, Zap, CheckCircle, Trash2, X, Lock, Globe, ListOrdered, Upload, Loader2 } from 'lucide-react';
+import { Sparkles, Play, Settings2, Clock, ArrowRight, Zap, CheckCircle, Trash2, X, Lock, ListOrdered, Upload, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { PROMPT_EXAMPLES } from '@/config/examples';
 import {
@@ -16,6 +16,7 @@ import { STAGES, useEnabledStages } from './TopBar';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 import ProviderSelect from './ProviderSelect';
 
+import { apiFetch } from "@/lib/identity";
 const HOME_MODEL_SELECT_CLASS = 'bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none';
 
 export interface ProjectParams {
@@ -93,7 +94,6 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState('');
   const [enableConcurrency, setEnableConcurrency] = useState(true);
-  const [webSearch, setWebSearch] = useState(false);
   const [episodes, setEpisodes] = useState(4);
   const [showEpisodesPanel, setShowEpisodesPanel] = useState(false);
 
@@ -160,7 +160,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       setConfigLoading(true);
       setConfigError('');
       try {
-        const resp = await fetch('/api/config');
+        const resp = await apiFetch('/api/config');
         if (!resp.ok) throw new Error('读取默认模型配置失败');
         const data = await resp.json();
         const models = data.config?.models || {};
@@ -252,7 +252,6 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       video_reference_model: selectedReferenceVideo,
       video_model: activeVideoModel,
       enable_concurrency: enableConcurrency,
-      web_search: webSearch,
       episodes: creationMode === 'upload' ? undefined : episodes,
     }, auto);
   };
@@ -282,7 +281,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       // 曾经这里拼接一个全仓从未定义的构建期寻址变量并回退硬编码本机端口，Docker 部署下
       // 浏览器必打该端口（宿主机无监听）→ ERR_CONNECTION_REFUSED。
       // 该寻址约束记在 OpenSpec capability「frontend-api-addressing」（非流式请求走同源相对路径 + 服务端 rewrite 代理）。
-      const response = await fetch('/api/upload_file', {
+      const response = await apiFetch('/api/upload_file', {
         method: 'POST',
         body: formData,
       });
@@ -356,7 +355,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
             <textarea
               value={idea}
               onChange={e => setIdea(e.target.value)}
-              placeholder="描述你的视频创意... 例如：一只叫Luna的猫意外进入太空站，遇到一个孤独的宇航员"
+              placeholder="描述你的视频创意... 例如：介绍交通银行"
               className="w-full bg-transparent text-sm text-gray-800 placeholder-gray-400 resize-none outline-none min-h-[100px]"
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey && (idea.trim() || uploadedFile)) {
@@ -450,18 +449,6 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
               >
                 <Settings2 className="w-3.5 h-3.5" />
                 生成配置
-              </button>
-              <button
-                onClick={() => setWebSearch(!webSearch)}
-                className={clsx(
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                  webSearch
-                    ? 'bg-blue-50 text-blue-600'
-                    : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
-                )}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                联网搜索
               </button>
             </div>
             <div className="flex items-center gap-2">

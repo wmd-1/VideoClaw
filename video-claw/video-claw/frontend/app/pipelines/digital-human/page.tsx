@@ -6,8 +6,8 @@ export default function DigitalHumanPipelinePage() {
     <Suspense fallback={null}>
       <PipelinePage
         pipeline="digital_human"
-        title="数字人口播"
-        subtitle="基于人物图片和文案生成数字人口播视频"
+        title="其他"
+        subtitle="更多创作能力正在开发中，敬请期待"
       />
     </Suspense>
   );

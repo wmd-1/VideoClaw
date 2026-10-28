@@ -14,6 +14,8 @@ import {
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, fetchVideoModelCapabilities } from '@/lib/modelRegistry';
 import ProviderSelect from '@/components/ProviderSelect';
 
+import { apiFetch } from "@/lib/identity";
+import { withBasePath } from '@/lib/basePath';
 const MODEL_SELECT_CLASS = 'bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full';
 
 export type StageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'error' | 'stopped';
@@ -42,7 +44,7 @@ async function fetchEnabledStages(): Promise<string[]> {
   if (cachedEnabledStages) return cachedEnabledStages;
   if (Date.now() < negativeCacheUntil) return DEFAULT_ENABLED_STAGES;
   try {
-    const resp = await fetch('/api/stages');
+    const resp = await apiFetch('/api/stages');
     if (!resp.ok) {
       negativeCacheUntil = Date.now() + NEGATIVE_CACHE_TTL_MS;
       return DEFAULT_ENABLED_STAGES;
@@ -522,7 +524,7 @@ export default function TopBar({
         className="flex items-center gap-2 mr-6 hover:opacity-80 transition-opacity flex-shrink-0"
       >
         <img
-          src="/jtyh.png"
+          src={withBasePath('/jtyh.png')}
           alt="Logo"
           className="w-8 h-8 rounded-lg object-contain"
         />

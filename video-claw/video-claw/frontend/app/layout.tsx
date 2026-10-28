@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import AppShell from "@/components/AppShell";
+import { IdentityProvider } from "@/lib/identity";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,7 +18,9 @@ export default function RootLayout({
       <body
         className="antialiased"
       >
-        <AppShell>{children}</AppShell>
+        <IdentityProvider>
+          <AppShell>{children}</AppShell>
+        </IdentityProvider>
       </body>
     </html>
   );

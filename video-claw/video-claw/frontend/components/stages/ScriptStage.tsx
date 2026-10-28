@@ -6,6 +6,7 @@ import type { StageViewProps } from './types';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 
+import { apiFetch } from "@/lib/identity";
 /* ─── 类型 ─── */
 
 interface LoglineData {
@@ -207,7 +208,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const patchScriptArtifact = async (patch: Record<string, unknown>) => {
     if (!sessionId) throw new Error('缺少会话 ID');
-    const response = await fetch(`/api/project/${sessionId}/artifact/script_generation`, {
+    const response = await apiFetch(`/api/project/${sessionId}/artifact/script_generation`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),

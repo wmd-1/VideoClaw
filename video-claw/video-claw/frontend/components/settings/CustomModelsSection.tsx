@@ -568,7 +568,7 @@ export function CustomModelsSection({
                 >
                   {capsOpen[String(entry.id || index)] ? '▾ 收起高级能力参数' : '▸ 高级能力参数（capabilities）'}
                 </button>
-                <span className="text-[10px] text-gray-400">留空即不下发；MiniMax-H3 建议 short_edge=768、时长 4-15</span>
+                <span className="text-[10px] text-gray-400">留空即不下发；视频模型建议 short_edge=768、时长 4-15</span>
               </div>
               {capsOpen[String(entry.id || index)] && (
                 <div className="mt-2 grid grid-cols-1 gap-2 rounded-lg border border-gray-100 bg-white p-2 md:grid-cols-3 lg:grid-cols-4">
@@ -620,14 +620,14 @@ export function CustomModelsSection({
                   </label>
                   <label className="flex items-center gap-2 pt-4">
                     <input
-                      id={`fast-h3-${String(entry.id || index)}`}
+                      id={`fast-mode-${String(entry.id || index)}`}
                       type="checkbox"
                       className="h-3.5 w-3.5 accent-violet-600"
                       checked={Boolean(entry.capabilities?.fast_h3)}
                       disabled={envOnly}
                       onChange={e => updateCapability(index, 'fast_h3', e.target.checked)}
                     />
-                    <span className="text-[11px] text-gray-500">FastH3（仅 4 步，不下发 shift）</span>
+                    <span className="text-[11px] text-gray-500">快速模式（仅 4 步，不下发 shift）</span>
                   </label>
                 </div>
               )}

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, Loader2, Save, Settings, XCircle } from 'lucide-react';
 import BrandHeader from '@/components/BrandHeader';
+import { apiFetch, useIdentity } from '@/lib/identity';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, describeSlotIssue, mergeProviderGroups } from '@/lib/modelRegistry';
 import {
   CustomModelsSection,
@@ -71,7 +72,7 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
     ],
   },
   {
-    title: 'H3 提示词改写',
+    title: '提示词改写',
     description:
       '主流程「提示词改写」阶段（原生实现：知识资产内嵌，本地 LLM 调用）。enable=false（默认）时主流程保持基础六阶段，该阶段不出现在流程与导航中；enable=true 后在参考图与视频生成之间生效。grounding_enable 独立控制 VLM 参考图看图（关闭后退化为纯文本输入，模式不变；未配置可用 VLM 或看图失败时同样条目级降级，阶段完成日志汇总降级数）。',
     fields: [
@@ -158,13 +159,14 @@ export default function SettingsPage() {
   const [envOverrides, setEnvOverrides] = useState<EnvOverrides>(EMPTY_ENV_OVERRIDES);
   // 已保存配置基线：用于提示“当前编辑值未保存”（工作流实际使用已保存值）
   const [savedConfig, setSavedConfig] = useState<ConfigTree>({});
+  const { isAdmin } = useIdentity();
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const resp = await fetch('/api/config');
+        const resp = await apiFetch('/api/config');
         if (!resp.ok) throw new Error('读取配置失败');
         const data = await resp.json();
         setConfig(data.config || {});
@@ -292,7 +294,7 @@ export default function SettingsPage() {
     setMessage('');
     setError('');
     try {
-      const resp = await fetch('/api/config', {
+      const resp = await apiFetch('/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ values: config }),
@@ -343,6 +345,11 @@ export default function SettingsPage() {
           <p className="mt-1 text-xs text-gray-400">
             API Server / Common 与内置供应商密钥已改为通过 <span className="font-mono">.env</span> 或 config.yaml 配置（参考项目 .env.example）；模型接入请使用下方「自定义供应商 / 自定义模型」。
           </p>
+          {!isAdmin && (
+            <p className="mt-2 text-xs text-amber-600">
+              当前账号只读：仅管理员白名单（VC_USERS__ADMIN_LOGINS）可保存配置。
+            </p>
+          )}
         </div>
 
         {loading ? (
@@ -458,7 +465,7 @@ export default function SettingsPage() {
               )}
               <button
                 onClick={save}
-                disabled={saving}
+                disabled={saving || !isAdmin}
                 className="ml-auto flex items-center gap-2 rounded-xl bg-blue-500 px-5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-gray-200"
               >
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

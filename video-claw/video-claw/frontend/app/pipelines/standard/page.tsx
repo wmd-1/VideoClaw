@@ -6,8 +6,8 @@ export default function StandardPipelinePage() {
     <Suspense fallback={null}>
       <PipelinePage
         pipeline="standard"
-        title="文艺短视频"
-        subtitle="输入创作灵感或完整文案，生成图片拼接或动态视频短片"
+        title="模板制作"
+        subtitle="输入创作灵感或完整文案，套用精品模版，生成图片拼接或动态视频短片"
       />
     </Suspense>
   );

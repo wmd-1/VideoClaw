@@ -8,6 +8,7 @@ import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 import RewriteResultBadge, { type RewriteResult } from './RewriteResultBadge';
 
+import { apiFetch } from "@/lib/identity";
 /* ─── 类型 ─── */
 interface ClipItem {
   id: string;             // shot_001_01, shot_001_02, ...
@@ -484,7 +485,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
 
     setSavingIds(prev => new Set(prev).add(clipId));
     try {
-      const response = await fetch(`/api/project/${sessionId}/artifact/video_generation`, {
+      const response = await apiFetch(`/api/project/${sessionId}/artifact/video_generation`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

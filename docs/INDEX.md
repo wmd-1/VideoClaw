@@ -35,6 +35,7 @@
 | `Handoff 3：H3 提示词改写阶段 - 待办与验证缺口.md` | 改写阶段的待办事项与验证缺口事实交接（含容器内复现方式） |
 | `Handoff 4：H3 原生改写器 - 评审加固承接（I1·I4·M1）.md` | 第一轮评审加固项中仍适用于原生实现的部分 |
 | `Handoff 5：前端构建端口硬编码故障与修复.md` | 构建期端口硬编码致 API 500 故障的根因、修复与治理（含复现命令、免网络重建配方、验收标准、交接边界与 655c519 留痕更正） |
+| `Handoff 6：SLB 统一前缀接入与前端文案·入口开关改造.md` | SLB 前缀 `/Bocom_Video_Generation` 接入（Next basePath）、Pipeline 入口开关/文案更名/隐藏联网搜索/取消身份门禁、媒体地址前缀修复与自检脚本 `scripts/selfcheck-deploy.sh` |
 
 区分：Handoff 用于缺陷交接与跨会话续作；需求/方案层面的正式提案走 openspec（proposal / specs / design / tasks + validate）。
 

@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
+  AlertCircle,
   ArrowRight,
   CheckCircle,
   Clapperboard,
@@ -46,6 +48,8 @@ import {
   type ProviderGroup,
 } from '@/config/models';
 import BrandHeader from '@/components/BrandHeader';
+import { PIPELINE_UNAVAILABLE_MESSAGE, isPipelineAvailable } from '@/lib/pipelineAvailability';
+import { withBasePathUrl } from '@/lib/basePath';
 
 type PipelineId = 'standard' | 'action_transfer' | 'digital_human';
 
@@ -340,11 +344,15 @@ function NumberField({
 
 function assetHref(path?: string) {
   if (!path) return '';
-  if (/^(https?:|data:|file:)/.test(path)) return path;
+  // 后端可能下发相对路径、带前导斜杠的路径或带域名的绝对地址，统一收敛到
+  // 同源 + 部署前缀的 /code/... 形式（见 lib/basePath 的 withBasePathUrl）
   const marker = '/code/';
   const idx = path.indexOf(marker);
-  if (idx >= 0) return `/code/${path.slice(idx + marker.length)}`;
-  return path;
+  if (idx >= 0) return withBasePathUrl(`/code/${path.slice(idx + marker.length)}`);
+  // result/xxx 对应后端挂载的 /code/result/xxx（兼容带前导斜杠）
+  if (path.startsWith('result/')) return withBasePathUrl(`/code/${path}`);
+  if (path.startsWith('/result/')) return withBasePathUrl(`/code${path}`);
+  return withBasePathUrl(path);
 }
 
 function statusText(status?: string) {
@@ -534,7 +542,7 @@ function TemplatePreviewCard({
     >
       <div className={clsx('relative overflow-hidden rounded-md bg-gray-100', ratioClass)}>
         <iframe
-          src={template.preview_url}
+          src={assetHref(template.preview_url)}
           title={template.label}
           className="pointer-events-none absolute left-0 top-0 border-0 bg-white"
           style={{
@@ -982,6 +990,31 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
       setRunning(false);
     }
   };
+
+  // 未开放（前端构建开关关闭）：拦截新建入口；带 ?task= 时仍放行，便于查看已跑过的任务
+  const unavailable = !isPipelineAvailable(pipeline) && !searchParams.get('task');
+
+  if (unavailable) {
+    return (
+      <div className="min-h-screen bg-gray-50/50 overflow-y-auto">
+        <BrandHeader />
+        <div className="mx-auto flex min-h-[60vh] w-full max-w-6xl flex-col items-center justify-center px-6">
+          <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-amber-50 px-6 py-8 text-center">
+            <AlertCircle className="mx-auto mb-3 h-6 w-6 text-amber-500" />
+            <h1 className="text-base font-semibold text-amber-900">{title}</h1>
+            <p className="mt-2 text-sm text-amber-800">{PIPELINE_UNAVAILABLE_MESSAGE}</p>
+            <Link
+              href="/"
+              className="mt-5 inline-flex items-center gap-1.5 rounded-xl bg-blue-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600"
+            >
+              返回首页
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50/50 overflow-y-auto">

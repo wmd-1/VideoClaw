@@ -2,25 +2,36 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { CheckCircle2, ChevronLeft, ChevronRight, Clapperboard, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Repeat2, Settings, Trash2, UserRound } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Clapperboard, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Repeat2, Settings, Trash2, UserRound, type LucideIcon } from 'lucide-react';
 import clsx from 'clsx';
 import { useEffect, useState, type CSSProperties } from 'react';
 import { clearTempCache, fetchPipelineTasks, fetchSandboxTasks, fetchSessions, type PipelineTask, type SandboxTask, type SessionSummary } from '@/lib/workflowApi';
+import { useIdentity } from '@/lib/identity';
+import { PIPELINE_UNAVAILABLE_MESSAGE, isPipelineAvailable, isPipelineHidden } from '@/lib/pipelineAvailability';
 
-const NAV_ITEMS = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  /** 对应 Pipeline id：后端未开放时点击只弹提示，不跳转 */
+  pipeline?: string;
+}
+
+const NAV_ITEMS: NavItem[] = [
   { href: '/', label: '交心-Video', icon: Home },
   { href: '/sandbox', label: '临时工作台', icon: Hexagon },
-  { href: '/pipelines/standard', label: '文艺短视频', icon: Clapperboard },
-  { href: '/pipelines/action-transfer', label: '动作迁移', icon: Repeat2 },
-  { href: '/pipelines/digital-human', label: '数字人口播', icon: UserRound },
-];
+  { href: '/pipelines/standard', label: '模板制作', icon: Clapperboard, pipeline: 'standard' },
+  { href: '/pipelines/action-transfer', label: '动作迁移', icon: Repeat2, pipeline: 'action_transfer' },
+  { href: '/pipelines/digital-human', label: '其他', icon: UserRound, pipeline: 'digital_human' },
+  // 隐藏开关（.env NEXT_PUBLIC_HIDE_ACTION_TRANSFER，默认隐藏）命中的入口不渲染
+].filter(item => !item.pipeline || !isPipelineHidden(item.pipeline));
 
 const SETTINGS_ITEM = { href: '/settings', label: '设置', icon: Settings };
 
 const PIPELINE_ROUTES: Record<string, { href: string; label: string }> = {
-  standard: { href: '/pipelines/standard', label: '文艺短视频' },
+  standard: { href: '/pipelines/standard', label: '模板制作' },
   action_transfer: { href: '/pipelines/action-transfer', label: '动作迁移' },
-  digital_human: { href: '/pipelines/digital-human', label: '数字人口播' },
+  digital_human: { href: '/pipelines/digital-human', label: '其他' },
 };
 
 const TASK_STATUS_STYLE: Record<string, string> = {
@@ -104,7 +115,7 @@ function projectReviewTaskFromSession(session: SessionSummary): RunningTaskItem 
 
 function pipelineTaskItem(task: PipelineTask): RunningTaskItem | null {
   const route = PIPELINE_ROUTES[task.pipeline];
-  if (!route || !['pending', 'running'].includes(task.status)) return null;
+  if (!route || isPipelineHidden(task.pipeline) || !['pending', 'running'].includes(task.status)) return null;
   return {
     id: `pipeline-${task.task_id}`,
     href: `${route.href}?task=${encodeURIComponent(task.task_id)}`,
@@ -117,7 +128,7 @@ function pipelineTaskItem(task: PipelineTask): RunningTaskItem | null {
 
 function pipelineCompletedTaskItem(task: PipelineTask): RunningTaskItem | null {
   const route = PIPELINE_ROUTES[task.pipeline];
-  if (!route || task.status !== 'completed') return null;
+  if (!route || isPipelineHidden(task.pipeline) || task.status !== 'completed') return null;
   return {
     id: `pipeline-completed-${task.task_id}`,
     href: `${route.href}?task=${encodeURIComponent(task.task_id)}`,
@@ -320,6 +331,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
+  const [unavailableFeature, setUnavailableFeature] = useState('');
+  const { login, isAdmin, logout } = useIdentity();
 
   useEffect(() => {
     // 延后到微任务执行：effect 体内同步 setState 会触发级联渲染（react-hooks/set-state-in-effect）
@@ -367,10 +380,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {NAV_ITEMS.map(item => {
               const Icon = item.icon;
               const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+              const unavailable = Boolean(item.pipeline) && !isPipelineAvailable(item.pipeline as string);
               return (
                 <Link
                   key={item.href}
                   href={item.href}
+                  onClick={event => {
+                    if (!unavailable) return;
+                    event.preventDefault();
+                    setUnavailableFeature(item.label);
+                  }}
+                  title={unavailable ? PIPELINE_UNAVAILABLE_MESSAGE : undefined}
                   className={clsx(
                     'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
                     active
@@ -432,6 +452,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               );
             })()}
           </div>
+          <div className="flex items-center justify-between gap-2 border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
+            <span className="truncate" title={`当前身份：${login}`}>
+              {login}
+              {isAdmin ? ' · 管理员' : ''}
+            </span>
+            <button
+              type="button"
+              onClick={logout}
+              className="rounded px-2 py-1 text-gray-500 hover:bg-gray-50 hover:text-gray-800"
+            >
+              切换身份
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -458,6 +491,32 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <main className={clsx('min-h-screen min-w-0 overflow-x-hidden transition-[margin] duration-300', open ? 'ml-60' : 'ml-0')}>
         {children}
       </main>
+
+      {/* 未开放 Pipeline 的点击提示（.env 的 NEXT_PUBLIC_ENABLE_* 开启后不再弹出） */}
+      {unavailableFeature && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setUnavailableFeature('')}
+        >
+          <div
+            className="w-80 rounded-2xl bg-white p-6 shadow-xl"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 text-amber-500" />
+              <h4 className="text-sm font-semibold text-gray-700">{unavailableFeature}</h4>
+            </div>
+            <p className="mb-5 text-xs leading-relaxed text-gray-500">{PIPELINE_UNAVAILABLE_MESSAGE}</p>
+            <button
+              type="button"
+              onClick={() => setUnavailableFeature('')}
+              className="w-full rounded-lg bg-blue-500 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600"
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -213,7 +213,13 @@ docker compose up -d
 docker compose logs -f backend            # 等健康检查通过
 ```
 
-- 前端：[http://localhost:3000](http://localhost:3000)（默认，按 `.env` 的 `FRONTEND_PORT`）；后端健康检查：[http://localhost:8000/api/health](http://localhost:8000/api/health)（默认，按 `.env` 的 `BACKEND_PORT`）
+- 前端：`http://localhost:<FRONTEND_PORT>/Bocom_Video_Generation/`（默认 `http://localhost:3500/Bocom_Video_Generation/`）
+  - 前端统一挂在 SLB 前缀 `/Bocom_Video_Generation` 下（构建期常量 `NEXT_PUBLIC_BASE_PATH`，默认即该值）。
+    根路径 `/` 会返回 404，页面、静态资源、`/api/*` 与 `/code/*`（含 SSE）都必须带这个前缀。
+    本地临时想回到根路径访问：构建时显式设 `NEXT_PUBLIC_BASE_PATH=`（或 `/`）。
+  - 后端健康检查：`http://localhost:8000/api/health`（默认，按 `.env` 的 `BACKEND_PORT`）
+- 经 SLB 部署时：SLB 保留前缀转发到前端（`/Bocom_Video_Generation/xxx` → 前端同名路径），
+  后端端口不对浏览器开放，浏览器所有请求（含 SSE 实时推送）都走该前缀同源转发。
 - 首次启动自动在宿主生成 `./data/config/config.yaml`，填入 API Key 后 `docker compose restart backend`（也可在 WebUI「设置」页填写）。
 
 ## 本地开发（不构建镜像）

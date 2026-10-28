@@ -3,12 +3,21 @@
  * - 路径转 URL
  * - 剧本/分镜结构化文本解析与重建
  */
+import { withBasePathUrl } from '@/lib/basePath';
 
-/** 将后端本地文件路径转换为浏览器可访问的 URL */
+/**
+ * 将后端本地文件路径转换为浏览器可访问的 URL。
+ * 站内路径统一补上部署前缀（SLB 入口 /Bocom_Video_Generation），
+ * 否则浏览器会去请求根路径的 /code/、/result/ 导致 404；
+ * 后端有时下发带域名的绝对地址（http://host/code/...），同样重写为同源 + 前缀。
+ */
 export function assetUrl(path: string): string {
   if (!path) return '';
-  if (path.startsWith('http') || path.startsWith('/') || path.startsWith('blob:') || path.startsWith('data:')) return path;
-  return '/' + path;
+  // 后端产物相对路径：result/xxx 对应后端挂载的 /code/result/xxx
+  if (path.startsWith('result/')) return withBasePathUrl(`/code/${path}`);
+  // 同上，兼容带前导斜杠的 /result/...
+  if (path.startsWith('/result/')) return withBasePathUrl(`/code${path}`);
+  return withBasePathUrl(path);
 }
 
 export function assetVersionLabel(path: string, index: number): string {

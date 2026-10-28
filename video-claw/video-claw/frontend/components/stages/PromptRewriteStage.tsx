@@ -7,6 +7,7 @@ import type { StageViewProps } from './types';
 import StageProgress from './StageProgress';
 import { pruneDraftsByContent } from '@/lib/assetMerge';
 
+import { apiFetch } from "@/lib/identity";
 interface RewriteItem {
   id: string;
   name?: string;
@@ -73,7 +74,7 @@ function usePromptRewriteEnabled(): { known: boolean; enabled: boolean } {
   useEffect(() => {
     if (rewriteEnabledCache !== null) return;
     let cancelled = false;
-    fetch('/api/stages')
+    apiFetch('/api/stages')
       .then(resp => (resp.ok ? resp.json() : Promise.reject(new Error('stages unavailable'))))
       .then(data => {
         const enabled = Boolean(data?.prompt_rewrite_enabled);
@@ -175,8 +176,8 @@ export default function PromptRewriteStage({
       <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
       <div className="space-y-1 text-xs text-amber-700">
         <p className="font-medium">
-          提示词改写阶段未启用：请在设置页「H3 提示词改写」开启 enable，或在 .env 配置
-          VC_H3_REWRITE__ENABLE=true
+          提示词改写阶段未启用：请在设置页「提示词改写」开启 enable，或在 .env 按示例变量开启
+          提示词改写开关（变量说明见 .env.example）
         </p>
         <p className="text-amber-600">
           该阶段为可选注入阶段（启用后插在参考图与视频生成之间）。未启用时在此发起执行会被后端直接拒绝并返回上述开启指引。修改 .env 需执行 docker compose up -d backend 重建才生效（restart 不重读 env_file）；在设置页保存则热生效。
@@ -239,7 +240,7 @@ export default function PromptRewriteStage({
             {state.status === 'running'
               ? `正在串行改写 ${segmentTotal || ''} 个分镜的提示词，请稍候…`
               : state.status === 'pending'
-                ? '本阶段会把每个分镜的镜头描述改写为 MiniMax H3 规范的提示词（原生实现：知识资产内嵌 + 本地 LLM 调用，输入模式由视频生成方式与素材角色推导）。请先完成分镜与参考图阶段，然后执行本阶段。'
+                ? '本阶段会把每个分镜的镜头描述改写为视频模型的规范提示词（原生实现：知识资产内嵌 + 本地 LLM 调用，输入模式由视频生成方式与素材角色推导）。请先完成分镜与参考图阶段，然后执行本阶段。'
                 : state.status === 'error'
                   ? `执行失败：${state.error || '未知错误'}`
                   : '暂无改写结果'}
@@ -271,7 +272,7 @@ export default function PromptRewriteStage({
         <span>成功 <span className="text-green-600 font-medium">{doneCount}</span></span>
         {failedCount > 0 && <span>失败 <span className="text-red-600 font-medium">{failedCount}</span></span>}
         {pendingCount > 0 && <span>待改写 <span className="text-amber-600 font-medium">{pendingCount}</span></span>}
-        <span className="ml-auto text-gray-400">改写正文为英文（H3 规范），对话与画面文字保留原语言</span>
+        <span className="ml-auto text-gray-400">改写正文为英文（模型规范），对话与画面文字保留原语言</span>
       </div>
 
       {/* 条目列表 */}
@@ -315,7 +316,7 @@ export default function PromptRewriteStage({
               disabled={isRunning || item.status === 'pending'}
               onChange={event => setDrafts(prev => ({ ...prev, [item.id]: event.target.value }))}
               rows={Math.min(10, Math.max(3, Math.ceil(draftOf(item).length / 80)))}
-              placeholder={draftOf(item) ? '改写后的 H3 提示词' : '改写中的 H3 提示词（完成后展示）'}
+              placeholder={draftOf(item) ? '改写后的提示词' : '改写中的提示词（完成后展示）'}
               className="w-full rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 font-mono text-xs text-gray-700 outline-none focus:border-blue-300 focus:bg-white disabled:opacity-60 resize-y"
             />
 
