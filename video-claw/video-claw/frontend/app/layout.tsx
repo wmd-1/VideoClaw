@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import AppShell from "@/components/AppShell";
-import { IdentityProvider } from "@/lib/identity";
+import { IdentityProvider } from "@/lib/identityGuard";
 import "./globals.css";
 
 export const metadata: Metadata = {

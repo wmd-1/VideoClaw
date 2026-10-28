@@ -5,10 +5,9 @@ from html import escape
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from api.media_paths import guard_media_input
 from api.schemas.pipelines import (
     ActionTransferPipelineRequest,
     DigitalHumanPipelineRequest,
@@ -16,6 +15,9 @@ from api.schemas.pipelines import (
     StandardPipelineRequest,
 )
 from config import BASE_DIR
+from core.identity import CurrentUser, get_current_user
+from core.media_refs import canonicalize_media_value
+from core.ownership import assert_owner
 from models.config_model import get_models_by_type, model_availability, model_type_capabilities
 from pipelines.api_media import list_api_workflows
 from pipelines.events import task_event_stream
@@ -52,12 +54,15 @@ _PIPELINE_MEDIA_KEYS = (
 )
 
 
-def _guard_pipeline_media_params(params: dict) -> None:
+def _guard_pipeline_media_params(params: dict, user: CurrentUser) -> None:
     """在创建任务/复制文件之前校验媒体入参；失败抛 ValueError（路由转 400）。"""
     for key in _PIPELINE_MEDIA_KEYS:
         value = params.get(key)
-        if isinstance(value, str) and value.strip():
-            guard_media_input(value, key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        # Persist canonical values (public_path / remote / users/<owner_key>/...).
+        # The runner materializes them to local files again.
+        params[key] = str(canonicalize_media_value(value, user))
 
 
 TEMPLATE_DIR = os.path.join(str(BASE_DIR), "templates")
@@ -129,10 +134,12 @@ def _render_preview_html(raw: str) -> str:
     return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}", repl, raw)
 
 
-def _start_task(background_tasks: BackgroundTasks, pipeline: str, params: dict):
+def _start_task(
+    background_tasks: BackgroundTasks, pipeline: str, params: dict, owner: str = ""
+):
     if pipeline not in PIPELINE_REGISTRY:
         raise HTTPException(404, f"Pipeline not found: {pipeline}")
-    metadata = create_task(pipeline=pipeline, input_params=params)
+    metadata = create_task(pipeline=pipeline, input_params=params, owner=owner)
     background_tasks.add_task(run_pipeline_task, metadata["task_id"], pipeline, params)
     return {
         "task_id": metadata["task_id"],
@@ -294,65 +301,96 @@ async def preview_standard_template(size: str, filename: str):
 
 
 @router.post("/api/pipelines/standard/tasks")
-async def start_standard_pipeline(req: StandardPipelineRequest, background_tasks: BackgroundTasks):
-    return _start_task(background_tasks, "standard", req.model_dump(exclude_none=True))
+async def start_standard_pipeline(
+    req: StandardPipelineRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
+    return _start_task(
+        background_tasks, "standard", req.model_dump(exclude_none=True), user.login
+    )
 
 
 @router.post("/api/pipelines/action_transfer/tasks")
-async def start_action_transfer_pipeline(req: ActionTransferPipelineRequest, background_tasks: BackgroundTasks):
+async def start_action_transfer_pipeline(
+    req: ActionTransferPipelineRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
     params = req.model_dump(exclude_none=True)
     try:
-        _guard_pipeline_media_params(params)
+        _guard_pipeline_media_params(params, user)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
-    return _start_task(background_tasks, "action_transfer", params)
+    return _start_task(background_tasks, "action_transfer", params, user.login)
 
 
 @router.post("/api/pipelines/digital_human/tasks")
-async def start_digital_human_pipeline(req: DigitalHumanPipelineRequest, background_tasks: BackgroundTasks):
+async def start_digital_human_pipeline(
+    req: DigitalHumanPipelineRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
     params = req.model_dump(exclude_none=True)
     try:
-        _guard_pipeline_media_params(params)
+        _guard_pipeline_media_params(params, user)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
-    return _start_task(background_tasks, "digital_human", params)
+    return _start_task(background_tasks, "digital_human", params, user.login)
 
 
 @router.post("/api/pipelines/{pipeline}/tasks")
-async def start_generic_pipeline(pipeline: str, req: GenericPipelineRequest, background_tasks: BackgroundTasks):
+async def start_generic_pipeline(
+    pipeline: str,
+    req: GenericPipelineRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
     normalized = "standard" if pipeline == "quick_create" else pipeline
     try:
-        _guard_pipeline_media_params(req.params)
+        _guard_pipeline_media_params(req.params, user)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
-    return _start_task(background_tasks, normalized, req.params)
+    return _start_task(background_tasks, normalized, req.params, user.login)
 
 
 @router.get("/api/tasks")
-async def get_tasks(limit: int = Query(100, ge=1, le=500)):
-    return {"tasks": list_tasks(limit=limit)}
+async def get_tasks(
+    limit: int = Query(100, ge=1, le=500), user: CurrentUser = Depends(get_current_user)
+):
+    return {"tasks": list_tasks(limit=limit, owner=user.login)}
 
 
 @router.get("/api/tasks/{task_id}")
-async def get_task(task_id: str):
+async def get_task(task_id: str, user: CurrentUser = Depends(get_current_user)):
     metadata = load_task(task_id)
     if not metadata:
         raise HTTPException(404, "Task not found")
+    assert_owner(metadata.get("owner"), user, not_found="Task not found")
     return metadata
 
 
 @router.delete("/api/tasks/{task_id}")
-async def remove_task(task_id: str):
+async def remove_task(task_id: str, user: CurrentUser = Depends(get_current_user)):
+    metadata = load_task(task_id)
+    if not metadata:
+        raise HTTPException(404, "Task not found")
+    assert_owner(metadata.get("owner"), user, not_found="Task not found")
+    if metadata.get("status") in ("pending", "running"):
+        raise HTTPException(409, "任务运行中，暂不支持删除")
     if not delete_task(task_id):
         raise HTTPException(404, "Task not found")
     return {"success": True}
 
 
 @router.get("/api/tasks/{task_id}/events")
-async def subscribe_task_events(task_id: str):
+async def subscribe_task_events(
+    task_id: str, user: CurrentUser = Depends(get_current_user)
+):
     metadata = load_task(task_id)
     if not metadata:
         raise HTTPException(404, "Task not found")
+    assert_owner(metadata.get("owner"), user, not_found="Task not found")
     initial_event = {
         "type": "snapshot",
         "task_id": task_id,

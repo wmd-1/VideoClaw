@@ -1,18 +1,21 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from api.dependencies import workflow_engine
+from core.identity import CurrentUser, get_current_user, require_admin
+from core.ownership import assert_session_owner
 
 router = APIRouter(tags=["Sessions"])
 
 
 @router.get("/api/sessions")
-async def list_sessions():
-    return {"sessions": workflow_engine.list_saved_sessions()}
+async def list_sessions(user: CurrentUser = Depends(get_current_user)):
+    return {"sessions": workflow_engine.list_saved_sessions(owner=user.login)}
 
 
 @router.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
-    """直接删除历史记录（无密码控制）"""
+async def delete_session(session_id: str, user: CurrentUser = Depends(get_current_user)):
+    """删除当前 owner 的历史记录；他人会话按不存在处理。"""
+    assert_session_owner(workflow_engine, session_id, user)
     deleted = workflow_engine.delete_session(session_id)
     if not deleted:
         raise HTTPException(404, "Session not found")
@@ -20,6 +23,8 @@ async def delete_session(session_id: str):
 
 
 @router.delete("/api/sessions")
-async def cleanup_orphan_files():
-    """清理孤立的结果文件（无密码控制）"""
-    return workflow_engine.cleanup_orphan_results()
+async def cleanup_orphan_files(
+    dry_run: bool = False, _: CurrentUser = Depends(require_admin)
+):
+    """清理孤立的结果文件（管理员维护操作；dry_run 只报告）。"""
+    return workflow_engine.cleanup_orphan_results(dry_run=dry_run)

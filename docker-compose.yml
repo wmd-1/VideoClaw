@@ -17,6 +17,33 @@
 # `docker compose restart backend` (backend) or the .next-runtime flow (frontend).
 #
 services:
+  postgres:
+    image: postgres:16.4
+    container_name: video-claw-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: videoclaw
+      POSTGRES_USER: videoclaw
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-videoclaw}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videoclaw -d videoclaw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    container_name: video-claw-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-videoclaw}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-videoclaw-secret}"
+    volumes:
+      - miniodata:/data
+
   backend:
     image: video-claw-backend:latest
     # Reuse the local image only; fail fast instead of trying to pull.
@@ -34,6 +61,20 @@ services:
       BACKEND_HOST: "0.0.0.0"
       # 容器内端口与宿主发布端口一致（均为 .env 的 BACKEND_PORT），日志/健康检查所见即所得
       BACKEND_PORT: "${BACKEND_PORT:-8000}"
+      VC_DATABASE__KIND: postgres
+      VC_DATABASE__DSN: "postgresql://videoclaw:${POSTGRES_PASSWORD:-videoclaw}@postgres:5432/videoclaw"
+      VC_STORAGE__KIND: minio
+      VC_STORAGE__ENDPOINT: "minio:9000"
+      VC_STORAGE__ACCESS_KEY: "${MINIO_ROOT_USER:-videoclaw}"
+      VC_STORAGE__SECRET_KEY: "${MINIO_ROOT_PASSWORD:-videoclaw-secret}"
+      VC_STORAGE__BUCKET: videoclaw
+      VC_STORAGE__SAVED_BUCKET: videoclaw-saved
+      VC_STORAGE__PUBLIC_ENDPOINT: "${VC_STORAGE__PUBLIC_ENDPOINT:-http://minio:9000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
     volumes:
       # Persistent, host-editable configuration (API keys, models, ...).
       - ./data/config:/app/data
@@ -55,6 +96,8 @@ services:
       - ./video-claw/video-claw/backend/config.yaml.example:/app/config.yaml.example:ro
       - ./video-claw/video-claw/backend/api:/app/api:ro
       - ./video-claw/video-claw/backend/core:/app/core:ro
+      - ./video-claw/video-claw/backend/db:/app/db:ro
+      - ./video-claw/video-claw/backend/storage:/app/storage:ro
       - ./video-claw/video-claw/backend/models:/app/models:ro
       - ./video-claw/video-claw/backend/pipelines:/app/pipelines:ro
       - ./video-claw/video-claw/backend/prompts:/app/prompts:ro
@@ -104,3 +147,7 @@ services:
           create_host_path: false
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  pgdata:
+  miniodata:

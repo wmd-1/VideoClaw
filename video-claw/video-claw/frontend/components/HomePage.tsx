@@ -16,7 +16,7 @@ import { STAGES, useEnabledStages } from './TopBar';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 import ProviderSelect from './ProviderSelect';
 
-import { apiFetch } from "@/lib/identity";
+import { apiFetch } from "@/lib/identityGuard";
 const HOME_MODEL_SELECT_CLASS = 'bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none';
 
 export interface ProjectParams {

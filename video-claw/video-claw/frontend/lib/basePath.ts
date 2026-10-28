@@ -44,20 +44,61 @@ const SITE_PATH_PREFIXES = ['/code/', '/api/'];
  *
  * 外部 CDN 地址、data:/blob: 原样返回。
  */
+function currentLogin(): string {
+  try {
+    return window.localStorage.getItem('video-claw.login-name') || '';
+  } catch {
+    return '';
+  }
+}
+
+function appendLogin(target: string): string {
+  const login = currentLogin();
+  if (!login || /[?&]user_login=/.test(target)) return target;
+  return `${target}${target.includes('?') ? '&' : '?'}user_login=${encodeURIComponent(login)}`;
+}
+
+function appendMediaLogin(target: string): string {
+  return target.includes('/code/') ? appendLogin(target) : target;
+}
+
+function normalizeMediaPath(path: string): string {
+  const value = path.replace(/^\/+/, '');
+  if (value.startsWith('result/')) return `/code/${value}`;
+  if (value.startsWith('code/result/')) return `/${value}`;
+  return path;
+}
+
 export function withBasePathUrl(path: string): string {
   if (!path) return path;
   if (path.startsWith('data:') || path.startsWith('blob:')) return path;
-  if (path.startsWith('/')) return withBasePath(path);
-  if (/^https?:\/\//i.test(path)) {
+  const normalized = normalizeMediaPath(path);
+  if (normalized.startsWith('/')) return appendMediaLogin(withBasePath(normalized));
+  if (/^https?:\/\//i.test(normalized)) {
     try {
-      const url = new URL(path);
+      const url = new URL(normalized);
       if (SITE_PATH_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
-        return withBasePath(url.pathname) + url.search;
+        return appendMediaLogin(withBasePath(url.pathname) + url.search);
       }
     } catch {
       // 非法 URL 原样返回
     }
-    return path;
+    return normalized;
   }
-  return withBasePath(`/${path}`);
+  return appendMediaLogin(withBasePath(`/${normalized}`));
+}
+
+export function mediaUrl(path: string, options?: { download?: boolean }): string {
+  const target = withBasePathUrl(path);
+  if (!options?.download || !target) return target;
+  return `${target}${target.includes('?') ? '&' : '?'}download=1`;
+}
+
+/** 收藏媒体通道：URL 不把登录名写进列表，由这里追加 query。 */
+export function savedMediaUrl(savedId: string, options?: { download?: boolean }): string {
+  if (!savedId) return '';
+  let target = withBasePath(`/api/space/saved/${encodeURIComponent(savedId)}/media`);
+  target = appendLogin(target);
+  if (options?.download) target += `${target.includes('?') ? '&' : '?'}download=1`;
+  return target;
 }

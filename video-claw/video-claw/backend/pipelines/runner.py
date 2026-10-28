@@ -1,8 +1,11 @@
 import logging
 import traceback
 
+from core.media_refs import materialize_media_payload
+from core.ownership import legacy_owner
+
 from . import action_transfer, digital_human, standard
-from .storage import mark_completed, mark_failed, mark_running, update_task
+from .storage import load_task, mark_completed, mark_failed, mark_running, update_task
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,9 @@ PIPELINE_REGISTRY = {
 async def run_pipeline_task(task_id: str, pipeline: str, params: dict) -> None:
     runner = PIPELINE_REGISTRY[pipeline]
     try:
+        metadata = load_task(task_id) or {}
+        owner = str(metadata.get("owner") or legacy_owner())
+        params = materialize_media_payload(params, {"login": owner})
         logger.info("Pipeline task started: task_id=%s pipeline=%s", task_id, pipeline)
         mark_running(task_id)
         output, artifacts = await runner(task_id, params)

@@ -8,17 +8,17 @@ import BrandHeader from '@/components/BrandHeader';
 import { DIRECT_API_BASE, fetchSandboxTasks, uploadMedia } from '@/lib/workflowApi';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
 
-import { apiFetch } from "@/lib/identity";
-import { withBasePathUrl } from "@/lib/basePath";
+import { apiFetch } from "@/lib/identityGuard";
+import { mediaUrl } from "@/lib/basePath";
 // 辅助函数：将后端媒体路径转换为同源 + 部署前缀的 URL（见 lib/basePath）
 const toMediaUrl = (path: string) => {
   if (!path) return '';
   // 已含 /code/ 的路径（相对、带前导斜杠或带域名的绝对地址）统一归一化
-  if (path.includes('/code/')) return withBasePathUrl(path);
+  if (path.includes('/code/')) return mediaUrl(path);
   // 相对路径添加 /code/ 前缀（result/xxx 格式，兼容带前导斜杠）
-  if (path.startsWith('result/')) return withBasePathUrl(`/code/${path}`);
-  if (path.startsWith('/result/')) return withBasePathUrl(`/code${path}`);
-  return withBasePathUrl(`/code/result/${path}`);
+  if (path.startsWith('result/')) return mediaUrl(`/code/${path}`);
+  if (path.startsWith('/result/')) return mediaUrl(`/code${path}`);
+  return mediaUrl(`/code/result/${path}`);
 };
 
 async function readJsonResponse(resp: Response) {
@@ -246,7 +246,7 @@ function ImageUploader({
           {value && isUrl && (
             <div className="relative group">
               {/* 用户可能粘后端下发的 http(s) 绝对地址（含 /code/），统一改写成同源+前缀；外部 CDN 原样 */}
-              <img src={withBasePathUrl(value)} alt="预览" className="max-h-48 rounded-lg border border-gray-200" />
+              <img src={mediaUrl(value)} alt="预览" className="max-h-48 rounded-lg border border-gray-200" />
               <button
                 onClick={() => onChange('')}
                 className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
@@ -399,7 +399,7 @@ function AudioRefUploader({ value, onChange }: { value: string; onChange: (url: 
           {value && isDirect && (
             <div className="relative group">
               {/* 同图片预览：站内 /code/ 绝对地址补前缀，外部地址与 data: 原样 */}
-              <audio src={withBasePathUrl(value)} controls className="w-full" />
+              <audio src={mediaUrl(value)} controls className="w-full" />
               <button
                 onClick={() => onChange('')}
                 className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"

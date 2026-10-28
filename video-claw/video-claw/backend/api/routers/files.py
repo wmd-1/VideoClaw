@@ -4,10 +4,11 @@ import shutil
 import time
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from api.media_paths import guard_uploaded_document_name
 from config import settings
+from core.identity import CurrentUser, get_current_user
 from models.file_reader import FileReader
 
 logger = logging.getLogger(__name__)
@@ -36,16 +37,17 @@ def _path_size(path: str) -> int:
 
 
 @router.post("/api/upload_file")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), user: CurrentUser = Depends(get_current_user)):
     allowed_exts = [".docx", ".doc", ".txt", ".md", ".pdf"]
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower()
     if ext not in allowed_exts:
         raise HTTPException(status_code=400, detail=f"仅支持 {', '.join(allowed_exts)} 格式的文件")
 
-    os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    owner_dir = os.path.join(settings.TEMP_DIR, "users", user.owner_key)
+    os.makedirs(owner_dir, exist_ok=True)
     safe_filename = f"{int(time.time())}_{filename}"
-    file_path = os.path.join(settings.TEMP_DIR, safe_filename)
+    file_path = os.path.join(owner_dir, safe_filename)
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -53,11 +55,11 @@ async def upload_file(file: UploadFile = File(...)):
         logger.error(f"保存上传文件失败: {e}")
         raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
 
-    return {"filename": filename, "file_path": safe_filename}
+    return {"filename": filename, "file_path": f"users/{user.owner_key}/{safe_filename}"}
 
 
 @router.post("/api/upload_media")
-async def upload_media(file: UploadFile = File(...)):
+async def upload_media(file: UploadFile = File(...), user: CurrentUser = Depends(get_current_user)):
     allowed_exts = [
         ".jpg", ".jpeg", ".png", ".webp", ".bmp",
         ".mp4", ".mov", ".avi", ".mkv", ".webm",
@@ -69,9 +71,10 @@ async def upload_media(file: UploadFile = File(...)):
     if ext not in allowed_exts:
         raise HTTPException(status_code=400, detail=f"仅支持 {', '.join(allowed_exts)} 格式的媒体文件")
 
-    os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    owner_dir = os.path.join(settings.TEMP_DIR, "users", user.owner_key)
+    os.makedirs(owner_dir, exist_ok=True)
     safe_filename = f"{int(time.time())}_{filename}"
-    file_path = os.path.join(settings.TEMP_DIR, safe_filename)
+    file_path = os.path.join(owner_dir, safe_filename)
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -86,22 +89,29 @@ async def upload_media(file: UploadFile = File(...)):
 
 
 @router.delete("/api/cache/temp")
-async def clear_temp_cache():
+async def clear_temp_cache(user: CurrentUser = Depends(get_current_user)):
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
     deleted = 0
     freed_bytes = 0
     errors = []
-    for entry in os.scandir(settings.TEMP_DIR):
-        try:
-            freed_bytes += _path_size(entry.path)
-            if entry.is_dir(follow_symlinks=False):
-                shutil.rmtree(entry.path)
-            else:
-                os.remove(entry.path)
-            deleted += 1
-        except Exception as exc:
-            logger.warning("Failed to delete temp cache item: %s", entry.path, exc_info=True)
-            errors.append({"path": entry.name, "error": str(exc)})
+    if user.is_admin:
+        roots = [settings.TEMP_DIR]
+    else:
+        roots = [os.path.join(settings.TEMP_DIR, "users", user.owner_key)]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for entry in os.scandir(root):
+            try:
+                freed_bytes += _path_size(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path)
+                else:
+                    os.remove(entry.path)
+                deleted += 1
+            except Exception as exc:
+                logger.warning("Failed to delete temp cache item: %s", entry.path, exc_info=True)
+                errors.append({"path": entry.name, "error": str(exc)})
     return {
         "status": "ok",
         "deleted": deleted,
@@ -111,11 +121,17 @@ async def clear_temp_cache():
     }
 
 
-def merge_uploaded_file_into_idea(idea: str, file_path: Optional[str]) -> str:
+def merge_uploaded_file_into_idea(
+    idea: str, file_path: Optional[str], owner_prefix: Optional[str] = None
+) -> str:
     if not file_path:
         return idea
 
     safe_name = guard_uploaded_document_name(file_path)
+    if owner_prefix and not safe_name.startswith(f"users/{owner_prefix}/"):
+        legacy_bare = "/" not in safe_name and str(getattr(settings, "USERS_MODE", "guip")) == "single"
+        if not legacy_bare:
+            raise ValueError("file_path 不属于当前用户")
     temp_root = os.path.realpath(settings.TEMP_DIR)
     full_path = os.path.realpath(os.path.join(temp_root, safe_name))
     if full_path != temp_root and not full_path.startswith(temp_root + os.sep):
@@ -126,7 +142,7 @@ def merge_uploaded_file_into_idea(idea: str, file_path: Optional[str]) -> str:
 
     content = FileReader.extract_text(full_path)
     if content:
-        original_filename = "_".join(safe_name.split("_")[1:])
+        original_filename = "_".join(os.path.basename(safe_name).split("_")[1:])
         prompt_fragment = FileReader.format_as_prompt(original_filename, content)
         idea = f"{idea}\n\n{prompt_fragment}"
     logger.info(f"成功处理上传文件: {full_path}")

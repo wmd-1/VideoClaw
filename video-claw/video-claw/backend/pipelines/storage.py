@@ -17,6 +17,7 @@ _task_store_lock = threading.RLock()
 
 TASK_DATA_DIR = os.path.join(settings.CODE_DIR, "data", "tasks")
 TASK_RESULT_DIR = os.path.join(settings.RESULT_DIR, "task")
+PROCESS_BOOT_ID = uuid.uuid4().hex
 
 
 def ensure_task_dirs() -> None:
@@ -75,7 +76,7 @@ def delete_task(task_id: str) -> bool:
     return True
 
 
-def list_tasks(limit: int = 100) -> list[Dict[str, Any]]:
+def list_tasks(limit: int = 100, owner: Optional[str] = None) -> list[Dict[str, Any]]:
     with _task_store_lock:
         ensure_task_dirs()
         records = []
@@ -84,14 +85,18 @@ def list_tasks(limit: int = 100) -> list[Dict[str, Any]]:
                 continue
             try:
                 with open(os.path.join(TASK_DATA_DIR, filename), "r", encoding="utf-8") as f:
-                    records.append(json.load(f))
+                    metadata = json.load(f)
+                normalized_owner = str(metadata.get("owner") or getattr(settings, "USERS_LEGACY_OWNER", "local"))
+                if owner is not None and normalized_owner != owner:
+                    continue
+                records.append(metadata)
             except Exception:
                 continue
         records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return records[:limit]
 
 
-def create_task(pipeline: str, input_params: Dict[str, Any]) -> Dict[str, Any]:
+def create_task(pipeline: str, input_params: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
     with _task_store_lock:
         ensure_task_dirs()
         task_id = new_task_id()
@@ -99,6 +104,7 @@ def create_task(pipeline: str, input_params: Dict[str, Any]) -> Dict[str, Any]:
         os.makedirs(output_dir, exist_ok=True)
         metadata = {
             "task_id": task_id,
+            "owner": str(owner),
             "pipeline": pipeline,
             "status": "pending",
             "progress": 0,
@@ -109,6 +115,7 @@ def create_task(pipeline: str, input_params: Dict[str, Any]) -> Dict[str, Any]:
             "error": None,
             "created_at": now_iso(),
             "updated_at": now_iso(),
+            "boot_id": PROCESS_BOOT_ID,
             "started_at": None,
             "completed_at": None,
             "duration_seconds": None,
@@ -117,6 +124,31 @@ def create_task(pipeline: str, input_params: Dict[str, Any]) -> Dict[str, Any]:
         save_task(metadata)
     logger.info("Created pipeline task: task_id=%s pipeline=%s output_dir=%s", task_id, pipeline, output_dir)
     return metadata
+
+
+def sweep_stale_running(current_boot_id: str | None = None) -> int:
+    """Mark pending/running tasks owned by a previous process as interrupted."""
+    boot_id = current_boot_id or PROCESS_BOOT_ID
+    changed = 0
+    with _task_store_lock:
+        for filename in os.listdir(TASK_DATA_DIR) if os.path.isdir(TASK_DATA_DIR) else []:
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(TASK_DATA_DIR, filename)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                if metadata.get("status") not in ("pending", "running"):
+                    continue
+                if str(metadata.get("boot_id") or "") == boot_id:
+                    continue
+                metadata["status"] = "interrupted"
+                metadata["updated_at"] = now_iso()
+                save_task(metadata)
+                changed += 1
+            except Exception:
+                logger.warning("Failed to sweep pipeline task: %s", path, exc_info=True)
+    return changed
 
 
 def update_task(task_id: str, **updates: Any) -> Dict[str, Any]:

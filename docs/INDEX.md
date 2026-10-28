@@ -12,6 +12,7 @@
 | `handoffs/` | 跨会话交接 | 事实澄清、缺陷根因、容器内复现命令与交接边界 |
 | `decisions/` | 方案决策 | 定稿快照，保留历史原貌，后续修订以追加说明方式处理 |
 | `reference/` | 外部与运维参考 | 模型服务手册、迁移机配置模板、打包迁移 tips |
+| `designs/` | 方案设计 | 面向未实施需求的方案提案与设计取舍；实施前需转 OpenSpec 四工件，定稿快照再入 `decisions/` |
 
 ## 一、reviews/（评审记录）
 
@@ -35,7 +36,7 @@
 | `Handoff 3：H3 提示词改写阶段 - 待办与验证缺口.md` | 改写阶段的待办事项与验证缺口事实交接（含容器内复现方式） |
 | `Handoff 4：H3 原生改写器 - 评审加固承接（I1·I4·M1）.md` | 第一轮评审加固项中仍适用于原生实现的部分 |
 | `Handoff 5：前端构建端口硬编码故障与修复.md` | 构建期端口硬编码致 API 500 故障的根因、修复与治理（含复现命令、免网络重建配方、验收标准、交接边界与 655c519 留痕更正） |
-| `Handoff 6：SLB 统一前缀接入与前端文案·入口开关改造.md` | SLB 前缀 `/Bocom_Video_Generation` 接入（Next basePath）、Pipeline 入口开关/文案更名/隐藏联网搜索/取消身份门禁、媒体地址前缀修复与自检脚本 `scripts/selfcheck-deploy.sh` |
+| `Handoff 6：SLB 统一前缀接入与前端文案·入口开关改造.md` | SLB 前缀 `/Bocom_Video_Generation` 接入（Next basePath）、Pipeline 入口开关/文案更名/隐藏联网搜索/首页交行示例、身份门禁（先取消后恢复）与身份接口前缀、媒体地址前缀修复与自检脚本 `scripts/selfcheck-deploy.sh`；§9 为 2026-10-28 增量与后端会话交接要点 |
 
 区分：Handoff 用于缺陷交接与跨会话续作；需求/方案层面的正式提案走 openspec（proposal / specs / design / tasks + validate）。
 
@@ -73,3 +74,12 @@
 ## 六、同时修正：展示向 README 的图片相对路径
 
 `docs/README.md` 与 `docs/README_EN.md` 从仓库根拷入 `docs/` 后，本地图片引用仍写 `video-claw-pics/…`、`./FilmAgent-pics/…`，从 `docs/` 目录渲染会指向不存在的 `docs/video-claw-pics/` 而裂图。本次统一改为 `../` 前缀（每份 21 处引用 / 共 42 处，21 个唯一路径，各改动 15 行），正文文字与外链（GitHub user-attachments 视频、 shields 徽标等）未动。校验：逐条按 `docs/` 相对解析，21 个路径全部命中真实文件。
+
+## 七、designs/（方案设计）
+
+| 文件 | 状态 | 内容 |
+|---|---|---|
+| `用户与个人空间设计方案.md` | 设计提案（v17，未实施） | 参照 `Design_Agent_Platform` 的 `USER_SPACE_ISOLATION_HANDOFF_2026-10-23`，采用「上游 GUIP 统一身份 + 单租户按 `login_name` 字符串隔离」（`guip`/`single` 双模式）、**PostgreSQL 元数据 + MinIO 对象存储**、媒体控制器、`/space` 个人空间与收藏转存的完整方案；含剧本/角色/分镜等 stage 中间产物入库、**每阶段完成写 DB 检查点并支持恢复**、「单进程 ≠ 单用户单任务」说明、信任边界/SSE 约束、改造清单、分期、验证断言、风险与 Q1–Q8 决策记录 |
+| `用户与个人空间-数据库方案.md` | 设计提案（v14，未实施） | **PostgreSQL + MinIO**：sessions / session_stage_artifacts（含 status/version/checkpoint）/ artifact_files / pipeline_tasks / sandbox_records / sandbox_paths / saved_items；repository、stage 检查点事务、JSON→DB 与本地→MinIO 迁移、备份/回滚、媒体预签名、compose 服务与镜像变更、测试与风险；SQLite fallback 已移除，local 仅旧文件读取 |
+
+区分：`designs/` 放未定稿、待评审的方案提案；`decisions/` 放已拍板的定稿快照（保留历史原貌）。机制性变更实施前仍需按项目约定在 `openspec/changes/` 补齐 proposal / specs / design / tasks 四工件。

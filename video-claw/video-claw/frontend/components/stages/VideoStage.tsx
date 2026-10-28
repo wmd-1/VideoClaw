@@ -8,7 +8,7 @@ import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 import RewriteResultBadge, { type RewriteResult } from './RewriteResultBadge';
 
-import { apiFetch } from "@/lib/identity";
+import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
 interface ClipItem {
   id: string;             // shot_001_01, shot_001_02, ...

@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Clapperboard, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Repeat2, Settings, Trash2, UserRound, type LucideIcon } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Clapperboard, Clock, Hexagon, Home, Library, Loader2, PanelLeftOpen, Repeat2, Settings, Trash2, UserRound, type LucideIcon } from 'lucide-react';
 import clsx from 'clsx';
 import { useEffect, useState, type CSSProperties } from 'react';
 import { clearTempCache, fetchPipelineTasks, fetchSandboxTasks, fetchSessions, type PipelineTask, type SandboxTask, type SessionSummary } from '@/lib/workflowApi';
-import { useIdentity } from '@/lib/identity';
+import { useIdentity } from '@/lib/identityGuard';
 import { PIPELINE_UNAVAILABLE_MESSAGE, isPipelineAvailable, isPipelineHidden } from '@/lib/pipelineAvailability';
 
 interface NavItem {
@@ -19,6 +19,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/', label: '交心-Video', icon: Home },
+  { href: '/space', label: '个人空间', icon: Library },
   { href: '/sandbox', label: '临时工作台', icon: Hexagon },
   { href: '/pipelines/standard', label: '模板制作', icon: Clapperboard, pipeline: 'standard' },
   { href: '/pipelines/action-transfer', label: '动作迁移', icon: Repeat2, pipeline: 'action_transfer' },

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, Loader2, Save, Settings, XCircle } from 'lucide-react';
 import BrandHeader from '@/components/BrandHeader';
-import { apiFetch, useIdentity } from '@/lib/identity';
+import { apiFetch, useIdentity } from '@/lib/identityGuard';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, describeSlotIssue, mergeProviderGroups } from '@/lib/modelRegistry';
 import {
   CustomModelsSection,

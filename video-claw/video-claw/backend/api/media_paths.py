@@ -14,6 +14,7 @@ import re
 from typing import List, Optional
 
 from config import settings
+from core.media_refs import ResolvedMedia
 
 # 远程媒体形态登记集合（判定大小写不敏感）。file:// 永不入集合：适配层会本地 open。
 REMOTE_MEDIA_PREFIXES = ("http://", "https://", "data:", "oss://")
@@ -57,12 +58,14 @@ def strip_file_uri(value: str) -> str:
     return local
 
 
-def guard_media_input(value: str, field: str) -> str:
+def guard_media_input(value: str, field: str, owner_key: str | None = None) -> str:
     """媒体入参统一守卫：远程形态原样透传，本地路径限定允许根白名单。
 
     ``file://`` 是本地读取形态，剥前缀后与裸路径同口径走白名单；相对路径按
     CODE_DIR 与 CODE_DIR/result 解析（与既有 sandbox 行为一致）。
     """
+    if isinstance(value, ResolvedMedia) and value.trusted:
+        return str(value)
     value = (value or "").strip()
     if not value:
         return value
@@ -87,28 +90,38 @@ def guard_media_input(value: str, field: str) -> str:
     safe = resolve_within_allowed_dirs(source)
     if not safe:
         raise ValueError(f"{field} 路径越界（仅允许 result/temp 目录内的文件）: {value}")
+    if owner_key:
+        temp_root = os.path.realpath(settings.TEMP_DIR)
+        if safe == temp_root or safe.startswith(temp_root + os.sep):
+            rel = os.path.relpath(safe, temp_root).replace(os.sep, "/")
+            if rel.startswith("users/") and not rel.startswith(f"users/{owner_key}/"):
+                raise ValueError(f"{field} 不属于当前用户")
     return safe
 
 
-def guard_media_inputs(values: Optional[List[str]], field: str) -> List[str]:
+def guard_media_inputs(
+    values: Optional[List[str]], field: str, owner_key: str | None = None
+) -> List[str]:
     """逐条套用统一守卫，保留输入顺序；空值项直接丢弃。"""
-    return [guard_media_input(item, field) for item in (values or []) if (item or "").strip()]
+    return [
+        guard_media_input(item, field, owner_key)
+        for item in (values or [])
+        if (item or "").strip()
+    ]
 
 
 def guard_uploaded_document_name(value: str) -> str:
-    """上传文档引用只接受 TEMP_DIR 内的相对文件名（无分隔符、无 ..、非绝对路径）。
+    """上传文档引用只接受 TEMP_DIR 内、users/<owner_key>/ 下的相对路径。
 
-    只做形态校验；调用方仍需 join TEMP_DIR 后 realpath 复核包含性。
+    兼容 legacy 裸文件名（无分隔符）；调用方仍需 join TEMP_DIR 后 realpath
+    复核包含性并断言 owner_key。
     """
-    raw = str(value or "").strip()
+    raw = str(value or "").strip().replace("\\", "/")
     if not raw:
         raise ValueError("file_path 不能为空")
-    if (
-        os.path.isabs(raw)
-        or os.path.basename(raw) != raw
-        or "/" in raw
-        or "\\" in raw
-        or ".." in raw
-    ):
+    if os.path.isabs(raw) or ".." in raw.split("/"):
         raise ValueError("file_path 仅接受 /api/upload_file 返回的相对文件名")
-    return raw
+    parts = [part for part in raw.split("/") if part]
+    if not parts or any(part in (".", "") for part in parts):
+        raise ValueError("file_path 仅接受 /api/upload_file 返回的相对文件名")
+    return "/".join(parts)

@@ -1,7 +1,7 @@
 /**
  * 工作流 API 客户端
  */
-import { apiFetch } from "@/lib/identity";
+import { apiFetch } from "@/lib/identityGuard";
 import { withBasePath } from "@/lib/basePath";
 
 /**

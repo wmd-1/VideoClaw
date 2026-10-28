@@ -3,7 +3,7 @@
  * - 路径转 URL
  * - 剧本/分镜结构化文本解析与重建
  */
-import { withBasePathUrl } from '@/lib/basePath';
+import { mediaUrl } from '@/lib/basePath';
 
 /**
  * 将后端本地文件路径转换为浏览器可访问的 URL。
@@ -14,10 +14,10 @@ import { withBasePathUrl } from '@/lib/basePath';
 export function assetUrl(path: string): string {
   if (!path) return '';
   // 后端产物相对路径：result/xxx 对应后端挂载的 /code/result/xxx
-  if (path.startsWith('result/')) return withBasePathUrl(`/code/${path}`);
+  if (path.startsWith('result/')) return mediaUrl(`/code/${path}`);
   // 同上，兼容带前导斜杠的 /result/...
-  if (path.startsWith('/result/')) return withBasePathUrl(`/code${path}`);
-  return withBasePathUrl(path);
+  if (path.startsWith('/result/')) return mediaUrl(`/code${path}`);
+  return mediaUrl(path);
 }
 
 export function assetVersionLabel(path: string, index: number): string {

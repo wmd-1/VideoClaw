@@ -125,6 +125,10 @@ export default function nextConfig(phase: string): NextConfig {
           destination: `${backendUrl}/api/identity/:path*`,
         },
         {
+          source: "/api/space/:path*",
+          destination: `${backendUrl}/api/space/:path*`,
+        },
+        {
           source: "/api/sessions",
           destination: `${backendUrl}/api/sessions`,
         },

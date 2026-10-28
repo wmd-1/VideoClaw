@@ -6,7 +6,7 @@ import type { StageViewProps } from './types';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 
-import { apiFetch } from "@/lib/identity";
+import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
 
 interface LoglineData {

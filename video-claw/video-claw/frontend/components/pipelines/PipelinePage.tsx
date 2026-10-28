@@ -49,7 +49,7 @@ import {
 } from '@/config/models';
 import BrandHeader from '@/components/BrandHeader';
 import { PIPELINE_UNAVAILABLE_MESSAGE, isPipelineAvailable } from '@/lib/pipelineAvailability';
-import { withBasePathUrl } from '@/lib/basePath';
+import { mediaUrl } from '@/lib/basePath';
 
 type PipelineId = 'standard' | 'action_transfer' | 'digital_human';
 
@@ -348,11 +348,11 @@ function assetHref(path?: string) {
   // 同源 + 部署前缀的 /code/... 形式（见 lib/basePath 的 withBasePathUrl）
   const marker = '/code/';
   const idx = path.indexOf(marker);
-  if (idx >= 0) return withBasePathUrl(`/code/${path.slice(idx + marker.length)}`);
+  if (idx >= 0) return mediaUrl(`/code/${path.slice(idx + marker.length)}`);
   // result/xxx 对应后端挂载的 /code/result/xxx（兼容带前导斜杠）
-  if (path.startsWith('result/')) return withBasePathUrl(`/code/${path}`);
-  if (path.startsWith('/result/')) return withBasePathUrl(`/code${path}`);
-  return withBasePathUrl(path);
+  if (path.startsWith('result/')) return mediaUrl(`/code/${path}`);
+  if (path.startsWith('/result/')) return mediaUrl(`/code${path}`);
+  return mediaUrl(path);
 }
 
 function statusText(status?: string) {

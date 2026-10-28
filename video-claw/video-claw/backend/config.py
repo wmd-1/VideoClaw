@@ -22,6 +22,32 @@ CUSTOM_MODEL_TYPES = ("llm", "vlm", "t2i", "i2i", "video")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "project_name": "Video-Claw",
+    "database": {
+        "kind": "postgres",
+        "dsn": "",
+        "pool_min": 1,
+        "pool_max": 10,
+    },
+    "storage": {
+        "kind": "minio",
+        "endpoint": "minio:9000",
+        "access_key": "",
+        "secret_key": "",
+        "secure": False,
+        "bucket": "videoclaw",
+        "saved_bucket": "videoclaw-saved",
+        "presign_ttl": 3600,
+        "public_endpoint": "",
+        "public_base_url": "",
+    },
+    "users": {
+        "mode": "guip",
+        "legacy_owner": "local",
+        "admin_logins": [],
+        "allow_url_user": True,
+        "trusted_proxy_cidrs": "",
+        "saved_limit": 50,
+    },
     "server": {
         "host": "127.0.0.1",
         "port": 8000,
@@ -186,6 +212,44 @@ def _coerce_config(data: Dict[str, Any]) -> Dict[str, Any]:
         h3_rewrite["temperature"] = float(h3_rewrite.get("temperature", 0.3))
     except (TypeError, ValueError):
         h3_rewrite["temperature"] = 0.3
+    database = clean.get("database")
+    if not isinstance(database, dict):
+        database = copy.deepcopy(DEFAULT_CONFIG["database"])
+        clean["database"] = database
+    for key in ("kind", "dsn"):
+        database[key] = "" if database.get(key) is None else str(database[key])
+    for key in ("pool_min", "pool_max"):
+        try:
+            database[key] = int(database.get(key))
+        except (TypeError, ValueError):
+            database[key] = DEFAULT_CONFIG["database"][key]
+
+    storage = clean.get("storage")
+    if not isinstance(storage, dict):
+        storage = copy.deepcopy(DEFAULT_CONFIG["storage"])
+        clean["storage"] = storage
+    for key in ("kind", "endpoint", "access_key", "secret_key", "bucket", "saved_bucket", "public_endpoint", "public_base_url"):
+        storage[key] = "" if storage.get(key) is None else str(storage[key])
+    storage["secure"] = _as_bool(storage.get("secure"))
+    try:
+        storage["presign_ttl"] = int(storage.get("presign_ttl"))
+    except (TypeError, ValueError):
+        storage["presign_ttl"] = DEFAULT_CONFIG["storage"]["presign_ttl"]
+
+    users = clean.get("users")
+    if not isinstance(users, dict):
+        users = copy.deepcopy(DEFAULT_CONFIG["users"])
+        clean["users"] = users
+    users["mode"] = "single" if str(users.get("mode")).lower() == "single" else "guip"
+    users["legacy_owner"] = str(users.get("legacy_owner") or "local")
+    users["admin_logins"] = _str_list(users.get("admin_logins"))
+    users["allow_url_user"] = _as_bool(users.get("allow_url_user"))
+    users["trusted_proxy_cidrs"] = str(users.get("trusted_proxy_cidrs") or "")
+    try:
+        users["saved_limit"] = int(users.get("saved_limit"))
+    except (TypeError, ValueError):
+        users["saved_limit"] = DEFAULT_CONFIG["users"]["saved_limit"]
+
     # 旧配置段迁移提示（design_agent 已被 h3_rewrite 取代）
     if "design_agent" in clean:
         logger.warning(
@@ -302,6 +366,9 @@ ENV_COMMON_KEYS = {
     "VC_COMMON__PROXY": "proxy",
     "VC_COMMON__PRINT_MODEL_INPUT": "print_model_input",
 }
+ENV_DATABASE_PATTERN = re.compile(r"^VC_DATABASE__([A-Z0-9_]+)$")
+ENV_STORAGE_PATTERN = re.compile(r"^VC_STORAGE__([A-Z0-9_]+)$")
+ENV_USERS_PATTERN = re.compile(r"^VC_USERS__([A-Z0-9_]+)$")
 # 额外纳入收集的非 VC_ 前缀键：用于 server.host/port 与 .env 后端端口对齐
 _ENV_EXTRA_KEYS = ("BACKEND_HOST", "BACKEND_PORT")
 
@@ -404,6 +471,9 @@ def _apply_env_overrides(
     common_fields: Dict[str, Any] = {}
     design_agent_fields: Dict[str, str] = {}  # 旧 VC_DESIGN_AGENT__*（仅迁移提示，不生效）
     h3_rewrite_fields: Dict[str, str] = {}
+    database_fields: Dict[str, str] = {}
+    storage_fields: Dict[str, str] = {}
+    users_fields: Dict[str, str] = {}
     for key, value in env.items():
         match = ENV_PROVIDER_PATTERN.match(key)
         if match:
@@ -422,6 +492,18 @@ def _apply_env_overrides(
         if key in ENV_COMMON_KEYS:
             common_fields[ENV_COMMON_KEYS[key]] = value
             continue
+        match = ENV_DATABASE_PATTERN.match(key)
+        if match:
+            database_fields[match.group(1).lower()] = value
+            continue
+        match = ENV_STORAGE_PATTERN.match(key)
+        if match:
+            storage_fields[match.group(1).lower()] = value
+            continue
+        match = ENV_USERS_PATTERN.match(key)
+        if match:
+            users_fields[match.group(1).lower()] = value
+            continue
         match = ENV_H3_REWRITE_PATTERN.match(key)
         if match:
             h3_rewrite_fields[match.group(1).lower()] = value
@@ -430,7 +512,17 @@ def _apply_env_overrides(
             design_agent_fields[key] = value
             continue
         if key.startswith(
-            ("VC_PROVIDER_", "VC_CUSTOM_MODEL_", "VC_MODEL_", "VC_SERVER_", "VC_COMMON_", "VC_H3_REWRITE_")
+            (
+                "VC_PROVIDER_",
+                "VC_CUSTOM_MODEL_",
+                "VC_MODEL_",
+                "VC_SERVER_",
+                "VC_COMMON_",
+                "VC_H3_REWRITE_",
+                "VC_DATABASE_",
+                "VC_STORAGE_",
+                "VC_USERS_",
+            )
         ):
             logger.warning("Unrecognized VC_* variable ignored: %s", key)
         # 其他 VC_* 变量不属于本次支持的覆盖范围，静默忽略
@@ -496,6 +588,51 @@ def _apply_env_overrides(
             else:
                 common_section[field_name] = "" if raw is None else str(raw)
             env_fields.append(f"api_providers.common.{field_name}")
+
+    if database_fields:
+        database_section = effective.setdefault("database", {})
+        for field_name, raw in database_fields.items():
+            if field_name in ("pool_min", "pool_max"):
+                try:
+                    database_section[field_name] = int(str(raw).strip())
+                except (TypeError, ValueError):
+                    logger.warning("Env database.%s ignored: invalid integer", field_name)
+                    continue
+            else:
+                database_section[field_name] = "" if raw is None else str(raw)
+            env_fields.append(f"database.{field_name}")
+
+    if storage_fields:
+        storage_section = effective.setdefault("storage", {})
+        for field_name, raw in storage_fields.items():
+            if field_name in ("secure", "ensure_bucket"):
+                storage_section[field_name] = _as_bool(raw)
+            elif field_name == "presign_ttl":
+                try:
+                    storage_section[field_name] = int(str(raw).strip())
+                except (TypeError, ValueError):
+                    logger.warning("Env storage.presign_ttl ignored: invalid integer")
+                    continue
+            else:
+                storage_section[field_name] = "" if raw is None else str(raw)
+            env_fields.append(f"storage.{field_name}")
+
+    if users_fields:
+        users_section = effective.setdefault("users", {})
+        for field_name, raw in users_fields.items():
+            if field_name in ("allow_url_user",):
+                users_section[field_name] = _as_bool(raw)
+            elif field_name == "saved_limit":
+                try:
+                    users_section[field_name] = int(str(raw).strip())
+                except (TypeError, ValueError):
+                    logger.warning("Env users.saved_limit ignored: invalid integer")
+                    continue
+            elif field_name == "admin_logins":
+                users_section[field_name] = _str_list(raw)
+            else:
+                users_section[field_name] = "" if raw is None else str(raw)
+            env_fields.append(f"users.{field_name}")
 
     # 旧键一次性迁移提示（VC_DESIGN_AGENT__* 已废弃，不生效）
     if design_agent_fields:
@@ -641,6 +778,15 @@ def _strip_env_overridden(
                 h3_view.pop(field_name, None)
             else:
                 h3_view[field_name] = copy.deepcopy(file_value)
+        elif field_path.startswith("database.") or field_path.startswith("storage.") or field_path.startswith("users."):
+            section_name, field_name = field_path.split(".", 1)
+            file_section = current_file.get(section_name, {}) if isinstance(current_file, dict) else {}
+            file_value = file_section.get(field_name) if isinstance(file_section, dict) else None
+            section_view = view.setdefault(section_name, {})
+            if file_value is None:
+                section_view.pop(field_name, None)
+            else:
+                section_view[field_name] = copy.deepcopy(file_value)
         else:
             match = custom_pattern.match(field_path)
             if not match:
@@ -846,6 +992,30 @@ class Config:
     CONFIG = CONFIG_VALUES
     ENV_OVERRIDES = CONFIG_ENV_INFO
 
+    DATABASE = _get(CONFIG, "database", {})
+    STORAGE = _get(CONFIG, "storage", {})
+    DATABASE_KIND = _get(CONFIG, "database.kind", "postgres")
+    DATABASE_DSN = _get(CONFIG, "database.dsn", "")
+    DATABASE_POOL_MIN = _get(CONFIG, "database.pool_min", 1)
+    DATABASE_POOL_MAX = _get(CONFIG, "database.pool_max", 10)
+    STORAGE_KIND = _get(CONFIG, "storage.kind", "minio")
+    STORAGE_ENDPOINT = _get(CONFIG, "storage.endpoint", "minio:9000")
+    STORAGE_ACCESS_KEY = _get(CONFIG, "storage.access_key", "")
+    STORAGE_SECRET_KEY = _get(CONFIG, "storage.secret_key", "")
+    STORAGE_SECURE = _get(CONFIG, "storage.secure", False)
+    STORAGE_BUCKET = _get(CONFIG, "storage.bucket", "videoclaw")
+    STORAGE_SAVED_BUCKET = _get(CONFIG, "storage.saved_bucket", "videoclaw-saved")
+    STORAGE_PRESIGN_TTL = _get(CONFIG, "storage.presign_ttl", 3600)
+    STORAGE_PUBLIC_ENDPOINT = _get(CONFIG, "storage.public_endpoint", "")
+    STORAGE_PUBLIC_BASE_URL = _get(CONFIG, "storage.public_base_url", "")
+    USERS = _get(CONFIG, "users", {})
+    USERS_MODE = _get(CONFIG, "users.mode", "guip")
+    USERS_LEGACY_OWNER = _get(CONFIG, "users.legacy_owner", "local")
+    USERS_ADMIN_LOGINS = _get(CONFIG, "users.admin_logins", [])
+    USERS_ALLOW_URL_USER = _get(CONFIG, "users.allow_url_user", True)
+    USERS_TRUSTED_PROXY_CIDRS = _get(CONFIG, "users.trusted_proxy_cidrs", "")
+    USERS_SAVED_LIMIT = _get(CONFIG, "users.saved_limit", 50)
+
     HOST = _get(CONFIG, "server.host")
     PORT = _get(CONFIG, "server.port")
     # 生成超时（.env：VC_TIMEOUT_IMAGE / VC_TIMEOUT_VIDEO，默认 3 小时）
@@ -994,6 +1164,30 @@ class Config:
         cls.H3_REWRITE_LLM_MODEL = _get(clean, "h3_rewrite.llm_model", "")
         cls.H3_REWRITE_VLM_MODEL = _get(clean, "h3_rewrite.vlm_model", "")
         cls.H3_REWRITE_TEMPERATURE = _get(clean, "h3_rewrite.temperature", 0.3)
+
+        cls.DATABASE = _get(clean, "database", {})
+        cls.STORAGE = _get(clean, "storage", {})
+        cls.DATABASE_KIND = _get(clean, "database.kind", "postgres")
+        cls.DATABASE_DSN = _get(clean, "database.dsn", "")
+        cls.DATABASE_POOL_MIN = _get(clean, "database.pool_min", 1)
+        cls.DATABASE_POOL_MAX = _get(clean, "database.pool_max", 10)
+        cls.STORAGE_KIND = _get(clean, "storage.kind", "minio")
+        cls.STORAGE_ENDPOINT = _get(clean, "storage.endpoint", "minio:9000")
+        cls.STORAGE_ACCESS_KEY = _get(clean, "storage.access_key", "")
+        cls.STORAGE_SECRET_KEY = _get(clean, "storage.secret_key", "")
+        cls.STORAGE_SECURE = _get(clean, "storage.secure", False)
+        cls.STORAGE_BUCKET = _get(clean, "storage.bucket", "videoclaw")
+        cls.STORAGE_SAVED_BUCKET = _get(clean, "storage.saved_bucket", "videoclaw-saved")
+        cls.STORAGE_PRESIGN_TTL = _get(clean, "storage.presign_ttl", 3600)
+        cls.STORAGE_PUBLIC_ENDPOINT = _get(clean, "storage.public_endpoint", "")
+        cls.STORAGE_PUBLIC_BASE_URL = _get(clean, "storage.public_base_url", "")
+        cls.USERS = _get(clean, "users", {})
+        cls.USERS_MODE = _get(clean, "users.mode", "guip")
+        cls.USERS_LEGACY_OWNER = _get(clean, "users.legacy_owner", "local")
+        cls.USERS_ADMIN_LOGINS = _get(clean, "users.admin_logins", [])
+        cls.USERS_ALLOW_URL_USER = _get(clean, "users.allow_url_user", True)
+        cls.USERS_TRUSTED_PROXY_CIDRS = _get(clean, "users.trusted_proxy_cidrs", "")
+        cls.USERS_SAVED_LIMIT = _get(clean, "users.saved_limit", 50)
         return cls.as_dict()
 
     @classmethod

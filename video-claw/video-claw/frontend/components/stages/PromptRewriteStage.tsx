@@ -7,7 +7,7 @@ import type { StageViewProps } from './types';
 import StageProgress from './StageProgress';
 import { pruneDraftsByContent } from '@/lib/assetMerge';
 
-import { apiFetch } from "@/lib/identity";
+import { apiFetch } from "@/lib/identityGuard";
 interface RewriteItem {
   id: string;
   name?: string;

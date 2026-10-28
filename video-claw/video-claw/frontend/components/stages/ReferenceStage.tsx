@@ -10,7 +10,7 @@ import StageProgress from './StageProgress';
 import ImageLightbox from './ImageLightbox';
 import RewriteResultBadge, { type RewriteResult } from './RewriteResultBadge';
 
-import { apiFetch } from "@/lib/identity";
+import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
 interface SceneItem {
   id: string;             // shot_001_01, shot_001_02, ...

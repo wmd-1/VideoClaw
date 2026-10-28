@@ -1,18 +1,25 @@
 import logging
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+from api.dependencies import workflow_engine  # noqa: E402 - sys.path 引导后导入
 from api.logging_config import setup_concurrent_logging  # noqa: E402 - sys.path 引导后导入
 from config import settings  # noqa: E402 - sys.path 引导后导入
+from core.identity import UserIdentityMiddleware  # noqa: E402 - sys.path 引导后导入
+from core.media_refs import prune_refs  # noqa: E402 - sys.path 引导后导入
+from db.database import close_pool, init_db  # noqa: E402 - sys.path 引导后导入
+from db.repositories import StageArtifactRepo, TaskRepo  # noqa: E402 - sys.path 引导后导入
+from storage import get_storage  # noqa: E402 - sys.path 引导后导入
+from pipelines.storage import sweep_stale_running as sweep_pipeline_tasks  # noqa: E402 - sys.path 引导后导入
 
 setup_concurrent_logging()
 
@@ -58,10 +65,13 @@ from api.routers import (  # noqa: E402 - sys.path 引导后导入
     configuration_router,
     files_router,
     health_router,
+    identity_router,
+    media_router,
     models_router,
     pipelines_router,
     sandbox_router,
     sessions_router,
+    space_router,
     stages_router,
     workflow_router,
 )
@@ -71,12 +81,44 @@ from api.routers import (  # noqa: E402 - sys.path 引导后导入
 async def lifespan(app: FastAPI):
     logger.info("Starting Video-Claw API")
     logger.info("Result directory mounted at /code/result: %s", settings.RESULT_DIR)
+    dsn = str(getattr(settings, "DATABASE_DSN", "") or "").strip()
+    if dsn:
+        # 生产契约：数据库不可用即启动失败，不做 SQLite/JSON 静默兜底。
+        init_db()
+        # MinIO may still be starting even though compose has started it; retry briefly.
+        last_error = None
+        for _ in range(10):
+            try:
+                get_storage().ensure_bucket()
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                time.sleep(1)
+        if last_error is not None:
+            raise RuntimeError(f"object storage bucket initialization failed: {last_error}") from last_error
+        boot_id = str(getattr(workflow_engine, "_boot_id", ""))
+        stages = StageArtifactRepo().sweep_stale_running(boot_id)
+        tasks = TaskRepo().sweep_stale_running(boot_id)
+        json_tasks = sweep_pipeline_tasks()
+        pruned = prune_refs()
+        loaded = workflow_engine.load_sessions()
+        logger.info(
+            "Startup recovery: boot_id=%s stages=%d tasks=%d json_tasks=%d refs_pruned=%d sessions=%d",
+            boot_id, stages, tasks, json_tasks, pruned, loaded,
+        )
+    else:
+        logger.warning("database.dsn is empty; startup recovery skipped (dev compatibility only)")
+        sweep_pipeline_tasks()
+        workflow_engine.load_sessions()
     yield
+    close_pool()
     logger.info("Video-Claw API shutdown complete")
 
 
 app = FastAPI(title="Video-Claw", version="2.0.0", lifespan=lifespan)
 
+app.add_middleware(UserIdentityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -88,12 +130,13 @@ logger.info("CORS enabled for origins: %s", ["*"])
 
 os.makedirs(settings.CODE_DIR, exist_ok=True)
 os.makedirs(settings.RESULT_DIR, exist_ok=True)
-app.mount("/code/result", StaticFiles(directory=settings.RESULT_DIR), name="code")
-
+app.include_router(identity_router)
+app.include_router(media_router)
 app.include_router(health_router)
 app.include_router(files_router)
 app.include_router(workflow_router)
 app.include_router(sessions_router)
+app.include_router(space_router)
 app.include_router(stages_router)
 app.include_router(sandbox_router)
 app.include_router(pipelines_router)

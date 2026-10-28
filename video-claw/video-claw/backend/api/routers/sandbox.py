@@ -7,10 +7,10 @@ import uuid
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.concurrency import run_in_threadpool
 
-from api.media_paths import guard_media_input, guard_media_inputs, resolve_within_allowed_dirs
+from api.media_paths import resolve_within_allowed_dirs
 from api.schemas.sandbox import (
     SandboxI2IRequest,
     SandboxLLMRequest,
@@ -19,6 +19,9 @@ from api.schemas.sandbox import (
     SandboxVLMRequest,
 )
 from config import settings
+from core.identity import CurrentUser, get_current_user
+from core.media_refs import canonicalize_media_value, materialize_media_value
+from core.ownership import is_owner, is_owner_login, legacy_owner
 
 router = APIRouter(tags=["Sandbox"])
 logger = logging.getLogger(__name__)
@@ -35,13 +38,33 @@ SANDBOX_MEDIA_UPLOAD_DIR = os.path.join(settings.CODE_DIR, "result", "sandbox", 
 os.makedirs(SANDBOX_DIR, exist_ok=True)
 
 
-def _load_history() -> List[dict]:
-    """加载历史记录"""
+def _media_input(value: str, field: str, user: CurrentUser) -> str:
+    del field  # validation errors are raised by canonicalize/materialize
+    canonical = canonicalize_media_value(value, user)
+    return materialize_media_value(str(canonical), user)
+
+
+def _media_inputs(values: List[str] | None, field: str, user: CurrentUser) -> List[str]:
+    return [
+        _media_input(item, field, user)
+        for item in (values or [])
+        if str(item or "").strip()
+    ]
+
+
+def _load_history(owner: str | None = None) -> List[dict]:
+    """加载历史记录；owner 在读取入口过滤，避免路由层全量过滤。"""
     with SANDBOX_LOCK:
         if os.path.exists(SANDBOX_HISTORY_FILE):
             try:
                 with open(SANDBOX_HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    records = json.load(f)
+                if owner is None:
+                    return records
+                return [
+                    record for record in records
+                    if is_owner_login(record.get("owner"), owner)
+                ]
             except Exception:
                 logger.warning("Failed to load sandbox history: %s", SANDBOX_HISTORY_FILE, exc_info=True)
                 return []
@@ -115,14 +138,16 @@ def _add_record(
     output_data: dict,
     files: List[str] = None,
     record_id: str | None = None,
+    owner: str = "",
 ) -> str:
     """添加历史记录"""
     with SANDBOX_LOCK:
-        record_id = record_id or str(uuid.uuid4().hex[:8])
+        record_id = record_id or uuid.uuid4().hex
         # 转换路径为相对路径格式
         output_data = _convert_output_paths(output_data)
         record = {
             "id": record_id,
+            "owner": str(owner or legacy_owner()),
             "tool": tool,
             "model": model,
             "input": input_data,
@@ -136,11 +161,12 @@ def _add_record(
         return record_id
 
 
-def _start_active_task(tool: str, model: str, input_data: dict) -> str:
+def _start_active_task(tool: str, model: str, input_data: dict, owner: str = "") -> str:
     with SANDBOX_LOCK:
-        task_id = str(uuid.uuid4().hex[:8])
+        task_id = uuid.uuid4().hex
         SANDBOX_ACTIVE_TASKS[task_id] = {
             "id": task_id,
+            "owner": str(owner or legacy_owner()),
             "tool": tool,
             "model": model,
             "input": input_data,
@@ -215,9 +241,9 @@ def _resolve_media_reference_url(base_url: str, value: str) -> str:
 
 # 请求模型
 @router.get("/api/sandbox/history")
-async def sandbox_get_history():
+async def sandbox_get_history(user: CurrentUser = Depends(get_current_user)):
     """获取历史记录列表"""
-    history = _load_history()
+    history = _load_history(user.login)
     # 返回完整信息（包括 output）
     return {
         "success": True,
@@ -236,17 +262,20 @@ async def sandbox_get_history():
 
 
 @router.get("/api/sandbox/tasks")
-async def sandbox_get_active_tasks():
+async def sandbox_get_active_tasks(user: CurrentUser = Depends(get_current_user)):
     """获取临时工作台正在执行的任务"""
     with SANDBOX_LOCK:
-        tasks = list(SANDBOX_ACTIVE_TASKS.values())
+        tasks = [
+            task for task in SANDBOX_ACTIVE_TASKS.values()
+            if is_owner(task.get("owner"), user)
+        ]
     return {"success": True, "tasks": tasks}
 
 
 @router.get("/api/sandbox/history/{record_id}")
-async def sandbox_get_record(record_id: str):
+async def sandbox_get_record(record_id: str, user: CurrentUser = Depends(get_current_user)):
     """获取单条历史记录详情"""
-    history = _load_history()
+    history = _load_history(user.login)
     for r in history:
         if r["id"] == record_id:
             return {"success": True, "record": r}
@@ -254,14 +283,15 @@ async def sandbox_get_record(record_id: str):
 
 
 @router.delete("/api/sandbox/history/{record_id}")
-async def sandbox_delete_record(record_id: str):
+async def sandbox_delete_record(record_id: str, user: CurrentUser = Depends(get_current_user)):
     """删除历史记录"""
     with SANDBOX_LOCK:
         history = _load_history()
         record_to_delete = None
         new_history = []
         for r in history:
-            if r["id"] == record_id:
+            owned = is_owner(r.get("owner"), user)
+            if r["id"] == record_id and owned:
                 record_to_delete = r
             else:
                 new_history.append(r)
@@ -278,12 +308,14 @@ async def sandbox_delete_record(record_id: str):
 
 
 @router.post("/api/sandbox/llm")
-async def sandbox_llm(req: SandboxLLMRequest):
+async def sandbox_llm(
+    req: SandboxLLMRequest, user: CurrentUser = Depends(get_current_user)
+):
     """临时工作台 - LLM 文字生成"""
     from models.llm_client import LLM
     client = LLM()
     input_data = {"prompt": req.prompt, "web_search": req.web_search}
-    task_id = _start_active_task("llm", req.model, input_data)
+    task_id = _start_active_task("llm", req.model, input_data, user.login)
     try:
         logger.info("Sandbox LLM started: model=%s web_search=%s", req.model, req.web_search)
         result = await run_in_threadpool(
@@ -299,6 +331,7 @@ async def sandbox_llm(req: SandboxLLMRequest):
             input_data=input_data,
             output_data={"response": result},
             record_id=task_id,
+            owner=user.login,
         )
         logger.info("Sandbox LLM completed: model=%s record_id=%s", req.model, record_id)
         return {"success": True, "result": result, "record_id": record_id}
@@ -310,18 +343,20 @@ async def sandbox_llm(req: SandboxLLMRequest):
 
 
 @router.post("/api/sandbox/vlm")
-async def sandbox_vlm(req: SandboxVLMRequest):
+async def sandbox_vlm(
+    req: SandboxVLMRequest, user: CurrentUser = Depends(get_current_user)
+):
     """临时工作台 - VLM 图片理解"""
     from models.vlm_client import VLM
     client = VLM()
     # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起请求前拒绝
     try:
-        image_paths = guard_media_inputs(req.images, "图片")
+        image_paths = _media_inputs(req.images, "图片", user)
     except ValueError as e:
         logger.warning("Sandbox VLM media input rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
     input_data = {"prompt": req.prompt, "images": image_paths}
-    task_id = _start_active_task("vlm", req.model, input_data)
+    task_id = _start_active_task("vlm", req.model, input_data, user.login)
     try:
         logger.info("Sandbox VLM started: model=%s images=%d", req.model, len(image_paths))
         result = await run_in_threadpool(
@@ -337,6 +372,7 @@ async def sandbox_vlm(req: SandboxVLMRequest):
             input_data=input_data,
             output_data={"response": result},
             record_id=task_id,
+            owner=user.login,
         )
         logger.info("Sandbox VLM completed: model=%s record_id=%s", req.model, record_id)
         return {"success": True, "result": result, "record_id": record_id}
@@ -348,12 +384,14 @@ async def sandbox_vlm(req: SandboxVLMRequest):
 
 
 @router.post("/api/sandbox/t2i")
-async def sandbox_t2i(req: SandboxT2IRequest):
+async def sandbox_t2i(
+    req: SandboxT2IRequest, user: CurrentUser = Depends(get_current_user)
+):
     """临时工作台 - 文生图"""
     from models.image_client import ImageClient
     client = ImageClient()
     input_data = {"prompt": req.prompt, "style": req.style, "ratio": req.ratio}
-    task_id = _start_active_task("t2i", req.model, input_data)
+    task_id = _start_active_task("t2i", req.model, input_data, user.login)
     try:
         logger.info("Sandbox T2I started: model=%s ratio=%s", req.model, req.ratio)
         result = await run_in_threadpool(
@@ -372,6 +410,7 @@ async def sandbox_t2i(req: SandboxT2IRequest):
             output_data={"images": result},
             files=result if isinstance(result, list) else [],
             record_id=task_id,
+            owner=user.login,
         )
         logger.info(
             "Sandbox T2I completed: model=%s record_id=%s images=%d",
@@ -392,18 +431,20 @@ async def sandbox_t2i(req: SandboxT2IRequest):
 
 
 @router.post("/api/sandbox/i2i")
-async def sandbox_i2i(req: SandboxI2IRequest):
+async def sandbox_i2i(
+    req: SandboxI2IRequest, user: CurrentUser = Depends(get_current_user)
+):
     """临时工作台 - 图生图"""
     from models.image_client import ImageClient
     client = ImageClient()
     # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起生成前拒绝
     try:
-        image_path = guard_media_input(req.image or "", "参考图片")
+        image_path = _media_input(req.image or "", "参考图片", user)
     except ValueError as e:
         logger.warning("Sandbox I2I media input rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
     input_data = {"prompt": req.prompt, "reference_image": image_path}
-    task_id = _start_active_task("i2i", req.model, input_data)
+    task_id = _start_active_task("i2i", req.model, input_data, user.login)
     try:
         logger.info("Sandbox I2I started: model=%s ratio=%s", req.model, req.ratio)
         result = await run_in_threadpool(
@@ -421,6 +462,7 @@ async def sandbox_i2i(req: SandboxI2IRequest):
             output_data={"images": result},
             files=result if isinstance(result, list) else [],
             record_id=task_id,
+            owner=user.login,
         )
         logger.info(
             "Sandbox I2I completed: model=%s record_id=%s images=%d",
@@ -441,7 +483,9 @@ async def sandbox_i2i(req: SandboxI2IRequest):
 
 
 @router.post("/api/sandbox/video")
-async def sandbox_video(req: SandboxVideoRequest, request: Request):
+async def sandbox_video(
+    req: SandboxVideoRequest, request: Request, user: CurrentUser = Depends(get_current_user)
+):
     """临时工作台 - 视频生成"""
     from models.video_client import VideoClient
     client = VideoClient()
@@ -451,8 +495,8 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
         audio_reference_url = (
             _resolve_media_reference_url(str(request.base_url), req.audio_url) if req.audio_url else None
         )
-        image_path = guard_media_input(req.image or "", "参考图片")
-        reference_video_paths = guard_media_inputs(req.reference_videos, "参考视频")
+        image_path = _media_input(req.image or "", "参考图片", user)
+        reference_video_paths = _media_inputs(req.reference_videos, "参考视频", user)
     except ValueError as e:
         logger.warning("Sandbox video media reference rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
@@ -469,7 +513,7 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
     }
     # 参数夹取/忽略记录：随响应透出（可用时）
     adjustments: list = []
-    task_id = _start_active_task("video", req.model, input_data)
+    task_id = _start_active_task("video", req.model, input_data, user.login)
     try:
         # 生成唯一的保存路径
         save_dir = os.path.join(SANDBOX_DIR, "videos")
@@ -512,6 +556,7 @@ async def sandbox_video(req: SandboxVideoRequest, request: Request):
             output_data={"video": result, "video_path": save_path},
             files=[save_path],
             record_id=task_id,
+            owner=user.login,
         )
         logger.info("Sandbox video completed: model=%s record_id=%s video=%s", req.model, record_id, save_path)
         return {

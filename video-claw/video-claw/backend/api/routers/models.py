@@ -7,11 +7,12 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from config import CUSTOM_MODEL_TYPES, CUSTOM_PROTOCOLS, Config
+from core.identity import CurrentUser, require_admin
 from models.config_model import model_availability
 
 router = APIRouter(tags=["Models"])
@@ -156,7 +157,9 @@ async def get_model_availability(model: Optional[str] = Query(None)):
 
 
 @router.post("/api/models/test")
-async def test_model_connection(req: ModelTestRequest):
+async def test_model_connection(
+    req: ModelTestRequest, _: CurrentUser = Depends(require_admin)
+):
     meta = _build_meta(req)
     started = time.time()
     logger.info(

@@ -1,6 +1,6 @@
 import time
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from api.dependencies import workflow_engine
@@ -12,9 +12,28 @@ from api.services.project_helpers import (
     stream_workflow_task,
 )
 from config import settings
+from core.identity import CurrentUser, get_current_user
+from core.media_refs import MediaInputError, MediaNotFound, canonicalize_media_payload, canonicalize_media_value
 from core.orchestrator import validate_upload_identifier
+from core.ownership import assert_session_owner
 
 router = APIRouter(tags=["Workflow"])
+
+
+async def current_owner_session(
+    session_id: str, user: CurrentUser = Depends(get_current_user)
+) -> CurrentUser:
+    assert_session_owner(workflow_engine, session_id, user)
+    return user
+
+
+def _canonical_payload(body: dict, session_id: str, user: CurrentUser) -> dict:
+    try:
+        return canonicalize_media_payload(body, user, session_id)
+    except MediaNotFound as exc:
+        raise HTTPException(404, detail=f"媒体不属于当前会话或用户: {exc}") from exc
+    except MediaInputError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
 
 REQUIRED_MODEL_FIELDS = (
     "llm_model",
@@ -119,7 +138,7 @@ def _preflight_stage_models(stage: str, values: dict) -> None:
 
 
 @router.post("/api/project/start")
-async def start_project(req: ProjectStartRequest):
+async def start_project(req: ProjectStartRequest, user: CurrentUser = Depends(get_current_user)):
     script_source = (req.script_source or "idea").strip().lower()
     if script_source not in {"idea", "upload"}:
         raise HTTPException(400, detail="script_source 必须是 idea 或 upload")
@@ -130,7 +149,7 @@ async def start_project(req: ProjectStartRequest):
         final_idea = req.idea or ""
     else:
         try:
-            final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
+            final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path, user.owner_key)
         except ValueError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
     _require_model_fields(req.model_dump())
@@ -164,8 +183,17 @@ async def start_project(req: ProjectStartRequest):
     }
     if script_source == "upload":
         meta["file_path"] = req.file_path
+    if meta.get("audio_reference_url"):
+        try:
+            meta["audio_reference_url"] = str(
+                canonicalize_media_value(str(meta["audio_reference_url"]), user)
+            )
+        except MediaNotFound as exc:
+            raise HTTPException(404, detail=f"音频参考不属于当前用户: {exc}") from exc
+        except MediaInputError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
     meta["video_model"] = _active_video_model(meta)
-    session = workflow_engine.create_session(session_id, meta)
+    session = workflow_engine.create_session(session_id, meta, owner=user.login)
 
     return {
         "session_id": session_id,
@@ -191,7 +219,9 @@ async def start_project(req: ProjectStartRequest):
 
 
 @router.post("/api/project/{session_id}/execute/{stage}")
-async def execute_stage(session_id: str, stage: str, request: Request):
+async def execute_stage(
+    session_id: str, stage: str, request: Request, user: CurrentUser = Depends(current_owner_session)
+):
     try:
         validate_upload_identifier(session_id, "session_id")
     except ValueError as exc:
@@ -200,6 +230,7 @@ async def execute_stage(session_id: str, stage: str, request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    body = _canonical_payload(body if isinstance(body, dict) else {}, session_id, user)
 
     state, input_data = workflow_engine.prepare_stage_execution(session_id, stage, body)
     _require_model_fields(input_data)
@@ -232,7 +263,7 @@ async def execute_stage(session_id: str, stage: str, request: Request):
 
 
 @router.get("/api/project/{session_id}/status")
-async def get_project_status(session_id: str):
+async def get_project_status(session_id: str, user: CurrentUser = Depends(current_owner_session)):
     snapshot = workflow_engine.get_status_snapshot(session_id)
     if not snapshot:
         raise HTTPException(404, "Session not found")
@@ -240,7 +271,9 @@ async def get_project_status(session_id: str):
 
 
 @router.get("/api/project/{session_id}/status/from_disk")
-async def get_project_status_from_disk(session_id: str):
+async def get_project_status_from_disk(
+    session_id: str, user: CurrentUser = Depends(current_owner_session)
+):
     # 兼容旧前端路由名；实际读取统一走 WorkflowEngine 的内存状态入口。
     snapshot = workflow_engine.get_status_snapshot(session_id)
     if not snapshot:
@@ -249,7 +282,9 @@ async def get_project_status_from_disk(session_id: str):
 
 
 @router.get("/api/project/{session_id}/artifact/{stage}")
-async def get_artifact(session_id: str, stage: str):
+async def get_artifact(
+    session_id: str, stage: str, user: CurrentUser = Depends(current_owner_session)
+):
     try:
         artifact = workflow_engine.get_artifact_snapshot(session_id, stage)
     except KeyError:
@@ -262,8 +297,11 @@ async def get_artifact(session_id: str, stage: str):
 
 
 @router.patch("/api/project/{session_id}/models")
-async def update_models(session_id: str, request: Request):
+async def update_models(
+    session_id: str, request: Request, user: CurrentUser = Depends(current_owner_session)
+):
     body = await request.json()
+    body = _canonical_payload(body if isinstance(body, dict) else {}, session_id, user)
     allowed_keys = (
         "llm_model",
         "vlm_model",
@@ -296,6 +334,7 @@ async def upload_artifact_image(
     item_type: str = Form(...),
     item_id: str = Form(...),
     file: UploadFile = File(...),
+    user: CurrentUser = Depends(current_owner_session),
 ):
     """Upload a user-provided image into a stage artifact and persist the session."""
     try:
@@ -316,9 +355,12 @@ async def upload_artifact_image(
 
 
 @router.patch("/api/project/{session_id}/artifact/{stage}")
-async def update_artifact(session_id: str, stage: str, request: Request):
+async def update_artifact(
+    session_id: str, stage: str, request: Request, user: CurrentUser = Depends(current_owner_session)
+):
     """保存用户在某阶段的选择/修改，同时更新内存状态和磁盘快照。"""
     body = await request.json()
+    body = _canonical_payload(body if isinstance(body, dict) else {}, session_id, user)
     try:
         return workflow_engine.update_artifact(session_id, stage, body if isinstance(body, dict) else {})
     except KeyError:
@@ -326,12 +368,18 @@ async def update_artifact(session_id: str, stage: str, request: Request):
 
 
 @router.post("/api/project/{session_id}/intervene")
-async def intervene(session_id: str, req: InterventionRequest, request: Request):
+async def intervene(
+    session_id: str,
+    req: InterventionRequest,
+    request: Request,
+    user: CurrentUser = Depends(current_owner_session),
+):
+    modifications = _canonical_payload(req.modifications, session_id, user)
     try:
         state, input_data = workflow_engine.prepare_intervention_execution(
             session_id=session_id,
             stage=req.stage,
-            modifications=req.modifications,
+            modifications=modifications,
         )
     except KeyError:
         raise HTTPException(404, "Session not found")
@@ -351,7 +399,7 @@ async def intervene(session_id: str, req: InterventionRequest, request: Request)
             progress_callback=progress_callback,
             progress_events=progress_events,
             event_trigger=event_trigger,
-            intervention=req.modifications,
+            intervention=modifications,
             on_disconnect=on_disconnect,
         ),
         media_type="text/event-stream",
@@ -364,20 +412,26 @@ async def intervene(session_id: str, req: InterventionRequest, request: Request)
 
 
 @router.post("/api/project/{session_id}/continue")
-async def continue_workflow(session_id: str):
+async def continue_workflow(
+    session_id: str, user: CurrentUser = Depends(current_owner_session)
+):
     if not workflow_engine.get_status_snapshot(session_id):
         raise HTTPException(404, "Session not found")
     return await workflow_engine.continue_workflow(session_id)
 
 
 @router.post("/api/project/{session_id}/stop")
-async def stop_project(session_id: str):
+async def stop_project(
+    session_id: str, user: CurrentUser = Depends(current_owner_session)
+):
     workflow_engine.stop_session(session_id)
     return {"status": "stopped", "session_id": session_id}
 
 
 @router.get("/api/project/{session_id}/scene/{scene_number}/assets")
-async def check_scene_assets(session_id: str, scene_number: int):
+async def check_scene_assets(
+    session_id: str, scene_number: int, user: CurrentUser = Depends(current_owner_session)
+):
     try:
         return workflow_engine.get_scene_asset_counts(session_id, scene_number)
     except KeyError:

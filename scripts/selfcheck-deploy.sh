@@ -78,8 +78,8 @@ fi
 echo
 echo "3) 前端产物是否为「带前缀」构建（basePath）"
 if docker ps --format '{{.Names}}' | grep -qx 'video-claw-frontend'; then
-  if docker exec video-claw-frontend sh -c "grep -rqs 'withBasePathUrl' /app/.next/static/chunks" 2>/dev/null; then
-    ok "产物含媒体地址前缀逻辑（withBasePathUrl）"
+  if docker exec video-claw-frontend sh -c "grep -rEqs 'withBasePathUrl|mediaUrl|user_login' /app/.next/static/chunks" 2>/dev/null; then
+    ok "产物含媒体地址前缀/身份 query 逻辑（mediaUrl/user_login）"
   else
     ng "产物缺少媒体地址前缀逻辑：跑的是旧产物"
     hint "重新 npm run build + 清空式组装 .next-runtime（见 README 快速开始步骤 2）"
@@ -129,9 +129,10 @@ esac
 
 media_code=$(httpcode "$FE${BASE_PATH}/code/result" 30)
 case "$media_code" in
-  404) ok "GET ${BASE_PATH}/code/result → 404（后端静态目录可达，无目录索引）" ;;
+  404) ok "GET ${BASE_PATH}/code/result → 404（媒体路由可达，无目录索引）" ;;
+  401) ok "GET ${BASE_PATH}/code/result → 401（媒体路由要求 user_login，后端可达）" ;;
   403|200) ok "GET ${BASE_PATH}/code/result → ${media_code}（后端可达）" ;;
-  307|308) ok "GET ${BASE_PATH}/code/result → ${media_code}（后端静态挂载点重定向，可达）" ;;
+  307|308) ok "GET ${BASE_PATH}/code/result → ${media_code}（重定向，后端可达）" ;;
   500) ng "GET ${BASE_PATH}/code/result → 500：后端不可达" ;;
   *)   ng "GET ${BASE_PATH}/code/result → ${media_code}" ;;
 esac

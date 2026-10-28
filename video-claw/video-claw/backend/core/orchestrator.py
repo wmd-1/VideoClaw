@@ -18,7 +18,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from core import script_revision
+from config import settings
+from core import checkpoint_store, media_refs, script_revision
 from core.agents import (
     CharacterDesignerAgent,
     PromptRewriteAgent,
@@ -159,6 +160,8 @@ class WorkflowState:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
+        # owner 是归属判据，不是认证凭据；旧会话按 users.legacy_owner 归一。
+        self.owner: str = ""
         self.current_stage: WorkflowStage = WorkflowStage.INIT
         self.status: Dict[str, str] = {
             stage.value: "pending" for stage in WorkflowStage if stage != WorkflowStage.INIT and stage != WorkflowStage.COMPLETED
@@ -176,6 +179,7 @@ class WorkflowState:
     def to_dict(self) -> Dict:
         return {
             "session_id": self.session_id,
+            "owner": self.owner,
             "current_stage": self.current_stage.value,
             "status": copy.deepcopy(self.status),
             "error": self.error,
@@ -211,7 +215,7 @@ class WorkflowEngine:
         # 进程启动标识：一次性生成，作为跨进程陈旧 running 的归属判据（D1）。
         # MUST 在 _load_sessions_from_disk 之前生成，使启动批量加载即可用当前进程 id 判定。
         self._boot_id = uuid.uuid4().hex
-        self._load_sessions_from_disk()
+        # 不在 import/构造期读 DB：lifespan 完成 init_db 后再调用 load_sessions()。
 
     def get_or_create_state(self, session_id: str) -> WorkflowState:
         validate_upload_identifier(str(session_id), "session_id")
@@ -219,7 +223,9 @@ class WorkflowEngine:
             if session_id not in self.sessions:
                 loaded_state = self.get_state(session_id)
                 if loaded_state is None:
-                    self.sessions[session_id] = WorkflowState(session_id=session_id)
+                    state = WorkflowState(session_id=session_id)
+                    state.owner = str(getattr(settings, "USERS_LEGACY_OWNER", "local"))
+                    self.sessions[session_id] = state
             if session_id not in self._stop_events:
                 self._stop_events[session_id] = threading.Event()
             return self.sessions[session_id]
@@ -244,6 +250,7 @@ class WorkflowEngine:
 
                     # 从磁盘数据恢复 WorkflowState
                     state = WorkflowState(session_id=session_id)
+                    state.owner = str(data.get("owner") or getattr(settings, "USERS_LEGACY_OWNER", "local"))
                     
                     stage_str = data.get('current_stage')
                     state.current_stage = WorkflowStage(stage_str) if stage_str else WorkflowStage.INIT
@@ -263,6 +270,10 @@ class WorkflowEngine:
                         state.status = loaded_status
 
                     state.artifacts = data.get('artifacts', {})
+                    # 检查点优先补缺：JSON 仍是本批的装载源，DB 中较新的 completed
+                    # 阶段不应被旧 JSON 静默覆盖。
+                    for stage_key, payload in checkpoint_store.load_checkpoints(session_id).items():
+                        state.artifacts.setdefault(stage_key, payload)
                     state.stage_progress = data.get('stage_progress', {})
                     state.meta = _extract_session_meta(data)
                     state.updated_at = data.get('updated_at', 0)
@@ -320,10 +331,11 @@ class WorkflowEngine:
                 self._stop_events[session_id] = threading.Event()
             return self._stop_events[session_id]
 
-    def create_session(self, session_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    def create_session(self, session_id: str, meta: Dict[str, Any], owner: str = "") -> Dict[str, Any]:
         """Create or initialize a workflow session through the engine-owned state."""
         with self._state_lock:
             state = self.get_or_create_state(session_id)
+            state.owner = str(owner or getattr(settings, "USERS_LEGACY_OWNER", "local"))
             state.started_at = datetime.now()
             if not isinstance(state.status, dict):
                 state.status = {}
@@ -381,7 +393,10 @@ class WorkflowEngine:
             if stage == WorkflowStage.CHARACTER_DESIGN.value and self._seed_stage_items_from_script(state):
                 # 种入条目后立即落盘：预检失败触发上传兜底时条目必须已可见
                 self.save_session_to_disk(session_id)
-            return state, input_data
+        input_data = media_refs.materialize_media_payload(
+            input_data, {"login": state.owner, "owner_key": media_refs.owner_key(state.owner)}
+        )
+        return state, input_data
 
     def prepare_intervention_execution(
         self,
@@ -405,7 +420,10 @@ class WorkflowEngine:
             if stage == WorkflowStage.CHARACTER_DESIGN.value and self._seed_stage_items_from_script(state):
                 self.save_session_to_disk(session_id)
             input_data.update(modifications or {})
-            return state, input_data
+        input_data = media_refs.materialize_media_payload(
+            input_data, {"login": state.owner, "owner_key": media_refs.owner_key(state.owner)}
+        )
+        return state, input_data
 
     @staticmethod
     def _inject_user_selections(artifacts: Dict[str, Any], stage: str, data: Dict[str, Any]):
@@ -1232,6 +1250,7 @@ class WorkflowEngine:
                 state.status[stage.value] = "running"
                 # 归属凭据与“真正持有执行权”同生命周期：在同一临界区写入，与随后的首次落盘原子发生（D6）。
                 state.boot_id = self._boot_id
+                checkpoint_store.mirror_running(state, stage.value)
                 state.updated_at = datetime.now()
                 state.stage_progress[stage.value] = {
                     "phase": stage.value,
@@ -1329,6 +1348,7 @@ class WorkflowEngine:
                 state.boot_id = None
                 # 立即保存状态到磁盘，确保前端能获取到最新状态
                 self.save_session_to_disk(state.session_id)
+                checkpoint_store.mirror_completed(state, stage.value)
             return result
 
         except asyncio.CancelledError:
@@ -1346,6 +1366,7 @@ class WorkflowEngine:
                 }
                 state.boot_id = None
                 self.save_session_to_disk(state.session_id)
+                checkpoint_store.mirror_failed(state, stage.value, "已取消", status="stopped")
             raise
 
         except Exception as e:
@@ -1364,6 +1385,7 @@ class WorkflowEngine:
                 # 确保保存错误状态
                 state.boot_id = None
                 self.save_session_to_disk(state.session_id)
+                checkpoint_store.mirror_failed(state, stage.value, str(e))
             raise
         finally:
             if active_registered:
@@ -1415,6 +1437,7 @@ class WorkflowEngine:
 
                 if not next_stage:
                     state.status[current_stage_str] = "completed"
+                    media_refs.cleanup_session_refs(state.session_id)
                     self.save_session_to_disk(state.session_id)
                     return {"status": "completed", "session_id": state.session_id, "status_map": copy.deepcopy(state.status)}
 
@@ -1809,6 +1832,8 @@ class WorkflowEngine:
                     pass
 
             data["session_id"] = session_id
+            if state:
+                data["owner"] = state.owner
             if meta:
                 normalized_meta = {k: _normalize_meta_value(v) for k, v in meta.items() if v is not None}
                 if state:
@@ -1847,12 +1872,55 @@ class WorkflowEngine:
                 with os.fdopen(fd, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 shutil.move(tmp_path, path)
+                if state:
+                    checkpoint_store.mirror_session(state)
                 logger.info(f"[Orchestrator] Session {session_id} saved successfully.")
             except Exception as e:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 logger.error(f"[Orchestrator] Failed to save session {session_id}: {e}")
                 raise
+
+    def load_sessions(self) -> int:
+        """lifespan 入口：init_db/sweep 之后加载磁盘会话与检查点。"""
+        self._load_sessions_from_disk()
+        self._load_sessions_from_db()
+        return len(self.sessions)
+
+    def _load_sessions_from_db(self) -> None:
+        """Hydrate sessions that exist only in PostgreSQL (DB canonical on restart)."""
+        if not checkpoint_store.enabled():
+            return
+        from db.repositories import SessionRepo
+
+        for row in SessionRepo().list_all():
+            sid = str(row.get("session_id") or "")
+            if not _is_valid_upload_identifier(sid) or sid in self.sessions:
+                continue
+            state = WorkflowState(sid)
+            state.owner = str(row.get("owner") or getattr(settings, "USERS_LEGACY_OWNER", "local"))
+            try:
+                state.current_stage = WorkflowStage(row.get("current_stage") or "init")
+            except ValueError:
+                state.current_stage = WorkflowStage.INIT
+            status = row.get("status_json")
+            if isinstance(status, dict):
+                state.status = {
+                    key: ("stopped" if value == "interrupted" else value)
+                    for key, value in status.items()
+                }
+            progress = row.get("stage_progress_json")
+            if isinstance(progress, dict):
+                state.stage_progress = progress
+            meta = row.get("meta_json")
+            if isinstance(meta, dict):
+                state.meta = meta
+            state.artifacts = checkpoint_store.load_checkpoints(sid)
+            state.updated_at = row.get("updated_at") or 0
+            state.boot_id = row.get("boot_id")
+            self.sessions[sid] = state
+            if self._recover_stale_running(state):
+                self.save_session_to_disk(sid)
 
     def _load_sessions_from_disk(self):
         """启动时从磁盘加载所有已保存的会话"""
@@ -1872,6 +1940,7 @@ class WorkflowEngine:
                     )
                     continue
                 state = WorkflowState(sid)
+                state.owner = str(data.get("owner") or getattr(settings, "USERS_LEGACY_OWNER", "local"))
                 try:
                     state.current_stage = WorkflowStage(data.get("current_stage", "init"))
                 except ValueError:
@@ -1898,6 +1967,8 @@ class WorkflowEngine:
                     state.status = old_status
 
                 state.artifacts = data.get("artifacts", {})
+                for stage_key, payload in checkpoint_store.load_checkpoints(sid).items():
+                    state.artifacts.setdefault(stage_key, payload)
                 state.stage_progress = data.get("stage_progress", {})
                 state.error = data.get("error")
                 state.updated_at = data.get("updated_at", 0)
@@ -1934,6 +2005,11 @@ class WorkflowEngine:
             if not exists:
                 return False
 
+            # 先清 _refs 缓存与对象，再做 DB 级联与 JSON 删除；失败则保留会话可重试。
+            media_refs.cleanup_session_refs(session_id)
+            media_refs.cleanup_session_objects(session_id)
+            checkpoint_store.delete_session(session_id)
+
             # 从内存中移除
             self.sessions.pop(session_id, None)
             self._stop_events.pop(session_id, None)
@@ -1963,8 +2039,8 @@ class WorkflowEngine:
         logger.info(f"Session and results deleted: {session_id}")
         return True
 
-    def cleanup_orphan_results(self) -> Dict[str, Any]:
-        """Remove result files whose session no longer exists."""
+    def cleanup_orphan_results(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Remove result files whose session no longer exists; dry_run only reports."""
         from config import settings
 
         with self._state_lock:
@@ -1984,21 +2060,24 @@ class WorkflowEngine:
                         continue
                     sid = filename[:-5]
                     if sid not in session_ids:
-                        os.remove(os.path.join(script_dir, filename))
+                        if not dry_run:
+                            os.remove(os.path.join(script_dir, filename))
                         cleaned["scripts"].append(sid)
 
             image_dir = os.path.join(result_base, 'image')
             if os.path.isdir(image_dir):
                 for dirname in os.listdir(image_dir):
                     if dirname != 'test_avail' and dirname not in session_ids:
-                        shutil.rmtree(os.path.join(image_dir, dirname))
+                        if not dry_run:
+                            shutil.rmtree(os.path.join(image_dir, dirname))
                         cleaned["images"].append(dirname)
 
             video_dir = os.path.join(result_base, 'video')
             if os.path.isdir(video_dir):
                 for dirname in os.listdir(video_dir):
                     if dirname != 'test_avail' and dirname not in session_ids:
-                        shutil.rmtree(os.path.join(video_dir, dirname))
+                        if not dry_run:
+                            shutil.rmtree(os.path.join(video_dir, dirname))
                         cleaned["videos"].append(dirname)
 
             return {"status": "cleaned", "cleaned": cleaned}
@@ -2084,11 +2163,13 @@ class WorkflowEngine:
                         count += 1
         return count
 
-    def list_saved_sessions(self) -> List[Dict]:
-        """列出所有已保存的会话概要"""
+    def list_saved_sessions(self, owner: Optional[str] = None) -> List[Dict]:
+        """列出已保存的会话概要；传 owner 时只返回该归属的会话。"""
         with self._state_lock:
             sessions: List[Dict] = []
             for sid, state in self.sessions.items():
+                if owner is not None and state.owner != owner:
+                    continue
                 try:
                     meta = copy.deepcopy(state.meta)
                     artifacts = copy.deepcopy(state.artifacts)
@@ -2119,3 +2200,8 @@ class WorkflowEngine:
                     continue
             sessions.sort(key=lambda x: x.get("date", 0), reverse=True)
             return sessions
+
+    def owner_of(self, session_id: str) -> Optional[str]:
+        """Return the session owner, loading from disk when needed."""
+        state = self.get_state(session_id)
+        return state.owner if state else None
