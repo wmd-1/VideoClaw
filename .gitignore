@@ -54,18 +54,8 @@ data
 *.tar
 
 openspec/
-tmp_verify/*.json
-tmp_verify/*.png
-tmp_verify/*.txt
-
-tmp_verify/*.snapshot
-tmp_verify/*.backup
-tmp_verify/probe_*.py
-tmp_verify/debug_*.py
-tmp_verify/preclean_*.sh
-tmp_verify/*.yaml
+tmp_verify/
 tmp_identity_backup/
-tmp_verify/backups/
 
 # Next.js 构建临时目录（组装/清理用，不入库）
 video-claw/video-claw/frontend/.next-old-tmp/
