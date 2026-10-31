@@ -1,16 +1,13 @@
-import json
 import logging
 import os
-import shutil
 import threading
 import uuid
 from datetime import datetime
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.concurrency import run_in_threadpool
 
-from api.media_paths import resolve_within_allowed_dirs
 from api.schemas.sandbox import (
     SandboxI2IRequest,
     SandboxLLMRequest,
@@ -18,155 +15,112 @@ from api.schemas.sandbox import (
     SandboxVideoRequest,
     SandboxVLMRequest,
 )
-from config import settings
 from core.identity import CurrentUser, get_current_user
 from core.media_refs import canonicalize_media_value, materialize_media_value
-from core.ownership import is_owner, is_owner_login, legacy_owner
+from core.object_operations import current_boot_id, register_resource_delete
+from core.ownership import is_owner
+from core.resource_publisher import ResourcePublisher
+from db.repositories import SandboxRepo
+from db.repositories.resource_commits import commit_sandbox_record, delete_sandbox_cascade
 
 router = APIRouter(tags=["Sandbox"])
 logger = logging.getLogger(__name__)
 
-
-SANDBOX_DIR = os.path.join(settings.CODE_DIR, "result", "sandbox")
-SANDBOX_HISTORY_FILE = os.path.join(SANDBOX_DIR, "history.json")
+# 活动任务仍在进程内（D16）；成功记录、文件索引与路径索引只在 DB
 SANDBOX_ACTIVE_TASKS: dict[str, dict] = {}
+SANDBOX_STAGE = "sandbox"
+HISTORY_LIMIT = 1000
 SANDBOX_LOCK = threading.RLock()
-# 媒体参考（音频等）转换后的对外可访问目录：位于 /code 静态目录内（D1）
-SANDBOX_MEDIA_UPLOAD_DIR = os.path.join(settings.CODE_DIR, "result", "sandbox", "uploads")
-
-# 确保目录存在
-os.makedirs(SANDBOX_DIR, exist_ok=True)
 
 
-def _media_input(value: str, field: str, user: CurrentUser) -> str:
+def _media_input(value: str, field: str, user: CurrentUser) -> Tuple[str, str]:
+    """用户媒体入参 → (canonical 持久值, 物化运行值)；记录只存前者。"""
     del field  # validation errors are raised by canonicalize/materialize
-    canonical = canonicalize_media_value(value, user)
-    return materialize_media_value(str(canonical), user)
+    canonical = str(canonicalize_media_value(value, user))
+    return canonical, materialize_media_value(canonical, user)
 
 
-def _media_inputs(values: List[str] | None, field: str, user: CurrentUser) -> List[str]:
-    return [
-        _media_input(item, field, user)
-        for item in (values or [])
-        if str(item or "").strip()
-    ]
+def _media_inputs(values: List[str] | None, field: str, user: CurrentUser) -> Tuple[List[str], List[str]]:
+    pairs = [_media_input(item, field, user) for item in (values or []) if str(item or "").strip()]
+    return [canonical for canonical, _ in pairs], [runtime for _, runtime in pairs]
 
 
-def _load_history(owner: str | None = None) -> List[dict]:
-    """加载历史记录；owner 在读取入口过滤，避免路由层全量过滤。"""
-    with SANDBOX_LOCK:
-        if os.path.exists(SANDBOX_HISTORY_FILE):
-            try:
-                with open(SANDBOX_HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    records = json.load(f)
-                if owner is None:
-                    return records
-                return [
-                    record for record in records
-                    if is_owner_login(record.get("owner"), owner)
-                ]
-            except Exception:
-                logger.warning("Failed to load sandbox history: %s", SANDBOX_HISTORY_FILE, exc_info=True)
-                return []
-        return []
+def _iso(value: Any) -> str:
+    try:
+        return datetime.fromtimestamp(int(value) / 1000).isoformat()
+    except (TypeError, ValueError):
+        return ""
 
 
-def _save_history(history: List[dict]):
-    """保存历史记录"""
-    with SANDBOX_LOCK:
-        tmp_path = f"{SANDBOX_HISTORY_FILE}.{uuid.uuid4().hex}.tmp"
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, SANDBOX_HISTORY_FILE)
+def _record_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(row["record_id"]),
+        "owner": str(row.get("owner") or ""),
+        "tool": str(row.get("tool") or ""),
+        "model": str(row.get("model") or ""),
+        "input": row.get("input_json") or {},
+        "output": row.get("output_json") or {},
+        "files": list(row.get("files_json") or []),
+        "created_at": _iso(row.get("created_at")),
+    }
 
 
-def _normalize_path(path: str) -> str:
-    """将绝对路径转换为相对路径格式 result/..."""
-    if not path:
-        return path
-    # 如果已经是相对路径，直接返回
-    if not path.startswith('/'):
-        # 确保以 result/ 开头
-        if not path.startswith('result/'):
-            return f"result/{path}"
-        return path
-    # 绝对路径，提取相对于 CODE_DIR 的部分
-    code_dir = settings.CODE_DIR
-    if path.startswith(code_dir):
-        relative = path[len(code_dir):].lstrip('/')
-        # 直接返回 result/... 格式，因为 /code/ 会映射到 CODE_DIR
-        return relative
-    # 其他绝对路径，尝试提取文件名
-    return path.split('/')[-1]
+def _load_history(owner: str) -> List[dict]:
+    return [_record_view(row) for row in SandboxRepo().list(owner, limit=HISTORY_LIMIT)]
 
 
-def _convert_output_paths(output_data: dict) -> dict:
-    """转换 output 中的路径为相对路径格式"""
-    if not output_data:
-        return output_data
-    converted = output_data.copy()
-    # 转换 images
-    if 'images' in converted and isinstance(converted['images'], list):
-        converted['images'] = [_normalize_path(img) for img in converted['images']]
-    # 转换 video_path
-    if 'video_path' in converted and converted['video_path']:
-        converted['video_path'] = _normalize_path(converted['video_path'])
-    # 转换 input 中的 reference_image
-    if 'reference_image' in converted.get('input', {}):
-        input_copy = converted['input'].copy()
-        input_copy['reference_image'] = _normalize_path(input_copy['reference_image'])
-        converted['input'] = input_copy
-    return converted
+def _publisher(record_id: str, user: CurrentUser) -> ResourcePublisher:
+    return ResourcePublisher(
+        owner=user.login, domain="sandbox", resource_id=record_id, stage=SANDBOX_STAGE, boot_id=current_boot_id(),
+    )
 
 
-def _converted_result_list(paths: List[str] | None) -> List[str]:
-    """Return generated image paths in the same format used by sandbox history."""
-    converted = _convert_output_paths({"images": paths or []})
-    return converted.get("images", [])
+def _replace(node: Any, mapping: Dict[str, str]) -> Any:
+    if isinstance(node, dict):
+        return {key: _replace(value, mapping) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_replace(value, mapping) for value in node]
+    if isinstance(node, str) and node in mapping:
+        return mapping[node]
+    return node
 
 
-def _converted_video_path(path: str | None) -> str:
-    """Return generated video path in the same format used by sandbox history."""
-    converted = _convert_output_paths({"video_path": path or ""})
-    return converted.get("video_path", "")
-
-
-def _add_record(
+def _commit_record(
+    publisher: ResourcePublisher,
+    *,
     tool: str,
     model: str,
     input_data: dict,
     output_data: dict,
-    files: List[str] = None,
-    record_id: str | None = None,
-    owner: str = "",
-) -> str:
-    """添加历史记录"""
-    with SANDBOX_LOCK:
-        record_id = record_id or uuid.uuid4().hex
-        # 转换路径为相对路径格式
-        output_data = _convert_output_paths(output_data)
-        record = {
-            "id": record_id,
-            "owner": str(owner or legacy_owner()),
-            "tool": tool,
-            "model": model,
-            "input": input_data,
-            "output": output_data,
-            "files": files or [],
-            "created_at": datetime.now().isoformat(),
-        }
-        history = _load_history()
-        history.insert(0, record)  # 最新记录放在最前面
-        _save_history(history)
-        return record_id
+    media: List[Tuple[str, str]] = (),
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """成功结果：发布本次输出 → 记录 + 文件行 + 路径索引同事务；任一步失败补偿本批对象。"""
+    result, rows, mapping = publisher.publish(media)
+    output = _replace(output_data, mapping)
+    public_files = [str(row["public_path"]) for row in rows]
+    try:
+        row = commit_sandbox_record(
+            record={
+                "record_id": publisher.resource_id, "owner": publisher.owner, "tool": tool, "model": model,
+                "input": input_data, "output": output, "files": public_files,
+            },
+            files=rows,
+            retained=(result or {}).get("operation_ids") or [],
+            paths=public_files,
+        )
+    except BaseException:
+        publisher.abort(result)
+        raise
+    publisher.mark_committed(result)
+    return _record_view(row), mapping
 
 
-def _start_active_task(tool: str, model: str, input_data: dict, owner: str = "") -> str:
+def _start_active_task(tool: str, model: str, input_data: dict, owner: str) -> str:
     with SANDBOX_LOCK:
         task_id = uuid.uuid4().hex
         SANDBOX_ACTIVE_TASKS[task_id] = {
             "id": task_id,
-            "owner": str(owner or legacy_owner()),
+            "owner": str(owner),
             "tool": tool,
             "model": model,
             "input": input_data,
@@ -182,69 +136,48 @@ def _finish_active_task(task_id: str) -> None:
         SANDBOX_ACTIVE_TASKS.pop(task_id, None)
 
 
-def _delete_record_files(files: List[str]):
-    """删除记录关联的文件"""
-    for f in files:
-        if f and os.path.exists(f):
-            try:
-                os.remove(f)
-            except Exception:
-                logger.warning("Failed to delete sandbox artifact: %s", f, exc_info=True)
-                pass
+def _audio_reference(value: str, user: CurrentUser, record_id: str):
+    """音频参考 → 推理可取的 HTTP 地址（D16/D17）：远程/data 原样；受管对象按需预签名；
+    legacy/上传文件复制为本记录名下的受管暂存对象再签发。不再拼裸 `/code` 网关地址。
 
-
-def _resolve_media_reference_url(base_url: str, value: str) -> str:
-    """将音频参考转换为推理服务端可访问的资源地址（D1，不得静默丢弃）。
-
-    - 已是 HTTP(S)/data: URL 时原样返回；
-    - 本地文件：先经 realpath 规范化并校验位于允许根（CODE_DIR/result、TEMP_DIR）内（C1），
-      否则拒绝；位于 CODE_DIR 静态目录内则直接组装绝对 URL；位于 TEMP_DIR 的合法上传件
-      先复制到 result/sandbox/uploads，再按 backend 对外基址（request.base_url）+ /code 组装；
-    - 越界路径（任意绝对路径 / `..` 逃逸 / 符号链接逃逸）与无法定位文件时抛错（明确报错而非退化）。
-
-    注意：跨机部署时该 URL 必须能被推理服务端访问（防火墙/同网段），否则请改填 data: URL。
+    返回 (canonical 持久值, 推理用 URL, 暂存对象或 None)。
     """
-    value = (value or "").strip()
-    if not value:
+    from core.reference_values import StagingUnavailable, stage_for_http
+    from models.media_types import UnsupportedReference, select_for_protocol
+
+    text = (value or "").strip()
+    if not text:
         raise ValueError("音频参考为空（audio_url 不能为空字符串）")
-    if value.startswith(("http://", "https://", "data:")):
-        return value
-    code_dir = os.path.realpath(settings.CODE_DIR)
-    candidates = []
-    if os.path.isabs(value):
-        candidates.append(value)
-    else:
-        candidates.append(os.path.join(code_dir, value))
-        candidates.append(os.path.join(code_dir, "result", value))
-    source = next((path for path in candidates if os.path.isfile(path)), None)
-    if not source:
-        raise ValueError(f"音频参考文件不存在: {value}")
-    # C1 白名单校验：realpath 规范化后必须位于允许根（CODE_DIR/result、TEMP_DIR）内，
-    # 阻断越界/`..`/符号链接逃逸
-    safe_source = resolve_within_allowed_dirs(source)
-    if not safe_source:
-        raise ValueError(f"音频参考路径越界（仅允许 result/temp 目录内的文件）: {value}")
-    if not safe_source.startswith(code_dir + os.sep):
-        # 位于 TEMP_DIR 的合法上传件 → 复制到 /code 静态可访问目录供推理端拉取
-        upload_dir = os.path.realpath(SANDBOX_MEDIA_UPLOAD_DIR)
-        os.makedirs(upload_dir, exist_ok=True)
-        target = os.path.join(upload_dir, f"{uuid.uuid4().hex[:8]}_{os.path.basename(safe_source)}")
-        shutil.copy2(safe_source, target)
-        safe_source = target
-    relative = os.path.relpath(safe_source, code_dir).replace(os.sep, "/")
-    return base_url.rstrip("/") + "/code/" + relative
+    if text.startswith(("http://", "https://", "data:")):
+        return text, text, None
+    canonical = str(canonicalize_media_value(text, user))
+    try:
+        ref, staged = stage_for_http(
+            canonical, user, domain="sandbox", resource_id=record_id,
+            execution_id=record_id, boot_id=current_boot_id(),
+        )
+        url = select_for_protocol("http_uri", ref)["http_uri"]
+    except (StagingUnavailable, UnsupportedReference) as exc:
+        raise ValueError(f"音频参考无法生成推理端可访问的地址（需要对象存储可用）: {exc}") from exc
+    return canonical, url, staged
 
 
-# 媒体入参守卫已迁到 api.media_paths（user-input-path-guard）：sandbox、pipelines、
-# project start 共用同一实现，避免按端点各写一份造成漂移。
+def _release(staged) -> None:
+    if staged is None:
+        return
+    from core.reference_values import release_staging
+
+    try:
+        release_staging(staged, remote_done=True)
+    except Exception:
+        logger.warning("sandbox staging release failed: %s", staged, exc_info=True)
 
 
 # 请求模型
 @router.get("/api/sandbox/history")
 async def sandbox_get_history(user: CurrentUser = Depends(get_current_user)):
     """获取历史记录列表"""
-    history = _load_history(user.login)
-    # 返回完整信息（包括 output）
+    history = await run_in_threadpool(_load_history, user.login)
     return {
         "success": True,
         "records": [
@@ -275,35 +208,26 @@ async def sandbox_get_active_tasks(user: CurrentUser = Depends(get_current_user)
 @router.get("/api/sandbox/history/{record_id}")
 async def sandbox_get_record(record_id: str, user: CurrentUser = Depends(get_current_user)):
     """获取单条历史记录详情"""
-    history = _load_history(user.login)
-    for r in history:
-        if r["id"] == record_id:
-            return {"success": True, "record": r}
+    row = await run_in_threadpool(SandboxRepo().get, record_id)
+    if row and is_owner(row.get("owner"), user):
+        return {"success": True, "record": _record_view(row)}
     return {"success": False, "error": "记录不存在"}
 
 
 @router.delete("/api/sandbox/history/{record_id}")
 async def sandbox_delete_record(record_id: str, user: CurrentUser = Depends(get_current_user)):
-    """删除历史记录"""
-    with SANDBOX_LOCK:
-        history = _load_history()
-        record_to_delete = None
-        new_history = []
-        for r in history:
-            owned = is_owner(r.get("owner"), user)
-            if r["id"] == record_id and owned:
-                record_to_delete = r
-            else:
-                new_history.append(r)
+    """删除历史记录：同事务登记对象/本地文件清理后删记录（级联文件行与路径索引）。"""
+    owner = user.login
 
-        if record_to_delete is None:
-            return {"success": False, "error": "记录不存在"}
+    def delete() -> bool:
+        return delete_sandbox_cascade(
+            record_id, owner,
+            lambda cur: register_resource_delete(cur, owner=owner, domain="sandbox", resource_id=record_id),
+        )
 
-        _save_history(new_history)
-
-    # 删除关联文件不需要占用历史锁。
-    _delete_record_files(record_to_delete.get("files", []))
-    logger.info("Sandbox history deleted: record_id=%s", record_id)
+    if not await run_in_threadpool(delete):
+        return {"success": False, "error": "记录不存在"}
+    logger.info("Sandbox history deleted (object cleanup queued): record_id=%s", record_id)
     return {"success": True}
 
 
@@ -324,17 +248,12 @@ async def sandbox_llm(
             model=req.model,
             web_search=req.web_search,
         )
-        # ��存到历史记录
-        record_id = _add_record(
-            tool="llm",
-            model=req.model,
-            input_data=input_data,
-            output_data={"response": result},
-            record_id=task_id,
-            owner=user.login,
+        await run_in_threadpool(
+            _commit_record, _publisher(task_id, user), tool="llm", model=req.model,
+            input_data=input_data, output_data={"response": result},
         )
-        logger.info("Sandbox LLM completed: model=%s record_id=%s", req.model, record_id)
-        return {"success": True, "result": result, "record_id": record_id}
+        logger.info("Sandbox LLM completed: model=%s record_id=%s", req.model, task_id)
+        return {"success": True, "result": result, "record_id": task_id}
     except Exception as e:
         logger.exception("Sandbox LLM failed: model=%s", req.model)
         return {"success": False, "error": str(e)}
@@ -351,11 +270,11 @@ async def sandbox_vlm(
     client = VLM()
     # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起请求前拒绝
     try:
-        image_paths = _media_inputs(req.images, "图片", user)
+        image_inputs, image_paths = _media_inputs(req.images, "图片", user)
     except ValueError as e:
         logger.warning("Sandbox VLM media input rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
-    input_data = {"prompt": req.prompt, "images": image_paths}
+    input_data = {"prompt": req.prompt, "images": image_inputs}
     task_id = _start_active_task("vlm", req.model, input_data, user.login)
     try:
         logger.info("Sandbox VLM started: model=%s images=%d", req.model, len(image_paths))
@@ -365,21 +284,51 @@ async def sandbox_vlm(
             image_paths=image_paths,
             model=req.model,
         )
-        # 保存到历史记录
-        record_id = _add_record(
-            tool="vlm",
-            model=req.model,
-            input_data=input_data,
-            output_data={"response": result},
-            record_id=task_id,
-            owner=user.login,
+        await run_in_threadpool(
+            _commit_record, _publisher(task_id, user), tool="vlm", model=req.model,
+            input_data=input_data, output_data={"response": result},
         )
-        logger.info("Sandbox VLM completed: model=%s record_id=%s", req.model, record_id)
-        return {"success": True, "result": result, "record_id": record_id}
+        logger.info("Sandbox VLM completed: model=%s record_id=%s", req.model, task_id)
+        return {"success": True, "result": result, "record_id": task_id}
     except Exception as e:
         logger.exception("Sandbox VLM failed: model=%s", req.model)
         return {"success": False, "error": str(e)}
     finally:
+        _finish_active_task(task_id)
+
+
+async def _image_tool(
+    tool: str, model: str, prompt: str, ratio: Optional[str], input_data: dict,
+    image_paths: Optional[List[str]], user: CurrentUser,
+) -> dict:
+    from models.image_client import ImageClient
+
+    client = ImageClient()
+    task_id = _start_active_task(tool, model, input_data, user.login)
+    publisher = _publisher(task_id, user)
+    try:
+        save_dir = await run_in_threadpool(publisher.ensure_root)
+        logger.info("Sandbox %s started: model=%s ratio=%s", tool.upper(), model, ratio)
+        result = await run_in_threadpool(
+            client.generate_image,
+            prompt,
+            model=model,
+            image_paths=image_paths,
+            save_dir=save_dir,
+            video_ratio=ratio,
+        )
+        images = [str(path) for path in result] if isinstance(result, list) else []
+        record, mapping = await run_in_threadpool(
+            _commit_record, publisher, tool=tool, model=model, input_data=input_data,
+            output_data={"images": images}, media=[(path, "image") for path in images],
+        )
+        logger.info("Sandbox %s completed: model=%s record_id=%s images=%d", tool.upper(), model, task_id, len(images))
+        return {"success": True, "result": record["output"].get("images", []), "record_id": task_id}
+    except Exception as e:
+        logger.exception("Sandbox %s failed: model=%s", tool.upper(), model)
+        return {"success": False, "error": str(e)}
+    finally:
+        await run_in_threadpool(publisher.cleanup_root)
         _finish_active_task(task_id)
 
 
@@ -388,46 +337,8 @@ async def sandbox_t2i(
     req: SandboxT2IRequest, user: CurrentUser = Depends(get_current_user)
 ):
     """临时工作台 - 文生图"""
-    from models.image_client import ImageClient
-    client = ImageClient()
     input_data = {"prompt": req.prompt, "style": req.style, "ratio": req.ratio}
-    task_id = _start_active_task("t2i", req.model, input_data, user.login)
-    try:
-        logger.info("Sandbox T2I started: model=%s ratio=%s", req.model, req.ratio)
-        result = await run_in_threadpool(
-            client.generate_image,
-            req.prompt,
-            model=req.model,
-            image_paths=None,
-            video_ratio=req.ratio,
-        )
-        # result 是图片路径列表
-        # 保存到历史记录
-        record_id = _add_record(
-            tool="t2i",
-            model=req.model,
-            input_data=input_data,
-            output_data={"images": result},
-            files=result if isinstance(result, list) else [],
-            record_id=task_id,
-            owner=user.login,
-        )
-        logger.info(
-            "Sandbox T2I completed: model=%s record_id=%s images=%d",
-            req.model,
-            record_id,
-            len(result) if isinstance(result, list) else 0,
-        )
-        return {
-            "success": True,
-            "result": _converted_result_list(result if isinstance(result, list) else []),
-            "record_id": record_id,
-        }
-    except Exception as e:
-        logger.exception("Sandbox T2I failed: model=%s", req.model)
-        return {"success": False, "error": str(e)}
-    finally:
-        _finish_active_task(task_id)
+    return await _image_tool("t2i", req.model, req.prompt, req.ratio, input_data, None, user)
 
 
 @router.post("/api/sandbox/i2i")
@@ -435,51 +346,14 @@ async def sandbox_i2i(
     req: SandboxI2IRequest, user: CurrentUser = Depends(get_current_user)
 ):
     """临时工作台 - 图生图"""
-    from models.image_client import ImageClient
-    client = ImageClient()
     # 图片入参统一守卫（I-A）：本地路径限定白名单，越界在发起生成前拒绝
     try:
-        image_path = _media_input(req.image or "", "参考图片", user)
+        image_input, image_path = _media_input(req.image or "", "参考图片", user)
     except ValueError as e:
         logger.warning("Sandbox I2I media input rejected: model=%s %s", req.model, e)
         return {"success": False, "error": str(e)}
-    input_data = {"prompt": req.prompt, "reference_image": image_path}
-    task_id = _start_active_task("i2i", req.model, input_data, user.login)
-    try:
-        logger.info("Sandbox I2I started: model=%s ratio=%s", req.model, req.ratio)
-        result = await run_in_threadpool(
-            client.generate_image,
-            req.prompt,
-            image_paths=[image_path],
-            model=req.model,
-            video_ratio=req.ratio,
-        )
-        # 保存到历史记录
-        record_id = _add_record(
-            tool="i2i",
-            model=req.model,
-            input_data=input_data,
-            output_data={"images": result},
-            files=result if isinstance(result, list) else [],
-            record_id=task_id,
-            owner=user.login,
-        )
-        logger.info(
-            "Sandbox I2I completed: model=%s record_id=%s images=%d",
-            req.model,
-            record_id,
-            len(result) if isinstance(result, list) else 0,
-        )
-        return {
-            "success": True,
-            "result": _converted_result_list(result if isinstance(result, list) else []),
-            "record_id": record_id,
-        }
-    except Exception as e:
-        logger.exception("Sandbox I2I failed: model=%s", req.model)
-        return {"success": False, "error": str(e)}
-    finally:
-        _finish_active_task(task_id)
+    input_data = {"prompt": req.prompt, "reference_image": image_input}
+    return await _image_tool("i2i", req.model, req.prompt, req.ratio, input_data, [image_path], user)
 
 
 @router.post("/api/sandbox/video")
@@ -487,38 +361,44 @@ async def sandbox_video(
     req: SandboxVideoRequest, request: Request, user: CurrentUser = Depends(get_current_user)
 ):
     """临时工作台 - 视频生成"""
+    del request  # 不再按请求基址拼裸 `/code` 地址
     from models.video_client import VideoClient
     client = VideoClient()
     duration = int(req.duration or 5)
-    # 音频参考：本地文件 → 服务端可访问 URL；图片/视频参考：本地路径白名单校验（失败即报错，不静默降级）
+    task_id = _start_active_task("video", req.model, {"prompt": req.prompt}, user.login)
+    staged = None
+    publisher = _publisher(task_id, user)
     try:
-        audio_reference_url = (
-            _resolve_media_reference_url(str(request.base_url), req.audio_url) if req.audio_url else None
-        )
-        image_path = _media_input(req.image or "", "参考图片", user)
-        reference_video_paths = _media_inputs(req.reference_videos, "参考视频", user)
-    except ValueError as e:
-        logger.warning("Sandbox video media reference rejected: model=%s %s", req.model, e)
-        return {"success": False, "error": str(e)}
-    input_data = {
-        "prompt": req.prompt,
-        "reference_image": image_path,
-        "audio_url": audio_reference_url,
-        "reference_videos": reference_video_paths,
-        "ratio": req.ratio,
-        "resolution": req.resolution,
-        "duration": duration,
-        "fps": req.fps,
-        "short_edge": req.short_edge,
-    }
-    # 参数夹取/忽略记录：随响应透出（可用时）
-    adjustments: list = []
-    task_id = _start_active_task("video", req.model, input_data, user.login)
-    try:
-        # 生成唯一的保存路径
-        save_dir = os.path.join(SANDBOX_DIR, "videos")
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}.mp4")
+        # 图片/视频参考：本地路径白名单校验（失败即报错，不静默降级）；image 可选（文生视频）
+        try:
+            image_input, image_path = _media_input(req.image, "参考图片", user) if req.image else ("", "")
+            video_inputs, reference_video_paths = _media_inputs(req.reference_videos, "参考视频", user)
+            audio_input, audio_reference_url = ("", None)
+            if req.audio_url:
+                audio_input, audio_reference_url, staged = await run_in_threadpool(
+                    _audio_reference, req.audio_url, user, task_id,
+                )
+        except ValueError as e:
+            logger.warning("Sandbox video media reference rejected: model=%s %s", req.model, e)
+            return {"success": False, "error": str(e)}
+        input_data = {
+            "prompt": req.prompt,
+            "reference_image": image_input,
+            "audio_url": audio_input,
+            "reference_videos": video_inputs,
+            "ratio": req.ratio,
+            "resolution": req.resolution,
+            "duration": duration,
+            "fps": req.fps,
+            "short_edge": req.short_edge,
+        }
+        with SANDBOX_LOCK:
+            if task_id in SANDBOX_ACTIVE_TASKS:
+                SANDBOX_ACTIVE_TASKS[task_id]["input"] = input_data
+        # 参数夹取/忽略记录：随响应透出（可用时）
+        adjustments: list = []
+        save_dir = await run_in_threadpool(publisher.ensure_root)
+        save_path = os.path.join(save_dir, "video.mp4")
         logger.info(
             "Sandbox video started: model=%s image=%s audio_ref=%s video_refs=%d ratio=%s resolution=%s duration=%ss fps=%s short_edge=%s",
             req.model,
@@ -548,26 +428,24 @@ async def sandbox_video(
             reference_video_paths=reference_video_paths or None,
             adjustments=adjustments,
         )
-        # 保存到历史记录
-        record_id = _add_record(
-            tool="video",
-            model=req.model,
-            input_data=input_data,
-            output_data={"video": result, "video_path": save_path},
-            files=[save_path],
-            record_id=task_id,
-            owner=user.login,
+        media = [(save_path, "video")] if os.path.isfile(save_path) else []
+        record, mapping = await run_in_threadpool(
+            _commit_record, publisher, tool="video", model=req.model, input_data=input_data,
+            output_data={"video": result, "video_path": save_path if media else ""}, media=media,
         )
-        logger.info("Sandbox video completed: model=%s record_id=%s video=%s", req.model, record_id, save_path)
+        video_path = record["output"].get("video_path") or ""
+        logger.info("Sandbox video completed: model=%s record_id=%s video=%s", req.model, task_id, video_path)
         return {
             "success": True,
-            "result": result,
-            "video_path": _converted_video_path(save_path),
-            "record_id": record_id,
+            "result": record["output"].get("video"),
+            "video_path": video_path,
+            "record_id": task_id,
             "warnings": adjustments,
         }
     except Exception as e:
         logger.exception("Sandbox video failed: model=%s", req.model)
         return {"success": False, "error": str(e)}
     finally:
+        _release(staged)
+        await run_in_threadpool(publisher.cleanup_root)
         _finish_active_task(task_id)

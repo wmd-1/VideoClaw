@@ -3,9 +3,11 @@
 智能体基类 - 所有阶段智能体的抽象接口
 """
 
+import glob
 import logging
+import os
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,10 @@ class AgentInterface(ABC):
         self.name = name
         self.cancellation_check: Optional[Callable] = None
         self.progress_callback: Optional[Callable] = None
+        # 由编排器设置：本次执行的受信工作根（新输出只写这里）与 DB 视图中的历史版本。
+        # 未设置时（独立使用 Agent）沿用旧的结果目录。
+        self.execution_root: Optional[str] = None
+        self.version_history: Dict[str, List[str]] = {}
 
     def _merge_session_params(self, input_data: Any) -> Dict:
         """从编排器注入的 session 快照补齐缺失参数。"""
@@ -58,6 +64,35 @@ class AgentInterface(ABC):
 
     def set_progress_callback(self, fn: Callable):
         self.progress_callback = fn
+
+    # -------- 执行输出与版本历史 --------
+
+    def _output_dir(self, legacy_dir: str, *parts: str) -> str:
+        """新产物目录：编排器提供执行根时写入执行根下的子目录，否则用旧结果目录。"""
+        if self.execution_root:
+            return os.path.join(self.execution_root, *parts)
+        return legacy_dir
+
+    def _history_versions(self, container: str, item_id: str) -> List[str]:
+        return list(self.version_history.get(f"{container}:{item_id}") or [])
+
+    @staticmethod
+    def _local_files(directory: str, patterns: List[str], exclude_suffix: str = "") -> List[str]:
+        files: List[str] = []
+        for pattern in patterns:
+            files.extend(glob.glob(os.path.join(directory, pattern)))
+        files = [f for f in set(files) if not (exclude_suffix and f.endswith(exclude_suffix))]
+        return sorted(files, key=os.path.getmtime)
+
+    def _merge_history(self, container: str, item_id: str, local: List[str]) -> List[str]:
+        """历史版本来自 DB 视图（canonical），本地 glob 只覆盖本次执行的新输出。"""
+        if not self.execution_root:
+            return local
+        merged = self._history_versions(container, item_id)
+        for path in local:
+            if path not in merged:
+                merged.append(path)
+        return merged
 
     def _report_progress(self, phase: str, step_desc: str, percent: float, data: dict = None):
         if self.progress_callback:

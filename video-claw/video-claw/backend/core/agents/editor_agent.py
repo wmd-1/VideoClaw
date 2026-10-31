@@ -54,7 +54,7 @@ class VideoEditorAgent(AgentInterface):
         self._report_progress("后期制作", "准备视频片段...", 5)
 
         def run():
-            video_dir = os.path.join('code/result/video', str(sid))
+            video_dir = self._output_dir(os.path.join('code/result/video', str(sid)), 'final')
             os.makedirs(video_dir, exist_ok=True)
             output_dir = os.path.join(video_dir, 'output')
             os.makedirs(output_dir, exist_ok=True)

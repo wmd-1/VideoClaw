@@ -905,9 +905,15 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
     return subscribePipelineTask(
       task.task_id,
       handleEvent,
-      () => {
+      (failure) => {
         if (task.status === 'pending' || task.status === 'running') {
           setRunning(false);
+        }
+        // 401/404 与网络断开保持可区分：前者是身份或归属问题，不应当做模型失败
+        if (failure.kind === 'http' && failure.status === 401) {
+          setError('身份校验失效，任务事件流已断开');
+        } else if (failure.kind === 'http' && failure.status === 404) {
+          setError('任务不存在或无权访问，任务事件流已断开');
         }
       },
     );

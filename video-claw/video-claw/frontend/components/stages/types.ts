@@ -1,3 +1,5 @@
+import type { ExecutionPreview, MissingInput } from '@/lib/workflowApi';
+
 export type StageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'error' | 'stopped';
 
 export interface StageState {
@@ -13,6 +15,20 @@ export interface StageState {
    * 缺省/'synced' 表示同步正常。仅前端内存态、不落盘（刷新后回默认 synced）。
    */
   syncState?: 'synced' | 'timed_out';
+  /**
+   * 上次未完成（失败/中断）执行的只读摘要，来自 /status 的 execution_preview。
+   * 与 artifact（最后一次成功结果/用户工作稿）严格分开展示，不参与确认与停点。
+   */
+  lastRun?: ExecutionPreview | null;
+  /** 本阶段因必需输入不可用而失败时的可定位清单（仅 error 态有效） */
+  missingInputs?: MissingInput[] | null;
+}
+
+/** 条目卡片上的缺失标记：由失败阶段的 missingInputs 投影到来源/消费阶段 */
+export interface FlaggedItem {
+  message: string;
+  /** 需要处理的来源阶段（与当前阶段不同时提供跳转） */
+  sourceStage: string;
 }
 
 export interface StageViewProps {
@@ -38,4 +54,8 @@ export interface StageViewProps {
   referenceArtifact?: unknown;
   /** 剧本阶段的 artifact（用于获取剧集标题） */
   scriptArtifact?: unknown;
+  /** 本阶段需要标红的条目（item id → 缺失说明） */
+  flaggedItems?: Record<string, FlaggedItem>;
+  /** 跳转到指定阶段（用于“前往重新选择/重生成”） */
+  onNavigateStage?: (stage: string) => void;
 }

@@ -7,7 +7,6 @@
 """
 
 import asyncio
-import glob
 import json
 import logging
 import os
@@ -78,28 +77,32 @@ class CharacterDesignerAgent(AgentInterface):
 
     # ─── 文件管理（基于唯一ID） ───
 
-    @staticmethod
-    def _asset_base(sid: str) -> str:
-        return os.path.join('code/result/image', str(sid), 'Assets')
+    _IMAGE_EXTS = ("png", "jpg", "jpeg", "webp", "bmp")
+
+    def _asset_base(self, sid: str) -> str:
+        return self._output_dir(os.path.join('code/result/image', str(sid), 'Assets'), 'Assets')
+
+    def _local_versions(self, sid: str, asset_type: str, asset_id: str) -> List[str]:
+        """本次执行（或旧结果目录）中已生成的本地文件，按时间排序。"""
+        adir = os.path.join(self._asset_base(sid), asset_type)
+        if self.execution_root:
+            patterns = [p for ext in self._IMAGE_EXTS for p in (f"{asset_id}.{ext}", f"{asset_id}_v*.{ext}")]
+        else:
+            patterns = [f"{asset_id}*.{ext}" for ext in self._IMAGE_EXTS]
+        return self._local_files(adir, patterns)
 
     def _list_versions(self, sid: str, asset_type: str, asset_id: str) -> List[str]:
-        """列出某个素材的所有历史版本文件路径，按时间排序
+        """某个素材的全部版本：DB 视图中的历史版本 + 本次执行的新文件
         文件命名: {asset_id}.png, {asset_id}_v2.png, {asset_id}_v3.png, ...
         """
-        adir = os.path.join(self._asset_base(sid), asset_type)
-        files = []
-        for ext in ("png", "jpg", "jpeg", "webp", "bmp"):
-            pattern = os.path.join(adir, f"{asset_id}*.{ext}")
-            files.extend(glob.glob(pattern))
-        files = sorted(set(files), key=os.path.getmtime)
-        return files
+        return self._merge_history(asset_type, asset_id, self._local_versions(sid, asset_type, asset_id))
 
     def _next_version_path(self, sid: str, asset_type: str, asset_id: str) -> str:
-        """获取下一个版本的文件路径"""
+        """获取下一个版本的文件路径（只看本地目录，历史版本不占用本地文件名）"""
         adir = os.path.join(self._asset_base(sid), asset_type)
         os.makedirs(adir, exist_ok=True)
 
-        existing = self._list_versions(sid, asset_type, asset_id)
+        existing = self._local_versions(sid, asset_type, asset_id)
         if not existing:
             return os.path.join(adir, f"{asset_id}.png")
 
@@ -293,8 +296,8 @@ class CharacterDesignerAgent(AgentInterface):
         # 达到最大迭代次数，尝试使用 VLM 选择最佳图片
         logger.warning(f"[{asset_type}] {name} reached max iterations ({max_iterations}), trying VLM selection")
 
-        # 收集所有生成过的版本
-        all_versions = self._list_versions(sid, asset_type, asset_id)
+        # 收集本次生成过的本地版本（历史版本未物化，不参与 VLM 挑选）
+        all_versions = [path for path in self._local_versions(sid, asset_type, asset_id) if os.path.isfile(path)]
         if len(all_versions) > 1:
             # 有多个版本，调用 VLM 选择最好的
             best_path, best_eval = self._select_best_with_vlm(

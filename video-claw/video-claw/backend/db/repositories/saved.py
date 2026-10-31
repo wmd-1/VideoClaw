@@ -23,6 +23,17 @@ class SavedRepo:
                 cur.execute("SELECT * FROM saved_items WHERE item_id = %s", (saved_id,))
                 return cur.fetchone()
 
+    def find_by_object(self, bucket: str, object_key: str) -> Optional[Dict[str, Any]]:
+        """清理器判定用：收藏副本没有 artifact_files 行，必须单独核对。"""
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT item_id, owner FROM saved_items "
+                    "WHERE bucket = %s AND object_key = %s LIMIT 1",
+                    (bucket, object_key),
+                )
+                return cur.fetchone()
+
     def insert(self, item: Dict[str, Any]) -> None:
         row = {
             "item_id": str(item["item_id"]),

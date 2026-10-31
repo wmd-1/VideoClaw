@@ -43,6 +43,35 @@ class SessionRepo:
                     },
                 )
 
+    def insert_if_absent(self, state: Any, *, boot_id: str = "") -> bool:
+        """迁移专用：仅在会话不存在时插入，不覆盖既有 owner/状态/元数据。"""
+        row = state_session_row(state, boot_id=boot_id)
+        if not row["owner"]:
+            raise ValueError("session owner must not be empty")
+        ts = now_ms()
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO sessions
+                      (session_id, owner, status, current_stage, status_json,
+                       stage_progress_json, meta_json, boot_id, created_at, updated_at)
+                    VALUES
+                      (%(session_id)s, %(owner)s, %(status)s, %(current_stage)s,
+                       %(status_json)s, %(stage_progress_json)s, %(meta_json)s,
+                       %(boot_id)s, %(now)s, %(now)s)
+                    ON CONFLICT (session_id) DO NOTHING
+                    """,
+                    {
+                        **row,
+                        "status_json": jsonb(row["status_json"]),
+                        "stage_progress_json": jsonb(row["stage_progress_json"]),
+                        "meta_json": jsonb(row["meta_json"]),
+                        "now": ts,
+                    },
+                )
+                return cur.rowcount > 0
+
     def get(self, sid: str) -> Optional[Dict[str, Any]]:
         with transaction() as conn:
             with conn.cursor() as cur:

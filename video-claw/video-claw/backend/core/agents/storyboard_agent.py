@@ -412,6 +412,9 @@ class StoryboardAgent(AgentInterface):
                 if speaker_hint:
                     dialogue = (speaker_hint, str(annotation.get("tone") or ""), line)
                     is_action = False
+            elif annotation and annotation.get("type") == "action":
+                # 保真导入把普通动作正文标为 action，不能要求原文自带 <action> 标签
+                is_action = True
             if not dialogue and not is_action:
                 annotated_lines.append(line)
                 continue

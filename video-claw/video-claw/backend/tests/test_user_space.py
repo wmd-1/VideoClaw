@@ -80,14 +80,11 @@ def test_sessions_owner_isolation_and_delete(client, session_dir):
     assert client.delete("/api/sessions/alice_sid", headers=headers("alice")).status_code == 200
 
 
-def test_pipeline_task_owner_and_running_delete(client, monkeypatch):
+def test_pipeline_task_owner_and_running_delete(client, monkeypatch, tmp_path):
     import pipelines.storage as storage
 
-    root = os.path.join(settings.CODE_DIR, "data", "pytest-tasks")
-    result = os.path.join(settings.RESULT_DIR, "pytest-tasks")
-    os.makedirs(result, exist_ok=True)
-    monkeypatch.setattr(storage, "TASK_DATA_DIR", root)
-    monkeypatch.setattr(storage, "TASK_RESULT_DIR", result)
+    # 任务元数据只在 DB；执行工作根落在隔离 CODE_DIR
+    monkeypatch.setattr(settings, "CODE_DIR", str(tmp_path / "code"))
     task = storage.create_task("standard", {}, owner="alice")
     assert [row["task_id"] for row in client.get("/api/tasks", headers=headers("alice")).json()["tasks"]] == [task["task_id"]]
     assert client.get("/api/tasks", headers=headers("bob")).json()["tasks"] == []
@@ -98,14 +95,12 @@ def test_pipeline_task_owner_and_running_delete(client, monkeypatch):
     assert client.delete(f"/api/tasks/{task['task_id']}", headers=headers("alice")).status_code == 200
 
 
-def test_sandbox_history_owner(client, monkeypatch):
-    import api.routers.sandbox as sandbox
+def test_sandbox_history_owner(client):
+    from db.repositories.resource_commits import commit_sandbox_record
 
-    history = os.path.join(settings.CODE_DIR, "data", "pytest-sandbox.json")
-    if os.path.exists(history):
-        os.remove(history)
-    monkeypatch.setattr(sandbox, "SANDBOX_HISTORY_FILE", history)
-    record_id = sandbox._add_record("llm", "m", {}, {}, owner="alice")
+    record_id = "sbx_alice_1"
+    commit_sandbox_record(record={"record_id": record_id, "owner": "alice", "tool": "llm", "model": "m",
+                                  "input": {}, "output": {}})
     assert len(client.get("/api/sandbox/history", headers=headers("alice")).json()["records"]) == 1
     assert client.get("/api/sandbox/history", headers=headers("bob")).json()["records"] == []
     response = client.delete(f"/api/sandbox/history/{record_id}", headers=headers("bob")).json()

@@ -18,6 +18,7 @@ import {
   saveSelections,
   ModelUnavailableError,
   type ModelUnavailableDetail,
+  type MissingInput,
   type ProjectStatus,
 } from '@/lib/workflowApi';
 import TopBar, { STAGES, useEnabledStages, type ModelConfig } from './TopBar';
@@ -40,6 +41,8 @@ import {
   type StageStatus,
   type StageViewProps,
 } from './stages';
+import LastRunNotice from './stages/LastRunNotice';
+import { MissingInputsNotice, flagsFromMissingInputs } from './stages/MissingInputs';
 
 // 全量阶段（含 prompt_rewrite）；实际驱动/渲染的集合由 useEnabledStages 按后端开关过滤
 const ALL_stageOrder: string[] = STAGES.map(s => s.id);
@@ -179,6 +182,12 @@ function getStageProgressSnapshot(status: unknown, stageId: string): Partial<Sta
     ...(typeof progress === 'number' ? { progress } : {}),
     ...(progressMessage ? { progressMessage } : {}),
   };
+}
+
+/** 失败阶段的必需输入缺失清单（后端写在 stage_progress[stage].missing_inputs） */
+function getMissingInputs(status: ProjectStatus | null | undefined, stageId: string): MissingInput[] | null {
+  const items = status?.stage_progress?.[stageId]?.missing_inputs;
+  return Array.isArray(items) && items.length > 0 ? items : null;
 }
 
 export default function WorkflowPanel() {
@@ -371,6 +380,9 @@ export default function WorkflowPanel() {
         commitSessionView(token, { globalStatusMap: status.status || {} });
         const done = Object.keys(status.status || {}).filter(k => ["completed", "session_completed"].includes(status.status[k]));
         const currentStageStatus = status.status?.[stageId] || 'idle';
+        // 上次未完成执行的只读摘要：只在终态分支落入，运行中不展示
+        const lastRun = status.execution_preview?.[stageId] ?? null;
+        const missingInputs = currentStageStatus === 'error' ? getMissingInputs(status, stageId) : null;
         const artifacts = status.artifacts || {};
         const currentArtifact = artifacts[stageId];
         const hasRunningItems = hasRunningArtifactItems(currentArtifact, stageId);
@@ -385,6 +397,8 @@ export default function WorkflowPanel() {
             progress: 100,
             progressMessage: isWait ? '等待确认' : '已完成',
             artifact,
+            lastRun,
+            missingInputs: null,
           });
           pollRef.current.delete(key);
           return;
@@ -394,6 +408,8 @@ export default function WorkflowPanel() {
             status: 'error',
             error: status.error || '执行出错',
             progressMessage: '执行失败',
+            lastRun,
+            missingInputs,
           });
           pollRef.current.delete(key);
           return;
@@ -403,6 +419,7 @@ export default function WorkflowPanel() {
             status: 'stopped',
             error: '手动停止',
             progressMessage: '已停止',
+            lastRun,
           });
           pollRef.current.delete(key);
           return;
@@ -418,6 +435,7 @@ export default function WorkflowPanel() {
               ? '等待确认'
               : (done.includes(stageId) ? '已完成' : undefined),
             artifact: currentArtifact || null,
+            lastRun,
           });
           pollRef.current.delete(key);
           return;
@@ -554,6 +572,7 @@ export default function WorkflowPanel() {
                   : (progressSnapshot.progressMessage || (isRunningStatus ? '执行中...' : '进行中'))))),
           artifact: status.artifacts?.[sName] || null,
           error: isError ? (status.error || '执行出错') : (isStopped ? '手动停止' : null),
+          missingInputs: isError ? getMissingInputs(status, sName) : null,
         };
 
         // 如果内存中没有，尝试异步拉取
@@ -565,6 +584,11 @@ export default function WorkflowPanel() {
             newStates[sName].artifact = artResult.artifact;
           } catch { /* ignore */ }
         }
+      }
+
+      // 上次未完成执行的摘要独立挂在 lastRun，不并入 artifact（正式结果与摘要分开）
+      for (const [sName, preview] of Object.entries(status.execution_preview || {})) {
+        if (newStates[sName]) newStates[sName].lastRun = preview;
       }
 
       // 恢复项目参数：会话级生成配置统一从 meta 中读取，兼容少量旧扁平字段。
@@ -737,6 +761,14 @@ export default function WorkflowPanel() {
             }
           } catch { /* 该阶段无 artifact，跳过 */ }
         }
+        // 中断的执行摘要只读展示，不并入 artifact
+        try {
+          const status = await getProjectStatus(stopSid);
+          if (!owns(token)) return;
+          for (const [s, preview] of Object.entries(status.execution_preview || {})) {
+            commitStageState(token, s, { lastRun: preview });
+          }
+        } catch { /* ignore */ }
       }, 500);
     }
   };
@@ -831,12 +863,23 @@ export default function WorkflowPanel() {
     }
   };
 
+  // 执行失败/中断后刷新只读摘要与缺失清单；取不到不影响主流程
+  const refreshLastRun = async (token: SessionToken, sid: string, stageId: string) => {
+    try {
+      const status = await getProjectStatus(sid);
+      commitStageState(token, stageId, {
+        lastRun: status.execution_preview?.[stageId] ?? null,
+        missingInputs: status.status?.[stageId] === 'error' ? getMissingInputs(status, stageId) : null,
+      });
+    } catch { /* ignore */ }
+  };
+
   // ── 执行单个阶段 ──
   // 令牌由调用方（执行链启动处）传入：链内不得重取，否则用户切走会话后，
   // 本链下一个阶段会捕获到新归属的令牌并把旧会话数据写进当前界面（design D9）。
   const runStage = async (token: SessionToken, sid: string, stageId: string, inputData: Record<string, unknown>) => {
     if (stoppedRef.current) throw new Error('Stopped');
-    commitStageState(token, stageId, { status: 'running', progress: 0, progressMessage: '启动中...', error: null });
+    commitStageState(token, stageId, { status: 'running', progress: 0, progressMessage: '启动中...', error: null, lastRun: null, missingInputs: null });
     commitSessionView(token, { activeStage: stageId });
 
     const controller = new AbortController();
@@ -958,6 +1001,7 @@ export default function WorkflowPanel() {
                 artifact,
                 error: null,
               });
+              await refreshLastRun(token, sid, stageId);
               return; // 不抛异常，让工作流正常停下
             }
           }
@@ -980,6 +1024,7 @@ export default function WorkflowPanel() {
           error: (error as Error).message,
           progressMessage: '执行失败',
         });
+        await refreshLastRun(token, sid, stageId);
       }
       // 控制流继续向上抛：令牌失效只丢写入，不得中断执行链（design D11）
       throw error;
@@ -1301,7 +1346,7 @@ export default function WorkflowPanel() {
         : undefined;
     if (!isBackgroundItemRegeneration) {
       setIsRunning(true);
-      commitStageState(token, stageId, { status: 'running', progress: 0, progressMessage: '处理中...', ...(artifactPatch ? { artifact: artifactPatch } : {}) });
+      commitStageState(token, stageId, { status: 'running', progress: 0, progressMessage: '处理中...', lastRun: null, missingInputs: null, ...(artifactPatch ? { artifact: artifactPatch } : {}) });
     } else if (artifactPatch) {
       commitStageState(token, stageId, { artifact: artifactPatch });
     }
@@ -1745,6 +1790,8 @@ export default function WorkflowPanel() {
     if (!Component) return null;
 
     const state = stageStates[activeStage];
+    // 失败阶段的缺失清单投影到来源/消费阶段的条目卡片（标红 + 前往处理）
+    const flaggedByStage = flagsFromMissingInputs(stageStates);
 
     // 判断后续阶段是否已执行过：如有，则隐藏"确认并继续"
     const idx = stageOrder.indexOf(activeStage);
@@ -1823,6 +1870,10 @@ export default function WorkflowPanel() {
           {timeoutStopError && <p className="text-xs text-red-600">{timeoutStopError}</p>}
         </div>
       )}
+      {state?.lastRun && state.status !== 'running' && <LastRunNotice preview={state.lastRun} />}
+      {state?.status === 'error' && state.missingInputs && state.missingInputs.length > 0 && (
+        <MissingInputsNotice items={state.missingInputs} onNavigateStage={handleStageClick} />
+      )}
       <Component
         state={state}
         sessionId={sessionId || ''}
@@ -1845,6 +1896,8 @@ export default function WorkflowPanel() {
         hasNextStageStarted={hasNextStageStarted}
         referenceArtifact={referenceArtifact}
         scriptArtifact={scriptArtifact}
+        flaggedItems={flaggedByStage[activeStage]}
+        onNavigateStage={handleStageClick}
         artifacts={Object.keys(stageStates).reduce((acc: Record<string, unknown>, key) => {
           acc[key] = stageStates[key].artifact;
           return acc;

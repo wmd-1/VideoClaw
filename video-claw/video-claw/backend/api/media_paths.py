@@ -125,3 +125,23 @@ def guard_uploaded_document_name(value: str) -> str:
     if not parts or any(part in (".", "") for part in parts):
         raise ValueError("file_path 仅接受 /api/upload_file 返回的相对文件名")
     return "/".join(parts)
+
+
+def resolve_uploaded_document(file_path: str, owner_prefix: Optional[str] = None) -> str:
+    """上传文档引用的统一入口：相对名 → TEMP_DIR 内绝对路径，并校验归属。
+
+    创建（project start）与消费（剧本导入）两个入口 MUST 共用本函数，避免只在一
+    侧校验。``owner_prefix`` 为空时不比归属，仅供无法取得会话归属的旧调用；正常
+    业务路径必须传入 ``CurrentUser.owner_key`` 或会话 owner 派生的 owner_key。
+    """
+    safe_name = guard_uploaded_document_name(file_path)
+    if owner_prefix and not safe_name.startswith(f"users/{owner_prefix}/"):
+        # legacy 裸文件名仅在 single 模式按既定兼容规则放行
+        legacy_bare = "/" not in safe_name and str(getattr(settings, "USERS_MODE", "guip")) == "single"
+        if not legacy_bare:
+            raise ValueError("file_path 不属于当前用户")
+    temp_root = os.path.realpath(settings.TEMP_DIR)
+    full_path = os.path.realpath(os.path.join(temp_root, safe_name))
+    if full_path != temp_root and not full_path.startswith(temp_root + os.sep):
+        raise ValueError("file_path 路径越界（仅允许上传目录内的文件）")
+    return full_path

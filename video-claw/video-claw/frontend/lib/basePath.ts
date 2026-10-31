@@ -8,6 +8,8 @@
  * 设为空字符串即关闭前缀（回到根路径部署）。
  */
 
+import { getLoginName } from './identityState';
+
 function normalizeBasePath(raw: string | undefined): string {
   const value = String(raw ?? '').trim();
   // '/' 与空值等价：不挂在任何前缀下
@@ -45,11 +47,8 @@ const SITE_PATH_PREFIXES = ['/code/', '/api/'];
  * 外部 CDN 地址、data:/blob: 原样返回。
  */
 function currentLogin(): string {
-  try {
-    return window.localStorage.getItem('video-claw.login-name') || '';
-  } catch {
-    return '';
-  }
+  // 与 API 头共用同一有效身份（single 固定 local、/me 结论优先），不直接读存储
+  return getLoginName();
 }
 
 function appendLogin(target: string): string {

@@ -3,8 +3,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import IdentityMissing from "@/components/IdentityMissing";
 import { withBasePath } from "@/lib/basePath";
+import {
+  getLoginName,
+  setResolvedIdentity,
+  setStoredLogin,
+} from "@/lib/identityState";
 
-const LOGIN_KEY = "video-claw.login-name";
+export { getLoginName, setStoredLogin };
 
 type IdentityState = {
   ready: boolean;
@@ -20,33 +25,6 @@ type IdentityContextValue = IdentityState & {
 };
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
-
-function getUrlLogin(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    const params = new URLSearchParams(window.location.search);
-    return (params.get("User") || params.get("user") || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-export function getLoginName(): string {
-  if (typeof window === "undefined") return "";
-  const urlLogin = getUrlLogin();
-  if (urlLogin) {
-    setStoredLogin(urlLogin);
-    return urlLogin;
-  }
-  return window.localStorage.getItem(LOGIN_KEY) || "";
-}
-
-export function setStoredLogin(login: string) {
-  if (typeof window === "undefined") return;
-  const value = login.trim();
-  if (value) window.localStorage.setItem(LOGIN_KEY, value);
-  else window.localStorage.removeItem(LOGIN_KEY);
-}
 
 export function identityHeaders(headers?: HeadersInit): Headers {
   const merged = new Headers(headers);
@@ -118,7 +96,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       const modeBody = await modeResp.json();
       const mode: "guip" | "single" = modeBody.mode === "single" ? "single" : "guip";
       if (mode === "single") {
-        setStoredLogin("local");
+        // single 模式固定 local：API 头与媒体 URL 共用同一有效身份
+        setResolvedIdentity("single", "local");
         setState({ ready: true, mode, login: "local", isAdmin: true, error: "" });
         return;
       }
@@ -131,7 +110,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
 
       // 即使没有明文登录名也请求 /me：GUIP/反代可能已在请求上注入身份头。
       const me = await loadMe();
-      setStoredLogin(me.login);
+      // /me 的结论即为有效身份，此后不再被 URL 改写
+      setResolvedIdentity(mode, me.login);
       setState({
         ready: true,
         mode,
@@ -141,6 +121,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       });
     } catch (err) {
       console.warn("[identity] 未获取到用户身份", err);
+      setResolvedIdentity("guip", "");
       setState((prev) => ({
         ...prev,
         ready: true,
@@ -156,12 +137,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const setLogin = useCallback((login: string) => {
-    setStoredLogin(login);
+    setResolvedIdentity("guip", login);
     void refresh();
   }, [refresh]);
 
   const logout = useCallback(() => {
-    setStoredLogin("");
+    setResolvedIdentity("guip", "");
     void apiFetch("/api/identity/logout", { method: "POST" }).catch(() => undefined);
     setState({ ready: true, mode: "guip", login: "", isAdmin: false, error: "" });
   }, []);

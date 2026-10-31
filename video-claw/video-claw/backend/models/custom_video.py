@@ -555,22 +555,23 @@ class CustomVideoClient:
         return "file://" + os.path.abspath(path)
 
     def _reference_uris(self, path: str) -> List[str]:
-        """推理服务端可见的引用候选：HTTP URL（需 server.media_ref_base_url）优先，file:// 兜底。
+        """推理服务端可见的引用候选：core 准备的 HTTP URI（受管对象预签名/暂存）优先，file:// 兜底。
 
-        跨机部署时推理服务读不到本容器的绝对路径（报 source does not exist or is not a file）；
-        配置基址后将 CODE_DIR 内的产物拼为 `{base}/code/<相对路径>`，仅对位于 CODE_DIR 内且真实存在的文件生效。
+        路径值由 core 物化并附带 `reference`（models.media_types.MediaReference）；本模块不查 DB/存储，
+        也不再把 CODE_DIR 内的文件拼成裸 `/code/...` 网关 URL（缺身份参数会被网关拒绝）。
         """
         uris: List[str] = []
         if remote_media_kind(path):
             # 远程形态保留原始 URL，不拼接 file:// 伪 URI，形态数量为 1
             return [path]
-        base = str(getattr(Config, "MEDIA_REF_BASE_URL", "") or "").strip().rstrip("/")
-        if base:
-            code_dir = os.path.realpath(str(Config.CODE_DIR))
-            real = os.path.realpath(path)
-            if real.startswith(code_dir + os.sep) and os.path.isfile(real):
-                relative = os.path.relpath(real, code_dir).replace(os.sep, "/")
-                uris.append(f"{base}/code/{relative}")
+        reference = getattr(path, "reference", None)
+        if reference is not None:
+            from models.media_types import HTTP_SCHEMES, scheme_of
+
+            try:
+                uris.extend(uri for uri in reference.candidates() if scheme_of(uri) in HTTP_SCHEMES)
+            except Exception as exc:  # noqa: BLE001 - 候选准备失败时保留 file:// 形态
+                logger.warning("reference uri candidates unavailable for %s: %s", path, exc)
         uris.append(self._file_uri(path))
         return list(dict.fromkeys(uris))
 
@@ -590,16 +591,10 @@ class CustomVideoClient:
         markers = ("does not exist", "not a file", "no such file", "cannot open", "failed to fetch", "download")
         if not any(marker in lowered for marker in markers):
             return ""
-        base = str(getattr(Config, "MEDIA_REF_BASE_URL", "") or "").strip()
-        if base:
-            return (
-                f"；服务端无法读取引用的媒体资源。已配置对外基址 {base}，"
-                "请确认推理服务所在机器能访问该地址（同网段/防火墙/端口），或改用共享挂载目录"
-            )
         return (
             "；服务端无法读取引用的媒体资源（file:// 路径仅在同机或共享挂载下可用）。"
-            "跨机部署请配置 .env 的 VC_MEDIA_REF_BASE_URL=http://<后端对外地址>:<端口>"
-            "（或 config.yaml 的 server.media_ref_base_url），使图片以 HTTP URL 供推理服务拉取"
+            "跨机部署请配置 .env 的 VC_STORAGE__PUBLIC_ENDPOINT 为推理服务可访问的对象存储地址，"
+            "使参考图以预签名 HTTP URL 供推理服务拉取"
         )
 
     def _sglang_conditions_variant(
@@ -866,7 +861,7 @@ class CustomVideoClient:
             # 手册依据（SGLang Cookbook L638）：H3 只消费 conditions[].uri，通用上传字段（video_path/video_url
             # 与顶层上传）不会被 lowered 进 H3 参考条件 → 含图时 conditions 必须是首选形态而非最后回退
             # （否则 multipart “成功”只会生成与输入不符的无参考视频）。
-            # uri 形态按可达性排序：HTTP（需 media_ref_base_url，跨机可用）→ file://（同机/共享挂载）。
+            # uri 形态按可达性排序：HTTP（core 准备的预签名/受管暂存，跨机可用）→ file://（同机/共享挂载）。
             sample_path = next(path for path in [image_path, last_image_path, *(refs or [])] if path)
             forms = self._reference_uri_forms(sample_path)
             conditions_variants = [

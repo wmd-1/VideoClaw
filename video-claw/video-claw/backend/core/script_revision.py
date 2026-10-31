@@ -140,8 +140,13 @@ def user_edited_items(
     old_items: Any,
     new_items: Any,
     stage_items: Any = None,
+    kind: str = "",
 ) -> List[dict]:
-    """阶段 2 描述与旧剧本不同（视为用户手改），且新剧本仍保留的同名条目。"""
+    """阶段 2 描述与旧剧本不同（视为用户手改），且新剧本仍保留的同名条目。
+
+    ``kind`` 区分角色（character）与场景（setting）：两者可能同名，
+    冲突合并与确认签名都以 (kind, name) 为键，不能只按 name。
+    """
     old_by_name = _items_by_name(old_items)
     new_by_name = _items_by_name(new_items)
     stage_by_name = _items_by_name(stage_items)
@@ -154,6 +159,7 @@ def user_edited_items(
         if stage_desc and stage_desc != old_desc:
             edited.append(
                 {
+                    "kind": kind,
                     "name": stage_item.get("name", ""),
                     "id": stage_item.get("id", ""),
                     "current_description": stage_desc,

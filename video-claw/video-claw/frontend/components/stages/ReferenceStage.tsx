@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Image as ImageIcon, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Save, X, Upload } from 'lucide-react';
 import type { StageViewProps } from './types';
+import { FlaggedItemBanner } from './MissingInputs';
 import { assetUrl, assetVersionLabel } from './utils';
 import { uploadArtifactImage } from '@/lib/workflowApi';
 import StageActions from './StageActions';
@@ -366,7 +367,7 @@ function SceneRow({
 }
 
 /* ─── 主组件 ─── */
-export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact }: StageViewProps) {
+export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as ReferenceStageArtifact;
   const [editDescs, setEditDescs] = useState<Record<string, string>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
@@ -629,7 +630,13 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
 
                     <div className="space-y-4">
                       {epScenes.map(scene => (
-                        <div key={scene.id} className="relative">
+                        <div
+                          key={scene.id}
+                          className={`relative ${flaggedItems?.[scene.id] ? 'rounded-xl ring-2 ring-red-400 ring-offset-2' : ''}`}
+                        >
+                          {flaggedItems?.[scene.id] && (
+                            <FlaggedItemBanner flag={flaggedItems[scene.id]} currentStage="reference_generation" onNavigateStage={onNavigateStage} />
+                          )}
                           <SceneRow
                             scene={scene}
                             editDesc={editDescs[scene.id] ?? scene.description}

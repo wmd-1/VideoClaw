@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import glob
 import logging
 import os
 import re
@@ -28,24 +27,27 @@ class VideoDirectorAgent(AgentInterface):
 
     # ─── 版本管理 ───
 
-    @staticmethod
-    def _video_base(sid: str) -> str:
-        return os.path.join('code/result/video', str(sid))
+    def _video_base(self, sid: str) -> str:
+        return self._output_dir(os.path.join('code/result/video', str(sid)), 'clips')
+
+    def _local_versions(self, sid: str, segment_id: str) -> List[str]:
+        video_dir = self._video_base(sid)
+        if self.execution_root:
+            patterns = [f"{segment_id}.mp4", f"{segment_id}_v*.mp4"]
+        else:
+            patterns = [f"{segment_id}*.mp4"]
+        return self._local_files(video_dir, patterns, exclude_suffix='_final.mp4')
 
     def _list_versions(self, sid: str, segment_id: str) -> List[str]:
-        """列出某个片段视频的所有历史版本"""
-        video_dir = self._video_base(sid)
-        pattern = os.path.join(video_dir, f"{segment_id}*.mp4")
-        files = [f for f in sorted(glob.glob(pattern), key=os.path.getmtime)
-                 if not f.endswith('_final.mp4')]
-        return files
+        """某个片段视频的全部版本：DB 视图中的历史版本 + 本次执行的新文件"""
+        return self._merge_history("clips", segment_id, self._local_versions(sid, segment_id))
 
     def _next_version_path(self, sid: str, segment_id: str) -> str:
-        """获取下一个版本路径"""
+        """获取下一个版本路径（只看本地目录）"""
         video_dir = self._video_base(sid)
         os.makedirs(video_dir, exist_ok=True)
 
-        existing = self._list_versions(sid, segment_id)
+        existing = self._local_versions(sid, segment_id)
         if not existing:
             return os.path.join(video_dir, f"{segment_id}.mp4")
 
@@ -320,21 +322,15 @@ class VideoDirectorAgent(AgentInterface):
     # ─── 参考图获取 ───
 
     def _get_reference_image(self, sid: str, segment_id: str, scene_map: dict) -> str:
-        """获取参考图路径：优先用选中的版本，次之用最新版本"""
-        # 1. 检查 session 中 artifacts.reference_generation.scenes 里的 selected
+        """获取参考图路径：只认编排器按消费计划物化后的本地选中图。
+
+        选中为空时的“最新已索引版本”回退由消费计划完成；不再扫描磁盘目录。
+        """
         if segment_id in scene_map and scene_map[segment_id].get("selected"):
             path = scene_map[segment_id]["selected"]
             if os.path.exists(path):
                 return path
-
-        # 2. 回退：扫描磁盘 Scenes 目录
-        from .reference_agent import ReferenceGeneratorAgent
-        versions = ReferenceGeneratorAgent._list_versions_static(sid, segment_id)
-        if versions:
-            return versions[-1]
-
-        # 3. 默认路径
-        return os.path.abspath(os.path.join('code/result/image', str(sid), 'Scenes', f"{segment_id}.jpg"))
+        return ""
 
     def _get_next_reference_image(self, sid: str, segment_index: int, segments: list, scene_map: dict) -> Optional[str]:
         """首尾帧模式下，优先用下一个片段参考图作为尾帧。"""

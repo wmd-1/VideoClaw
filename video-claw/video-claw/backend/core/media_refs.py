@@ -11,7 +11,7 @@ import posixpath
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from urllib.parse import unquote, urlparse
 
 from config import settings
@@ -34,6 +34,10 @@ class MediaMissingError(MediaNotFound):
     """A DB-owned object is missing from storage; callers may mark missing_at."""
 
 
+class MediaUnavailable(MediaInputError):
+    """Storage could not be reached/read; distinct from a confirmed NotFound."""
+
+
 class ResolvedMedia(str):
     """A str-compatible canonical/materialized media value carrying trust metadata."""
 
@@ -42,6 +46,8 @@ class ResolvedMedia(str):
         obj.trusted = trusted
         obj.public_path = public_path or (value if str(value).startswith(PUBLIC_PREFIX) else "")
         obj.local_path = local_path
+        # core 为推理适配器准备的引用值对象（models.media_types.MediaReference），可为空
+        obj.reference = None
         return obj
 
 
@@ -199,7 +205,12 @@ def canonicalize_media_value(value: str, user: Any, session_id: str = "") -> Res
 
 
 def materialize_media_value(value: str, user: Any) -> str:
-    """Return a local path for runtime consumption; remote URLs stay unchanged."""
+    """Return a local path for runtime consumption; remote URLs stay unchanged.
+
+    The MinIO download path keeps its ``ResolvedMedia`` type so downstream
+    ``guard_media_input``/``copy_input_file`` can accept the internal ``_refs``
+    cache without widening the raw user-input allowlist.
+    """
     raw = str(value or "").strip()
     if not raw or is_remote(raw):
         return raw
@@ -210,7 +221,7 @@ def materialize_media_value(value: str, user: Any) -> str:
         local = to_local(public)
         if os.path.isfile(local):
             return local
-    return str(materialize(raw, user))
+    return materialize(raw, user)
 
 
 def materialize_media_payload(payload: Any, user: Any) -> Any:
@@ -262,7 +273,7 @@ def canonicalize_media_payload(payload: Any, user: Any, session_id: str = "") ->
                     ]
                 elif isinstance(value, dict):
                     result[key] = {
-                        str(canonicalize_media_value(sub_value, user, session_id))
+                        sub_key: str(canonicalize_media_value(sub_value, user, session_id))
                         if isinstance(sub_value, str) and sub_value.strip()
                         else canonicalize_media_payload(sub_value, user, session_id)
                         for sub_key, sub_value in value.items()
@@ -298,7 +309,13 @@ def _touch(path: Path) -> None:
 
 
 def ensure_local(public_path: str, user: Any) -> str:
-    """Download a public object to _refs with a per-key lock and atomic replace."""
+    """Download a public object to _refs with a per-key lock and atomic replace.
+
+    The download reads the row's own bucket and holds an in-process pin on the cache
+    file, so the cleaner cannot remove the exact cache entry mid-download.
+    """
+    from core.resource_claims import CLAIMS, TargetBeingDeleted, local_identity
+
     public = to_public(public_path)
     row = _check_public_owner(public, user)
     if row.get("storage_kind") == "local":
@@ -309,26 +326,33 @@ def ensure_local(public_path: str, user: Any) -> str:
         FileRepo().mark_missing(str(row["file_id"]), False)
         return local
     target = _ref_target(public, _user_owner_key(user))
-    with _lock_for(public):
-        if target.is_file():
-            _touch(target)
-            return str(target)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            get_storage().download(str(row.get("object_key") or ""), str(tmp))
-            os.replace(tmp, target)
-        except ObjectMissing as exc:
-            FileRepo().mark_missing(str(row["file_id"]), True)
-            raise MediaMissingError(public) from exc
-        except StorageError as exc:
-            raise MediaInputError(f"media download failed: {exc}") from exc
-        finally:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
+    bucket = str(row.get("bucket") or "")
+    try:
+        with CLAIMS.pinned([local_identity(str(target))]), _lock_for(public):
+            if target.is_file():
+                _touch(target)
+                return str(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(target.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                if bucket:
+                    get_storage().download(str(row.get("object_key") or ""), str(tmp), bucket=bucket)
+                else:
+                    get_storage().download(str(row.get("object_key") or ""), str(tmp))
+                os.replace(tmp, target)
+            except ObjectMissing as exc:
+                FileRepo().mark_missing(str(row["file_id"]), True)
+                raise MediaMissingError(public) from exc
+            except StorageError as exc:
+                raise MediaUnavailable(f"media download failed: {exc}") from exc
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+    except TargetBeingDeleted as exc:
+        raise MediaNotFound(public) from exc
     _touch(target)
     return str(target)
 
@@ -375,13 +399,40 @@ def cleanup_session_objects(session_id: str) -> int:
     return removed
 
 
-def prune_refs(max_age_seconds: int = 7 * 24 * 3600, max_bytes: int = 2 * 1024**3) -> int:
-    """Bound _refs by age and total bytes (oldest mtime evicted first)."""
+REFS_RECENT_GUARD_SECONDS = 600
+
+
+def prune_refs(
+    max_age_seconds: int = 7 * 24 * 3600,
+    max_bytes: int = 2 * 1024**3,
+    recent_guard_seconds: int = REFS_RECENT_GUARD_SECONDS,
+) -> int:
+    """Bound _refs by age and total bytes (oldest mtime evicted first).
+
+    只支持单实例启动期调用：跨进程的在用缓存无法感知。最近 ``recent_guard_seconds`` 内访问过
+    （ensure_local 命中时会 touch）的条目与本进程持有 pin 的条目一律跳过。
+    """
+    from core.resource_claims import CLAIMS, local_identity
+
     if not _REFS_ROOT.exists():
         return 0
+
+    def unlink(path: Path) -> bool:
+        identity = local_identity(str(path))
+        if not CLAIMS.claim(identity):
+            return False
+        try:
+            path.unlink()
+            return True
+        except OSError:
+            return False
+        finally:
+            CLAIMS.release(identity)
+
     now = time.time()
     files: List[Path] = []
     total = 0
+    removed = 0
     for path in _REFS_ROOT.rglob("*"):
         if not path.is_file():
             continue
@@ -389,25 +440,26 @@ def prune_refs(max_age_seconds: int = 7 * 24 * 3600, max_bytes: int = 2 * 1024**
             stat = path.stat()
         except OSError:
             continue
-        if now - stat.st_mtime > max_age_seconds:
-            try:
-                path.unlink()
-            except OSError:
-                continue
+        age = now - stat.st_mtime
+        if age < recent_guard_seconds:
+            total += stat.st_size  # 计入容量但不作为淘汰候选
             continue
+        if age > max_age_seconds:
+            if unlink(path):
+                removed += 1
+                continue
         files.append(path)
         total += stat.st_size
-    removed = 0
     for path in sorted(files, key=lambda item: item.stat().st_mtime):
         if total <= max_bytes:
             break
         try:
             size = path.stat().st_size
-            path.unlink()
-            total -= size
-            removed += 1
         except OSError:
             continue
+        if unlink(path):
+            total -= size
+            removed += 1
     return removed
 
 

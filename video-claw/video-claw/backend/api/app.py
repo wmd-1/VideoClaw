@@ -16,10 +16,10 @@ from api.logging_config import setup_concurrent_logging  # noqa: E402 - sys.path
 from config import settings  # noqa: E402 - sys.path 引导后导入
 from core.identity import UserIdentityMiddleware  # noqa: E402 - sys.path 引导后导入
 from core.media_refs import prune_refs  # noqa: E402 - sys.path 引导后导入
+from core.object_operations import prune_empty_execution_dirs, start_cleanup_loop  # noqa: E402 - sys.path 引导后导入
 from db.database import close_pool, init_db  # noqa: E402 - sys.path 引导后导入
 from db.repositories import StageArtifactRepo, TaskRepo  # noqa: E402 - sys.path 引导后导入
 from storage import get_storage  # noqa: E402 - sys.path 引导后导入
-from pipelines.storage import sweep_stale_running as sweep_pipeline_tasks  # noqa: E402 - sys.path 引导后导入
 
 setup_concurrent_logging()
 
@@ -100,18 +100,21 @@ async def lifespan(app: FastAPI):
         boot_id = str(getattr(workflow_engine, "_boot_id", ""))
         stages = StageArtifactRepo().sweep_stale_running(boot_id)
         tasks = TaskRepo().sweep_stale_running(boot_id)
-        json_tasks = sweep_pipeline_tasks()
         pruned = prune_refs()
+        empty_dirs = prune_empty_execution_dirs()  # 启动期尚无执行：只移除空目录
         loaded = workflow_engine.load_sessions()
+        # 对象操作日志清理器：启动后及每 60 秒扫描到期操作（DB 不可用时本轮跳过）
+        cleanup_stop = start_cleanup_loop(boot_id)
         logger.info(
-            "Startup recovery: boot_id=%s stages=%d tasks=%d json_tasks=%d refs_pruned=%d sessions=%d",
-            boot_id, stages, tasks, json_tasks, pruned, loaded,
+            "Startup recovery: boot_id=%s stages=%d tasks=%d refs_pruned=%d empty_dirs=%d sessions=%d",
+            boot_id, stages, tasks, pruned, empty_dirs, loaded,
         )
     else:
         logger.warning("database.dsn is empty; startup recovery skipped (dev compatibility only)")
-        sweep_pipeline_tasks()
-        workflow_engine.load_sessions()
+        cleanup_stop = None
     yield
+    if cleanup_stop is not None:
+        cleanup_stop.set()
     close_pool()
     logger.info("Video-Claw API shutdown complete")
 

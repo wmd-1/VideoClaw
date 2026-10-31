@@ -2,7 +2,6 @@
  * 工作流 API 客户端
  */
 import { apiFetch } from "@/lib/identityGuard";
-import { withBasePath } from "@/lib/basePath";
 
 /**
  * 流式接口（SSE / 长请求）的基址。
@@ -42,11 +41,49 @@ export interface StageInfo {
   description: string;
 }
 
+/** 上次未完成执行中的单个条目摘要（type 为条目容器：characters/settings/scenes/items/clips） */
+export interface ExecutionPreviewItem {
+  type: string;
+  id: string;
+  status?: string;
+  selected?: string;
+  versions?: string[];
+  error?: string;
+  error_type?: string;
+  rewritten_prompt?: string;
+  truncated?: boolean;
+}
+
+/** 失败/中断执行的只读摘要：不是正式结果，不推进停点，也不提供自动应用 */
+export interface ExecutionPreview {
+  execution_id: string;
+  status: 'failed' | 'interrupted' | string;
+  error?: string | null;
+  items: ExecutionPreviewItem[];
+}
+
+/** 阶段因必需输入不可用而无法开始时的可定位清单（stage_progress[stage].missing_inputs，不含本地路径） */
+export interface MissingInput {
+  stage: string;
+  source_stage: string;
+  container: string;
+  item_id: string;
+  field: string;
+  reason: string;
+  uses: string[];
+  consumers: string[];
+  message: string;
+}
+
 export interface ProjectStatus {
   session_id: string;
   current_stage: string;
   status: Record<string, string>;
   error: string | null;
+  /** 按阶段的上次未完成执行摘要；正式结果仍以 artifacts 为准 */
+  execution_preview?: Record<string, ExecutionPreview>;
+  /** 阶段进度快照；失败且缺必需输入时带 missing_inputs */
+  stage_progress?: Record<string, { missing_inputs?: MissingInput[]; [key: string]: unknown }>;
 }
 
 export interface StreamEvent {
@@ -380,24 +417,89 @@ export async function uploadArtifactImage(
   return resp.json();
 }
 
+export interface PipelineStreamError {
+  /** http：服务端拒绝（含 401/404）；network：连不上或中途断开 */
+  kind: 'http' | 'network';
+  status?: number;
+}
+
+/** 解析单个 SSE 帧：支持 `data:` 多行、忽略心跳注释与其它字段。 */
+function dispatchSseFrame(frame: string, onEvent: (event: PipelineTaskEvent) => void): void {
+  const dataLines: string[] = [];
+  for (const rawLine of frame.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(':')) continue;
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  }
+  if (!dataLines.length) return;
+  try {
+    onEvent(JSON.parse(dataLines.join('\n')) as PipelineTaskEvent);
+  } catch {
+    // 单个畸形帧不影响后续事件
+  }
+}
+
 export function subscribePipelineTask(
   taskId: string,
   onEvent: (event: PipelineTaskEvent) => void,
-  onError?: () => void,
+  onError?: (error: PipelineStreamError) => void,
 ): () => void {
-  const source = new EventSource(withBasePath(`${STREAM_API_BASE}/api/tasks/${taskId}/events`));
-  source.onmessage = event => {
+  // 原生 EventSource 无法携带 API 身份头（guip 下事件流 401），改用 fetch + 流读取。
+  const controller = new AbortController();
+  let closed = false;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    controller.abort();
+  };
+
+  void (async () => {
     try {
-      onEvent(JSON.parse(event.data));
+      const response = await apiFetch(
+        `${STREAM_API_BASE}/api/tasks/${encodeURIComponent(taskId)}/events`,
+        {
+          method: 'GET',
+          headers: { Accept: 'text/event-stream' },
+          cache: 'no-store',
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok || !response.body) {
+        if (!closed) {
+          onError?.({ kind: 'http', status: response.status });
+          close();
+        }
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (!closed) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // 帧分隔符可能是 \n\n 或 \r\n\r\n，且可能跨 chunk 到达
+        let boundary = buffer.search(/\r?\n\r?\n/);
+        while (boundary !== -1) {
+          const frame = buffer.slice(0, boundary);
+          const separatorLength = buffer[boundary] === '\r' ? 4 : 2;
+          buffer = buffer.slice(boundary + separatorLength);
+          if (closed) break;
+          dispatchSseFrame(frame, onEvent);
+          boundary = buffer.search(/\r?\n\r?\n/);
+        }
+      }
     } catch {
-      // Ignore malformed stream events.
+      // 主动取消订阅（AbortError）不算任务失败
+      if (!closed) onError?.({ kind: 'network' });
+    } finally {
+      close();
     }
-  };
-  source.onerror = () => {
-    onError?.();
-    source.close();
-  };
-  return () => source.close();
+  })();
+
+  return close;
 }
 
 export async function startProject(params: {

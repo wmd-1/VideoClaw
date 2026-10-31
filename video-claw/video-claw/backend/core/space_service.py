@@ -7,6 +7,7 @@ tasks; saved items are copies in the saved bucket, independent of source rows.
 from __future__ import annotations
 
 import hashlib
+import logging
 import mimetypes
 import os
 import threading
@@ -14,9 +15,17 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from config import settings
+from core.artifact_publisher import abort_publication
 from core.media_refs import to_local, to_public
+from core.object_operations import current_boot_id, register_saved_delete
+from core.resource_claims import CLAIMS, object_identity
+from core.workflow_store import session_meta
 from db.repositories import FileRepo, SavedRepo, SessionRepo, StageArtifactRepo, TaskRepo
+from db.repositories.operations import ObjectOperationRepo
+from db.repositories.resource_commits import commit_saved_item, delete_saved_cascade
 from storage import StorageError, get_storage
+
+logger = logging.getLogger(__name__)
 
 _DOMAINS = {"main", "standard", "action_transfer", "digital_human"}
 _DOMAIN_LABEL = {
@@ -27,6 +36,8 @@ _DOMAIN_LABEL = {
 }
 _SAVE_LOCKS: Dict[str, threading.Lock] = {}
 _SAVE_LOCKS_GUARD = threading.Lock()
+# 显式成片标识；动作迁移/数字人口播会把输入视频与中间片段排在 final 之前
+_FINAL_ARTIFACT_NAMES = {"final", "final_video", "成片"}
 
 
 def _lock(owner: str) -> threading.Lock:
@@ -115,7 +126,7 @@ def _session_works(owner: str, saved_ids: set[str]) -> List[Dict[str, Any]]:
         if not isinstance(videos, list) or not videos:
             one = payload.get("final_video")
             videos = [{"path": one, "episode": 1}] if one else []
-        meta = row.get("meta_json") or {}
+        meta = session_meta(row.get("meta_json"))
         for index, video in enumerate(videos):
             if not isinstance(video, dict):
                 continue
@@ -160,19 +171,26 @@ def _task_works(owner: str, saved_ids: set[str]) -> List[Dict[str, Any]]:
             continue
         artifacts = row.get("artifacts_json") or []
         output = row.get("output_json") or {}
-        candidate = ""
-        name = "成片"
-        if isinstance(artifacts, list):
-            for item in artifacts:
-                if isinstance(item, dict) and item.get("kind") == "video":
-                    candidate = str(item.get("path") or "")
-                    name = str(item.get("name") or "成片")
-                    if name == "final":
-                        name = "成片"
-                    if candidate:
-                        break
+        videos = [
+            item
+            for item in (artifacts if isinstance(artifacts, list) else [])
+            if isinstance(item, dict) and item.get("kind") == "video" and item.get("path")
+        ]
+        # 只接受明确标识的 final 或流水线权威输出；两者都没有就跳过，
+        # 不能按产物顺序推断成片（否则中间片段会被当成片展示/收藏）。
+        chosen = next(
+            (item for item in videos if str(item.get("name") or "") in _FINAL_ARTIFACT_NAMES),
+            None,
+        )
+        candidate = str((chosen or {}).get("path") or "")
+        name = str((chosen or {}).get("name") or "成片")
         if not candidate and isinstance(output, dict):
             candidate = str(output.get("video_path") or output.get("final_video") or "")
+            name = "成片"
+        if not candidate:
+            continue
+        if name == "final":
+            name = "成片"
         public = _public_path(candidate)
         if not public:
             continue
@@ -337,32 +355,45 @@ def save_work(owner: str, work_id: str) -> Dict[str, Any]:
         ext = os.path.splitext(public)[1] or ".mp4"
         target_bucket = str(settings.STORAGE_SAVED_BUCKET)
         target_key = f"{hashlib.sha256(owner.encode()).hexdigest()[:16]}/{item_id}{ext}"
+        row = {
+            "item_id": item_id,
+            "owner": owner,
+            "work_id": work_id,
+            "domain": work["domain"],
+            "title": work["title"],
+            "source_bucket": str(source.get("bucket") or "local"),
+            "source_key": str(source.get("object_key") or public),
+            "bucket": target_bucket,
+            "object_key": target_key,
+            "size_bytes": source.get("size"),
+        }
+        # D17：副本在复制前登记 prepared（已提交），收藏行与 retained 同事务；失败只补偿本副本
+        operation_id = ObjectOperationRepo().register_prepared(
+            owner=owner, target_kind="minio", bucket=target_bucket, object_key=target_key,
+            domain="saved", resource_id=item_id, stage="saved", execution_id=item_id,
+            boot_id=current_boot_id(), reason="save_copy",
+        )
+        batch = {"objects": [{"operation_id": operation_id, "bucket": target_bucket, "object_key": target_key}],
+                 "bucket": target_bucket}
         try:
-            _copy_source(source, target_bucket, target_key)
-            row = {
-                "item_id": item_id,
-                "owner": owner,
-                "work_id": work_id,
-                "domain": work["domain"],
-                "title": work["title"],
-                "source_bucket": str(source.get("bucket") or "local"),
-                "source_key": str(source.get("object_key") or public),
-                "bucket": target_bucket,
-                "object_key": target_key,
-                "size_bytes": source.get("size"),
-            }
-            SavedRepo().insert(row)
+            with CLAIMS.pinned([object_identity(target_bucket, target_key)]):
+                _copy_source(source, target_bucket, target_key)
+                info = get_storage().stat(target_key, bucket=target_bucket)
+                expected = source.get("size")
+                if info is None or (expected and int(info.get("size") or -1) != int(expected)):
+                    raise StorageError(f"saved copy unverified: {target_bucket}/{target_key}")
+            commit_saved_item(item=row, operation_id=operation_id)
         except Exception:
-            try:
-                get_storage().delete(target_key, bucket=target_bucket)
-            except Exception:
-                pass
+            issues = abort_publication(batch)
+            if issues:
+                logger.warning("saved copy compensation deferred: %s", issues)
             raise
         stored = SavedRepo().by_work(owner, work_id)
         return _saved_public_item(stored or {**row, "saved_at": 0})
 
 
 def delete_saved(owner: str, saved_id: str) -> bool:
+    """取消收藏：同事务登记副本定位后删行，物理删除由清理器完成（失败有日志重试）。"""
     if not owner or not saved_id:
         return False
     row = SavedRepo().get(saved_id)
@@ -370,11 +401,10 @@ def delete_saved(owner: str, saved_id: str) -> bool:
         return True
     if str(row.get("owner") or "") != owner:
         raise PermissionError("saved item not found")
-    try:
-        get_storage().delete(str(row.get("object_key") or ""), bucket=str(row.get("bucket") or settings.STORAGE_SAVED_BUCKET))
-    except Exception:
-        pass
-    SavedRepo().delete(saved_id, owner)
+    delete_saved_cascade(
+        saved_id, owner,
+        lambda cur, saved: register_saved_delete(cur, owner=owner, saved=saved),
+    )
     return True
 
 

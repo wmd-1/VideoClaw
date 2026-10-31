@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import glob
 import json
 import logging
 import os
@@ -44,33 +43,31 @@ class ReferenceGeneratorAgent(AgentInterface):
 
     # ─── 版本管理 ───
 
-    @staticmethod
-    def _scenes_base(sid: str) -> str:
-        return os.path.join('code/result/image', str(sid), 'Scenes')
+    _IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "bmp")
+
+    def _scenes_base(self, sid: str) -> str:
+        return self._output_dir(os.path.join('code/result/image', str(sid), 'Scenes'), 'Scenes')
+
+    def _local_versions(self, sid: str, shot_id: str) -> List[str]:
+        scenes_dir = self._scenes_base(sid)
+        if self.execution_root:
+            patterns = [p for ext in self._IMAGE_EXTS for p in (f"{shot_id}.{ext}", f"{shot_id}_v*.{ext}")]
+        else:
+            patterns = [f"{shot_id}*.{ext}" for ext in self._IMAGE_EXTS]
+        return self._local_files(scenes_dir, patterns)
 
     def _list_versions(self, sid: str, shot_id: str) -> List[str]:
-        """列出某个分镜的所有历史版本
+        """某个分镜的全部版本：DB 视图中的历史版本 + 本次执行的新文件
         命名: shot_001_01.jpg, shot_001_01_v2.jpg, ...
         """
-        return self._list_versions_static(sid, shot_id)
-
-    @staticmethod
-    def _list_versions_static(sid: str, shot_id: str) -> List[str]:
-        """列出某个分镜的所有历史版本（静态方法，供外部调用）"""
-        scenes_dir = os.path.join('code/result/image', str(sid), 'Scenes')
-        files = []
-        for ext in ("jpg", "jpeg", "png", "webp", "bmp"):
-            pattern = os.path.join(scenes_dir, f"{shot_id}*.{ext}")
-            files.extend(glob.glob(pattern))
-        files = sorted(set(files), key=os.path.getmtime)
-        return files
+        return self._merge_history("scenes", shot_id, self._local_versions(sid, shot_id))
 
     def _next_version_path(self, sid: str, shot_id: str) -> str:
-        """获取下一个版本路径"""
+        """获取下一个版本路径（只看本地目录）"""
         scenes_dir = self._scenes_base(sid)
         os.makedirs(scenes_dir, exist_ok=True)
 
-        existing = self._list_versions(sid, shot_id)
+        existing = self._local_versions(sid, shot_id)
         if not existing:
             return os.path.join(scenes_dir, f"{shot_id}.jpg")
 

@@ -76,6 +76,32 @@ class FileRepo:
                 cur.execute("SELECT * FROM artifact_files WHERE public_path = %s", (public_path,))
                 return cur.fetchone()
 
+    def find_by_object(self, bucket: str, object_key: str, *, default_bucket: str = "") -> Optional[Dict[str, Any]]:
+        """清理器判定用：仍有 MinIO 文件行精确指向该 bucket/key（历史行 bucket 为空时按默认桶计）。"""
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT file_id, owner FROM artifact_files
+                       WHERE storage_kind = 'minio' AND object_key = %s
+                         AND (bucket = %s OR (bucket IS NULL AND %s = %s))
+                       LIMIT 1""",
+                    (object_key, bucket, bucket, default_bucket or ""),
+                )
+                return cur.fetchone()
+
+    def find_local_reference(self, local_paths: List[str], public_path: str = "") -> Optional[Dict[str, Any]]:
+        """清理器判定用：仍有 local 文件行精确指向这些本地路径（或同一 legacy public_path）。"""
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT file_id, owner FROM artifact_files
+                       WHERE storage_kind = 'local'
+                         AND (local_path = ANY(%s) OR (%s <> '' AND public_path = %s))
+                       LIMIT 1""",
+                    (list(local_paths), public_path or "", public_path or ""),
+                )
+                return cur.fetchone()
+
     def get(self, file_id: str) -> Optional[Dict[str, Any]]:
         with transaction() as conn:
             with conn.cursor() as cur:
@@ -88,6 +114,27 @@ class FileRepo:
                 cur.execute(
                     "UPDATE artifact_files SET local_path = %s WHERE file_id = %s",
                     (local_path, file_id),
+                )
+
+    def update_storage(
+        self,
+        file_id: str,
+        *,
+        storage_kind: str,
+        bucket: Optional[str],
+        object_key: str,
+        local_path: Optional[str],
+        size_bytes: Optional[int],
+    ) -> None:
+        """迁移用：local → minio 转换时原位更新存储字段，不改 owner/父资源/public_path。"""
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE artifact_files
+                       SET storage_kind = %s, bucket = %s, object_key = %s,
+                           local_path = %s, size_bytes = %s, missing_at = NULL
+                       WHERE file_id = %s""",
+                    (storage_kind, bucket, object_key, local_path, size_bytes, file_id),
                 )
 
     def mark_missing(self, file_id: str, missing: bool = True) -> None:

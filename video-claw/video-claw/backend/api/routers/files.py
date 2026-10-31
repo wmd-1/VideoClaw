@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from api.media_paths import guard_uploaded_document_name
+from api.media_paths import resolve_uploaded_document
 from config import settings
 from core.identity import CurrentUser, get_current_user
 from models.file_reader import FileReader
@@ -127,22 +127,14 @@ def merge_uploaded_file_into_idea(
     if not file_path:
         return idea
 
-    safe_name = guard_uploaded_document_name(file_path)
-    if owner_prefix and not safe_name.startswith(f"users/{owner_prefix}/"):
-        legacy_bare = "/" not in safe_name and str(getattr(settings, "USERS_MODE", "guip")) == "single"
-        if not legacy_bare:
-            raise ValueError("file_path 不属于当前用户")
-    temp_root = os.path.realpath(settings.TEMP_DIR)
-    full_path = os.path.realpath(os.path.join(temp_root, safe_name))
-    if full_path != temp_root and not full_path.startswith(temp_root + os.sep):
-        raise ValueError("file_path 路径越界（仅允许上传目录内的文件）")
+    full_path = resolve_uploaded_document(file_path, owner_prefix)
     if not os.path.exists(full_path):
         logger.warning(f"上传的文件未找到: {full_path}")
         return idea
 
     content = FileReader.extract_text(full_path)
     if content:
-        original_filename = "_".join(os.path.basename(safe_name).split("_")[1:])
+        original_filename = "_".join(os.path.basename(full_path).split("_")[1:])
         prompt_fragment = FileReader.format_as_prompt(original_filename, content)
         idea = f"{idea}\n\n{prompt_fragment}"
     logger.info(f"成功处理上传文件: {full_path}")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time as _time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -65,15 +66,46 @@ def close_pool() -> None:
 
 
 def init_db() -> None:
-    """Run the idempotent schema migration through the existing pool."""
-    migration = Path(__file__).resolve().parent / "migrations" / "001_init.sql"
-    sql = migration.read_text(encoding="utf-8")
+    """Run each pending migration in filename order, recording a per-file marker.
+
+    标记与 DDL 在同一事务提交：只凭 ``schema_meta`` 的总版本号不能证明某个文件
+    已执行（历史库可能已手动跳过）。重入时已标记文件直接跳过。
+    """
+    migrations = sorted(
+        (Path(__file__).resolve().parent / "migrations").glob("[0-9][0-9][0-9]_*.sql")
+    )
+    if not migrations:
+        raise DatabaseUnavailable("no migration files found under db/migrations")
     pool = get_pool()
     with pool.connection() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
-                cur.execute(sql)
-    logger.info("PostgreSQL schema initialized from %s", migration.name)
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS schema_migrations "
+                    "(name TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)"
+                )
+                cur.execute("SELECT name FROM schema_migrations")
+                applied = {str(row["name"]) for row in cur.fetchall()}
+    for migration in migrations:
+        if migration.name in applied:
+            continue
+        sql = migration.read_text(encoding="utf-8")
+        with pool.connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    cur.execute(
+                        "INSERT INTO schema_migrations(name, applied_at) VALUES (%s, %s) "
+                        "ON CONFLICT (name) DO NOTHING",
+                        (migration.name, int(_time.time() * 1000)),
+                    )
+        logger.info("PostgreSQL schema applied from %s", migration.name)
+
+
+def schema_version() -> str:
+    """已应用的最大迁移版本（schema_meta），用于启动自检与诊断。"""
+    row = fetch_one("SELECT value FROM schema_meta WHERE key = %s", ("schema_version",))
+    return str((row or {}).get("value") or "")
 
 
 @contextmanager

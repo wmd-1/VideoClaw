@@ -730,7 +730,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   if (revision.removed_items?.length || revision.user_edited_items?.length) {
                     setShowApplyConfirm(true);
                   } else {
-                    applyRevision(true, true);
+                    // 未展示覆盖确认就不传 confirm_overwrites：预览后新增的手改由后端
+                    // 返回待确认预览，这里只做一次不带确认的提交。
+                    applyRevision(true, false);
                   }
                 }}
                 disabled={state.status === 'running'}

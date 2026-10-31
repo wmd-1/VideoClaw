@@ -8,7 +8,7 @@ from models.llm_client import LLM
 from prompts.loader import format_prompt, load_prompt
 
 from .api_media import generate_image_api, generate_video_api
-from .storage import append_artifact, task_output_dir, update_task
+from .storage import publish_artifact, task_output_dir, update_task
 from .tts import generate_edge_tts
 from .utils import (
     artifact,
@@ -285,7 +285,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
 
     artifacts = [artifact(storyboard_path, "text", "storyboard"), artifact(narration_path, "text", "narration")]
     for item in artifacts:
-        append_artifact(task_id, item)
+        await publish_artifact(task_id, item)
 
     images = []
     for idx, prompt in enumerate(image_prompts, 1):
@@ -306,7 +306,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
         images.append(image_path)
         image_artifact = artifact(image_path, "image", f"image_{idx:02d}")
         artifacts.append(image_artifact)
-        append_artifact(task_id, image_artifact)
+        await publish_artifact(task_id, image_artifact)
         storyboard["frames"][idx - 1]["image_path"] = image_path
         write_json(storyboard_path, storyboard)
 
@@ -327,7 +327,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
         audios.append(audio_path)
         audio_artifact = artifact(audio_path, "audio", f"audio_{idx:02d}")
         artifacts.append(audio_artifact)
-        append_artifact(task_id, audio_artifact)
+        await publish_artifact(task_id, audio_artifact)
         storyboard["frames"][idx - 1]["audio_path"] = audio_path
         write_json(storyboard_path, storyboard)
 
@@ -406,7 +406,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
             if not template_video_mode and (subtitle_template or subtitle_render_mode == "postprocess"):
                 captioned_artifact = artifact(clip_image_path, "image", f"captioned_image_{idx:02d}")
                 artifacts.append(captioned_artifact)
-                append_artifact(task_id, captioned_artifact)
+                await publish_artifact(task_id, captioned_artifact)
                 storyboard["frames"][idx - 1]["captioned_image_path"] = clip_image_path
         if subtitle_template and template_video_mode:
             pass
@@ -424,7 +424,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
             )
             motion_artifact = artifact(video_only_segment_path, "video", f"video_{idx:02d}_motion")
             artifacts.append(motion_artifact)
-            append_artifact(task_id, motion_artifact)
+            await publish_artifact(task_id, motion_artifact)
             storyboard["frames"][idx - 1]["motion_video_path"] = video_only_segment_path
             video_path = await run_blocking(
                 replace_video_audio,
@@ -444,7 +444,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
         videos.append(video_path)
         video_artifact = artifact(video_path, "video", f"video_{idx:02d}")
         artifacts.append(video_artifact)
-        append_artifact(task_id, video_artifact)
+        await publish_artifact(task_id, video_artifact)
         storyboard["frames"][idx - 1]["video_path"] = video_path
         storyboard["frames"][idx - 1]["duration"] = duration
         write_json(storyboard_path, storyboard)
@@ -458,7 +458,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
 
     final_artifact = artifact(final_path, "video", "final")
     artifacts.append(final_artifact)
-    append_artifact(task_id, final_artifact)
+    await publish_artifact(task_id, final_artifact)
 
     write_json(storyboard_path, storyboard)
     output = {

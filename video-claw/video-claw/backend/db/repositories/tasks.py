@@ -65,6 +65,50 @@ class TaskRepo:
                     row,
                 )
 
+    def insert_if_absent(self, task: Dict[str, Any]) -> bool:
+        """迁移专用：仅在任务不存在时插入，不覆盖既有 owner/状态/产物。"""
+        now = now_ms()
+        row = {
+            "task_id": str(task["task_id"]),
+            "owner": str(task.get("owner") or ""),
+            "pipeline": str(task.get("pipeline") or ""),
+            "status": str(task.get("status") or "pending"),
+            "progress": int(task.get("progress") or 0),
+            "message": task.get("message"),
+            "input_json": jsonb(task.get("input")),
+            "output_json": jsonb(task.get("output")),
+            "artifacts_json": jsonb_list(task.get("artifacts")),
+            "error": task.get("error"),
+            "created_at": task.get("created_at_ms") or now,
+            "updated_at": task.get("updated_at_ms") or now,
+            "started_at": task.get("started_at_ms"),
+            "completed_at": task.get("completed_at_ms"),
+            "duration_seconds": task.get("duration_seconds"),
+            "output_dir": task.get("output_dir"),
+            "boot_id": task.get("boot_id"),
+        }
+        if not row["owner"]:
+            raise ValueError("task owner must not be empty")
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pipeline_tasks
+                      (task_id, owner, pipeline, status, progress, message,
+                       input_json, output_json, artifacts_json, error,
+                       created_at, updated_at, started_at, completed_at,
+                       duration_seconds, output_dir, boot_id)
+                    VALUES
+                      (%(task_id)s, %(owner)s, %(pipeline)s, %(status)s, %(progress)s,
+                       %(message)s, %(input_json)s, %(output_json)s, %(artifacts_json)s,
+                       %(error)s, %(created_at)s, %(updated_at)s, %(started_at)s,
+                       %(completed_at)s, %(duration_seconds)s, %(output_dir)s, %(boot_id)s)
+                    ON CONFLICT (task_id) DO NOTHING
+                    """,
+                    row,
+                )
+                return cur.rowcount > 0
+
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         with transaction() as conn:
             with conn.cursor() as cur:

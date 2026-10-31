@@ -6,6 +6,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from api.schemas.pipelines import (
@@ -18,6 +19,7 @@ from config import BASE_DIR
 from core.identity import CurrentUser, get_current_user
 from core.media_refs import canonicalize_media_value
 from core.ownership import assert_owner
+from db.repositories.commits import CommitConflict
 from models.config_model import get_models_by_type, model_availability, model_type_capabilities
 from pipelines.api_media import list_api_workflows
 from pipelines.events import task_event_stream
@@ -378,7 +380,12 @@ async def remove_task(task_id: str, user: CurrentUser = Depends(get_current_user
     assert_owner(metadata.get("owner"), user, not_found="Task not found")
     if metadata.get("status") in ("pending", "running"):
         raise HTTPException(409, "任务运行中，暂不支持删除")
-    if not delete_task(task_id):
+    try:
+        deleted = await run_in_threadpool(delete_task, task_id, str(metadata.get("owner") or ""))
+    except CommitConflict as exc:
+        # 读取与删除之间任务又被重新占用：仍按运行中拒绝，runner 继续
+        raise HTTPException(409, "任务运行中，暂不支持删除") from exc
+    if not deleted:
         raise HTTPException(404, "Task not found")
     return {"success": True}
 

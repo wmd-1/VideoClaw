@@ -518,6 +518,14 @@ def annotate_lines(
 
 # ─────────────── 场景映射 ───────────────
 
+def deterministic_annotations(lines: List[str]) -> List[dict]:
+    """导入路径的确定性标注：候选标题 + 角色设定区间，与导入入口同口径。
+
+    正文手改后重建坐标时必须复用它，否则角色设定段会被当成对白（R15）。
+    """
+    return annotate_lines(lines, detect_candidates(lines), _cast_section(lines))
+
+
 def build_scene_spans(
     lines: List[str],
     candidates: List[dict],

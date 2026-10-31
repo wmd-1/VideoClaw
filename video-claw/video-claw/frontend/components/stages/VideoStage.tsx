@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Film, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, AlertTriangle, Play, Edit2, Save, X } from 'lucide-react';
 import type { StageViewProps } from './types';
+import { FlaggedItemBanner } from './MissingInputs';
 import { assetUrl } from './utils';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
@@ -380,7 +381,7 @@ function ClipRow({
 }
 
 /* ─── 主组件 ─── */
-export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact }: StageViewProps) {
+export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as VideoStageArtifact;
   // 提取剧集标题映射
   const episodeTitleMap = React.useMemo(() => {
@@ -631,8 +632,15 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
                       {epClips.map(clip => {
                         // 检查是否有参考图
                         const hasRef = hasReferenceImage(clip.id);
+                        const flag = flaggedItems?.[clip.id];
                         return (
-                          <div key={clip.id} className="relative">
+                          <div
+                            key={clip.id}
+                            className={`relative ${flag ? 'rounded-xl ring-2 ring-red-400 ring-offset-2' : ''}`}
+                          >
+                            {flag && (
+                              <FlaggedItemBanner flag={flag} currentStage="video_generation" onNavigateStage={onNavigateStage} />
+                            )}
                             {!hasRef && (
                               <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 flex items-center gap-2">
                                 <AlertTriangle className="w-3.5 h-3.5" />

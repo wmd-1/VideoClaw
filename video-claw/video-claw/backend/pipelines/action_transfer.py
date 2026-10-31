@@ -1,7 +1,7 @@
 import os
 
 from .api_media import generate_video_api
-from .storage import append_artifact, task_output_dir, update_task
+from .storage import publish_artifact, task_output_dir, update_task
 from .utils import artifact, copy_input_file, run_blocking, write_json
 
 
@@ -61,5 +61,5 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
         artifact(final_video_path, "video", "final"),
     ]
     for item in artifacts:
-        append_artifact(task_id, item)
+        await publish_artifact(task_id, item)
     return {"video_path": final_video_path, "request_path": request_path}, artifacts

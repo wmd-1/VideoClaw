@@ -193,11 +193,13 @@ class ScriptWriterAgent(AgentInterface):
         return f"{prefix}_{uuid.uuid4().hex[:6]}"
 
     def _save_result(self, json_data: dict, sid: str, is_zh: bool):
+        """调试用副本：编排器提供执行根时写入执行根，恢复只认 DB 视图。"""
         from config import settings as app_settings
-        os.makedirs(os.path.join(app_settings.RESULT_DIR, 'script'), exist_ok=True)
-        out_path = os.path.join(app_settings.RESULT_DIR, 'script', f'{sid}.json')
+        out_dir = self._output_dir(os.path.join(app_settings.RESULT_DIR, 'script'), 'script')
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f'{sid}.json')
         with open(out_path, 'w', encoding='utf-8') as f:
-            json.dump(json_data, f, ensure_ascii=False, indent=2)
+            json.dump({k: v for k, v in json_data.items() if not str(k).startswith('_')}, f, ensure_ascii=False, indent=2)
         logger.info(f"[ScriptWriter] script saved to {out_path}")
 
     def _save_progress(self, sid: str, phase: str, data: dict):
@@ -365,10 +367,10 @@ class ScriptWriterAgent(AgentInterface):
             ),
             "user_edited_items": (
                 script_revision.user_edited_items(
-                    current.get("characters") or [], new_characters, char_art.get("characters")
+                    current.get("characters") or [], new_characters, char_art.get("characters"), kind="character"
                 )
                 + script_revision.user_edited_items(
-                    current.get("settings") or [], new_settings, char_art.get("settings")
+                    current.get("settings") or [], new_settings, char_art.get("settings"), kind="setting"
                 )
             ),
             "duplicate_names": (
@@ -397,8 +399,79 @@ class ScriptWriterAgent(AgentInterface):
             raise ValueError("预览已过期或产物已变化，请重新发起修订")
         if preview.get("removed_items") and not intervention.get("confirm_removals"):
             raise ValueError("存在将被删除的角色或场景，请确认后再应用")
-        if preview.get("user_edited_items") and not intervention.get("confirm_overwrites"):
-            raise ValueError("存在将被覆盖的手改描述，请确认后再应用")
+        # R13：预览时的 user_edited_items 是快照；应用前必须用「当前」阶段 2 重新比对。
+        char_art = self._session_artifact(input_data, "character_design") or {}
+        current_overwrites = (
+            script_revision.user_edited_items(
+                current.get("characters") or [],
+                preview.get("characters") or [],
+                char_art.get("characters"),
+                kind="character",
+            )
+            + script_revision.user_edited_items(
+                current.get("settings") or [],
+                preview.get("settings") or [],
+                char_art.get("settings"),
+                kind="setting",
+            )
+        )
+        displayed = [item for item in (preview.get("user_edited_items") or []) if isinstance(item, dict)]
+
+        def _conflict_signature(items):
+            # 角色与场景可能同名：签名必须带类型
+            return sorted(
+                (
+                    str(item.get("kind") or ""),
+                    str(item.get("name") or ""),
+                    str(item.get("current_description") or ""),
+                )
+                for item in items
+            )
+
+        # 以 (kind, name) 为键合并：不能只按 name，否则同名角色/场景互相覆盖；
+        # 旧的无类型预览条目在同类名有新冲突时被取代（随后签名不一致会强制重新确认）。
+        typed_names = {
+            (str(item.get("kind") or ""), str(item.get("name") or ""))
+            for item in current_overwrites
+        }
+        merged: dict = {}
+        order: list = []
+        for item in displayed:
+            kind = str(item.get("kind") or "")
+            name = str(item.get("name") or "")
+            if not kind and any(conflict_name == name for (_k, conflict_name) in typed_names):
+                continue
+            key = (kind, name)
+            if key not in merged:
+                order.append(key)
+            merged[key] = dict(item)
+        for item in current_overwrites:
+            kind = str(item.get("kind") or "")
+            name = str(item.get("name") or "")
+            key = (kind, name)
+            if key not in merged:
+                order.append(key)
+            merged[key] = dict(item)
+        conflicts = [merged[key] for key in order]
+
+        # confirm_overwrites 只授权“已展示过的那份差异”；差异变了（新增条目或
+        # 同名描述变化）就必须重新展示并重新确认，布尔值不能授权后来发生的改动。
+        if conflicts and (
+            not intervention.get("confirm_overwrites")
+            or _conflict_signature(conflicts) != _conflict_signature(displayed)
+        ):
+            import copy as _copy
+
+            refreshed = _copy.deepcopy(preview)
+            refreshed["user_edited_items"] = conflicts
+            payload = _copy.deepcopy(current)
+            payload["pending_revision"] = refreshed
+            return {
+                "payload": payload,
+                "requires_intervention": True,
+                "stage_completed": False,
+                "revision_needs_confirmation": True,
+            }
 
         updated = script_revision.apply_preview_to_artifact(
             current,
@@ -416,16 +489,13 @@ class ScriptWriterAgent(AgentInterface):
         }
 
     @staticmethod
-    def _resolve_uploaded_document(file_path: str) -> str:
-        """复用上传目录守卫；越界或缺失直接拒绝。"""
-        from api.media_paths import guard_uploaded_document_name
-        from config import settings as app_settings
+    def _resolve_uploaded_document(file_path: str, owner_login: str) -> str:
+        """复用上传目录守卫；越界、跨 owner 或缺失直接拒绝。"""
+        from api.media_paths import resolve_uploaded_document
+        from core.identity import owner_key
 
-        safe_name = guard_uploaded_document_name(file_path)
-        temp_root = os.path.realpath(app_settings.TEMP_DIR)
-        full_path = os.path.realpath(os.path.join(temp_root, safe_name))
-        if full_path != temp_root and not full_path.startswith(temp_root + os.sep):
-            raise ValueError("file_path 路径越界（仅允许上传目录内的文件）")
+        # 消费入口必须显式携带会话 owner，不能只验证“位于上传目录”
+        full_path = resolve_uploaded_document(file_path, owner_key(owner_login))
         if not os.path.exists(full_path):
             raise ValueError("上传文件不存在，请重新上传")
         return full_path
@@ -453,7 +523,10 @@ class ScriptWriterAgent(AgentInterface):
         file_path = str(session_meta.get("file_path") or input_data.get("file_path") or "").strip()
         if not file_path:
             raise ValueError("导入剧本缺少上传文件")
-        full_path = self._resolve_uploaded_document(file_path)
+        owner_login = str(input_data.get("_session_owner") or "").strip()
+        if not owner_login:
+            raise ValueError("会话缺少归属信息，无法读取上传剧本")
+        full_path = self._resolve_uploaded_document(file_path, owner_login)
 
         self._report_progress("剧本导入", "正在读取上传剧本...", 10)
         raw_text = FileReader.extract_text(full_path)

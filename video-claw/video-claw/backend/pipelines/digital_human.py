@@ -6,7 +6,7 @@ from models.config_model import video_capabilities
 from models.llm_client import LLM
 
 from .api_media import generate_image_api, generate_video_api, parse_api_workflow
-from .storage import append_artifact, task_output_dir, update_task
+from .storage import publish_artifact, task_output_dir, update_task
 from .tts import generate_edge_tts
 from .utils import (
     artifact,
@@ -82,7 +82,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
         goods_title = goods_title.strip().splitlines()[0]
     logger.info("Digital-human script ready: task_id=%s chars=%d", task_id, len(goods_text))
     script_path = write_text(os.path.join(output_dir, "script.txt"), goods_text)
-    append_artifact(task_id, artifact(script_path, "text", "script"))
+    await publish_artifact(task_id, artifact(script_path, "text", "script"))
 
     generated_image = None
     reference_images = [character_image]
@@ -108,7 +108,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
             resolution=params.get("image_resolution") or "1080P",
         )
         reference_images = [generated_image]
-        append_artifact(task_id, artifact(generated_image, "image", "generated_reference"))
+        await publish_artifact(task_id, artifact(generated_image, "image", "generated_reference"))
 
     update_task(task_id, progress=62, message="Preparing digital-human video segments")
     video_model = required_param(params, "video_model")
@@ -169,13 +169,13 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
             audio_segment_texts.append(sentence)
             audio_artifact = artifact(sped_audio_path, "audio", f"narration_sentence_{idx:02d}_speed")
             audio_artifacts.append(audio_artifact)
-            append_artifact(task_id, audio_artifact)
+            await publish_artifact(task_id, audio_artifact)
         else:
             audio_segments.append(sentence_audio_path)
             audio_segment_texts.append(sentence)
             audio_artifact = artifact(sentence_audio_path, "audio", f"narration_sentence_{idx:02d}")
             audio_artifacts.append(audio_artifact)
-            append_artifact(task_id, audio_artifact)
+            await publish_artifact(task_id, audio_artifact)
 
     audio_duration = sum(media_duration_seconds(path) or 0 for path in audio_segments) or None
     logger.info(
@@ -228,12 +228,12 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
             prompt_extend=params.get("prompt_extend"),
         )
         segment_videos.append(segment_video_path)
-        append_artifact(task_id, artifact(segment_video_path, "video", f"video_part_{idx:02d}"))
+        await publish_artifact(task_id, artifact(segment_video_path, "video", f"video_part_{idx:02d}"))
 
         if idx < len(audio_segments):
             tail_frame = os.path.join(output_dir, f"tail_frame_{idx:02d}.jpg")
             await run_blocking(extract_last_frame, segment_video_path, tail_frame)
-            append_artifact(task_id, artifact(tail_frame, "image", f"tail_frame_{idx:02d}"))
+            await publish_artifact(task_id, artifact(tail_frame, "image", f"tail_frame_{idx:02d}"))
 
     silent_video_path = segment_videos[0] if len(segment_videos) == 1 else concat_videos(segment_videos, os.path.join(output_dir, "final_video_only.mp4"))
     if not silent_video_path:
@@ -247,8 +247,8 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
         os.path.join(output_dir, "final.mp4"),
     )
     final_video_path = with_audio_path
-    append_artifact(task_id, artifact(narration_audio_path, "audio", "final_narration"))
-    append_artifact(task_id, artifact(final_video_path, "video", "final"))
+    await publish_artifact(task_id, artifact(narration_audio_path, "audio", "final_narration"))
+    await publish_artifact(task_id, artifact(final_video_path, "video", "final"))
     logger.info("Digital human pipeline completed: task_id=%s final_video=%s", task_id, final_video_path)
 
     request_path = write_json(os.path.join(output_dir, "request.json"), {
@@ -283,7 +283,7 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
     if generated_image:
         artifacts.append(artifact(generated_image, "image", "generated_reference"))
     for item in artifacts:
-        append_artifact(task_id, item)
+        await publish_artifact(task_id, item)
 
     output = {
         "script": goods_text,

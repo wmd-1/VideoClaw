@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Users, MapPin, RefreshCw, Save, X, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Upload } from 'lucide-react';
 import type { StageViewProps } from './types';
+import { FlaggedItemBanner } from './MissingInputs';
 import { assetUrl, assetVersionLabel } from './utils';
 import { uploadArtifactImage } from '@/lib/workflowApi';
 import StageActions from './StageActions';
@@ -339,7 +340,7 @@ function AssetRow({
 }
 
 /* ─── 主组件 ─── */
-export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted }: StageViewProps) {
+export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, flaggedItems, onNavigateStage }: StageViewProps) {
   const characters: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.characters || [];
   const settingsData: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.settings || [];
 
@@ -506,23 +507,30 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
             </div>
             <div className="space-y-3">
               {characters.map(asset => (
-                <AssetRow
+                <div
                   key={asset.id}
-                  asset={{ ...asset, selected: getCharSelected(asset) }}
-                  type="character"
-                  isEditing={editingIds.has(asset.id)}
-                  editDesc={editChars[asset.id] || asset.description}
-                  onDescChange={val => setEditChars(prev => ({ ...prev, [asset.id]: val }))}
-                  onRegenerate={() => handleRegenerate('characters', asset.id)}
-                  onSelectVersion={path => handleSelectCharVersion(asset.id, path)}
-                  onToggleEdit={() => startEdit(asset.id)}
-                  onSaveEdit={() => saveEdit(asset.id)}
-                  onCancelEdit={() => cancelEdit(asset.id)}
-                  onUploadImage={file => handleUploadImage('characters', asset.id, file)}
-                  isStageRunning={state.status === 'running'}
-                  isRegenerating={regeneratingIds.has(asset.id)}
-                  isUploading={uploadingIds.has(asset.id)}
-                />
+                  className={flaggedItems?.[asset.id] ? 'rounded-xl ring-2 ring-red-400 ring-offset-2' : undefined}
+                >
+                  {flaggedItems?.[asset.id] && (
+                    <FlaggedItemBanner flag={flaggedItems[asset.id]} currentStage="character_design" onNavigateStage={onNavigateStage} />
+                  )}
+                  <AssetRow
+                    asset={{ ...asset, selected: getCharSelected(asset) }}
+                    type="character"
+                    isEditing={editingIds.has(asset.id)}
+                    editDesc={editChars[asset.id] || asset.description}
+                    onDescChange={val => setEditChars(prev => ({ ...prev, [asset.id]: val }))}
+                    onRegenerate={() => handleRegenerate('characters', asset.id)}
+                    onSelectVersion={path => handleSelectCharVersion(asset.id, path)}
+                    onToggleEdit={() => startEdit(asset.id)}
+                    onSaveEdit={() => saveEdit(asset.id)}
+                    onCancelEdit={() => cancelEdit(asset.id)}
+                    onUploadImage={file => handleUploadImage('characters', asset.id, file)}
+                    isStageRunning={state.status === 'running'}
+                    isRegenerating={regeneratingIds.has(asset.id)}
+                    isUploading={uploadingIds.has(asset.id)}
+                  />
+                </div>
               ))}
             </div>
           </section>
@@ -537,23 +545,30 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
             </div>
             <div className="space-y-3">
               {settingsData.map(asset => (
-                <AssetRow
+                <div
                   key={asset.id}
-                  asset={{ ...asset, selected: getSetSelected(asset) }}
-                  type="setting"
-                  isEditing={editingIds.has(asset.id)}
-                  editDesc={editSets[asset.id] || asset.description}
-                  onDescChange={val => setEditSets(prev => ({ ...prev, [asset.id]: val }))}
-                  onRegenerate={() => handleRegenerate('settings', asset.id)}
-                  onSelectVersion={path => handleSelectSetVersion(asset.id, path)}
-                  onToggleEdit={() => startEdit(asset.id)}
-                  onSaveEdit={() => saveEdit(asset.id)}
-                  onCancelEdit={() => cancelEdit(asset.id)}
-                  onUploadImage={file => handleUploadImage('settings', asset.id, file)}
-                  isStageRunning={state.status === 'running'}
-                  isRegenerating={regeneratingIds.has(asset.id)}
-                  isUploading={uploadingIds.has(asset.id)}
-                />
+                  className={flaggedItems?.[asset.id] ? 'rounded-xl ring-2 ring-red-400 ring-offset-2' : undefined}
+                >
+                  {flaggedItems?.[asset.id] && (
+                    <FlaggedItemBanner flag={flaggedItems[asset.id]} currentStage="character_design" onNavigateStage={onNavigateStage} />
+                  )}
+                  <AssetRow
+                    asset={{ ...asset, selected: getSetSelected(asset) }}
+                    type="setting"
+                    isEditing={editingIds.has(asset.id)}
+                    editDesc={editSets[asset.id] || asset.description}
+                    onDescChange={val => setEditSets(prev => ({ ...prev, [asset.id]: val }))}
+                    onRegenerate={() => handleRegenerate('settings', asset.id)}
+                    onSelectVersion={path => handleSelectSetVersion(asset.id, path)}
+                    onToggleEdit={() => startEdit(asset.id)}
+                    onSaveEdit={() => saveEdit(asset.id)}
+                    onCancelEdit={() => cancelEdit(asset.id)}
+                    onUploadImage={file => handleUploadImage('settings', asset.id, file)}
+                    isStageRunning={state.status === 'running'}
+                    isRegenerating={regeneratingIds.has(asset.id)}
+                    isUploading={uploadingIds.has(asset.id)}
+                  />
+                </div>
               ))}
             </div>
           </section>
