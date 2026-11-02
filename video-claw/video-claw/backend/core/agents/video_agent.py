@@ -14,6 +14,15 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core.h3_modes import (
+    collect_segments,
+    fingerprint_parts,
+    next_in_order,
+    resolve_grounding_model,
+    resolve_h3_mode,
+    resolve_style_key,
+)
+from core.prompt_source import resolve_effective_prompt
 from core.video_params import resolve_effective_duration
 
 from .base_agent import AgentInterface
@@ -28,6 +37,8 @@ class VideoDirectorAgent(AgentInterface):
         super().__init__(name="VideoDirector")
         # 时长夹取记录（Q2）：按片段 ID 收集，随条目事件透出
         self._duration_adjustments: dict = {}
+        # 有效正文解析结果（Q1）：按片段 ID 收集，随产物透出
+        self._prompt_sources: dict = {}
 
     # ─── 版本管理 ───
 
@@ -307,12 +318,53 @@ class VideoDirectorAgent(AgentInterface):
 
     def _final_prompt(self, segment: dict, style_prompt: str, character_artifact: Optional[dict],
                       video_data: Optional[dict], prompt_rewrite_art: Optional[dict],
-                      seg_id: str) -> str:
-        """视频模型最终提示词：优先使用提示词改写结果，否则回退现有拼装逻辑。"""
+                      seg_id: str, resolution: Optional[dict] = None) -> str:
+        """视频模型最终提示词。
+
+        Q1 之后只负责消费 `resolve_effective_prompt` 的结果（人工 > 新鲜 H3 > description）；
+        `resolution` 缺省时保留旧行为（供未接线的调用/兼容）。
+        """
+        if resolution is not None:
+            return str(resolution.get("text") or "")
         rewritten = self._lookup_rewritten_prompt(prompt_rewrite_art, seg_id)
         if rewritten:
             return rewritten
         return self._assemble_prompt(segment, style_prompt, character_artifact, video_data=video_data)
+
+    def _prompt_resolution(self, seg_id: str, video_generation_mode: str,
+                           h3_segment_by_id: dict, h3_segments: list,
+                           scene_map: dict, artifacts: dict, style: str,
+                           grounding_model: str, clip: Optional[dict],
+                           prompt_rewrite_art: Optional[dict]) -> dict:
+        """当前输入指纹 + 有效正文解析（模式与输入逐字复现 H3 侧，见 Q1 契约）。"""
+        h3_segment = h3_segment_by_id.get(seg_id) or {
+            "id": seg_id, "shot_content": "", "duration": 0, "characters": [], "location": "",
+        }
+        selected = str((scene_map.get(seg_id) or {}).get("selected") or "").strip()
+        next_selected = ""
+        if video_generation_mode == "start_end_frame":
+            nxt = next_in_order(h3_segments, seg_id)
+            if nxt is not None:
+                next_selected = str((scene_map.get(nxt["id"]) or {}).get("selected") or "").strip()
+        mode = resolve_h3_mode(
+            video_generation_mode,
+            has_first_frame=bool(selected),
+            has_last_frame=bool(next_selected),
+            has_reference_set=(video_generation_mode == "reference"),
+        )
+        fingerprint, dimensions = fingerprint_parts(
+            h3_segment, mode, h3_segments, scene_map, artifacts,
+            style=style, grounding_model=grounding_model,
+        )
+        items = prompt_rewrite_art.get("items") if isinstance(prompt_rewrite_art, dict) else []
+        h3_item = next(
+            (item for item in items or [] if isinstance(item, dict) and item.get("id") == seg_id),
+            None,
+        )
+        return resolve_effective_prompt(
+            h3_segment, h3_item, clip or {},
+            current_fingerprint=fingerprint, current_dimensions=dimensions,
+        )
 
     def _get_style_keywords(self, session_data: dict) -> str:
         """从会话数据获取风格关键词"""
@@ -504,6 +556,14 @@ class VideoDirectorAgent(AgentInterface):
             if adjustment:
                 # Q2：夹取事实随产物透出（值来自 resolve_effective_duration）
                 item["duration_adjustment"] = adjustment
+            resolution = self._prompt_sources.get(segment_id)
+            if resolution:
+                # Q1：解析链摘要（不塞正文；正文在 item["prompt"] 里）
+                item["prompt_source"] = {
+                    "source": str(resolution.get("source") or ""),
+                    "freshness": str(resolution.get("freshness") or ""),
+                    "stale_reasons": list(resolution.get("stale_reasons") or []),
+                }
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":
@@ -593,6 +653,15 @@ class VideoDirectorAgent(AgentInterface):
         scene_map = {s['id']: s for s in scene_list if 'id' in s}
         character_art = artifacts.get('character_design', {})
         prompt_rewrite_art = artifacts.get('prompt_rewrite', {})
+
+        # Q1：H3 归一化分镜与指纹输入（一次计算，避免逐片段重算）
+        h3_segments = collect_segments(
+            artifacts.get("storyboard", {}), model=video_model, session_override=video_duration
+        )
+        h3_segment_by_id = {item["id"]: item for item in h3_segments}
+        h3_artifacts = {"character_design": character_art, "reference_generation": ref_art}
+        h3_style = resolve_style_key(input_data, session_meta)
+        h3_grounding_model = resolve_grounding_model(input_data, session_meta)
         
         style_zh = input_data.get('style') or session_meta.get('style') or 'realistic'
         style_prompt = self._get_style_prompt(style_zh)
@@ -614,8 +683,15 @@ class VideoDirectorAgent(AgentInterface):
                             clip = clip_map.get(seg_id) if clip_map.get(seg_id) else None
                             if not seg:
                                 continue
+                            resolution = self._prompt_resolution(
+                                seg_id, video_generation_mode, h3_segment_by_id, h3_segments,
+                                scene_map, h3_artifacts, h3_style, h3_grounding_model,
+                                clip, prompt_rewrite_art,
+                            )
+                            self._prompt_sources[seg_id] = resolution
                             prompt = self._final_prompt(seg, style_prompt, character_art, video_data=clip,
-                                                        prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id)
+                                                        prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id,
+                                                        resolution=resolution)
 
                             reference_image_paths = None
                             if video_generation_mode == "reference":
@@ -714,8 +790,15 @@ class VideoDirectorAgent(AgentInterface):
                 existing = self._list_versions(sid, seg_id)
                 if existing:
                     continue
+                resolution = self._prompt_resolution(
+                    seg_id, video_generation_mode, h3_segment_by_id, h3_segments,
+                    scene_map, h3_artifacts, h3_style, h3_grounding_model,
+                    clip_map.get(seg_id), prompt_rewrite_art,
+                )
+                self._prompt_sources[seg_id] = resolution
                 prompt = self._final_prompt(seg, style_prompt, character_art, video_data=None,
-                                            prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id)
+                                            prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id,
+                                            resolution=resolution)
                 reference_image_paths = None
                 if video_generation_mode == "reference":
                     img_path = None
