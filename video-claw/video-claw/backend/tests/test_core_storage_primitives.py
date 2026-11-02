@@ -1045,13 +1045,15 @@ def test_video_reference_mode_matches_segment_assets_by_name():
         settings_items=[{"id": "loc1", "name": "教室", "selected": ""}],
         segment_extra={"s1": {"characters": ["小明"], "location": "教室A"}},
     )
+    # B1：参考集顺序统一为“场景→角色”（与 video_agent 实际拼装一致，
+    # <Picture N> 必须对应视频实收入参）
     assert _plan("video_generation", artifacts, mode="reference") == [
-        ("character_design", "characters", "c1", True, False, "reference"),  # 显式选中：必需、不换版
         ("character_design", "settings", "loc1", False, True, "reference"),  # 未选中：可选、取已索引版本
+        ("character_design", "characters", "c1", True, False, "reference"),  # 显式选中：必需、不换版
     ]
     assert _plan("reference_generation", artifacts) == [
-        ("character_design", "characters", "c1", True, False, "reference"),
         ("character_design", "settings", "loc1", False, True, "reference"),
+        ("character_design", "characters", "c1", True, False, "reference"),
     ]
 
 

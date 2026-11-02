@@ -323,13 +323,20 @@ class PromptRewriteAgent(AgentInterface):
     # ─── VLM grounding（C：独立开关 + hash 缓存 + 正交回退） ───
 
     def _grounding_describe(self, image_paths: List[str], vlm_model: str) -> Tuple[str, List[str]]:
-        """对参考图生成客观画面描述。返回 (描述文本或空串, 命中hash列表)。失败回退空串（模式不变）。"""
+        """对参考图生成客观画面描述。返回 (带编号的描述文本, 命中hash列表)。
+
+        输出按**视频入参顺序**编号（1 基）：`<Picture i>：描述`；某图失败/不可读时
+        写占位 `<Picture i>：（本图无可读描述）`，保证编号不位移，`<Picture N>`
+        始终指向同一张图。全失败时返回空文本（不发送无意义的占位块）。
+        """
         if not Config.H3_REWRITE_GROUNDING_ENABLED or not image_paths:
             return "", []
         descriptions: List[str] = []
         hashes: List[str] = []
-        for path in image_paths:
+        for index, path in enumerate(image_paths, 1):
+            placeholder = f"<Picture {index}>：（本图无可读描述）"
             if not path or not os.path.exists(path):
+                descriptions.append(placeholder)
                 continue
             try:
                 abspath = os.path.abspath(path)
@@ -338,8 +345,10 @@ class PromptRewriteAgent(AgentInterface):
                 if cached is not None:
                     # 缓存命中（含历史失败缓存的空描述）：同图不重复调 VLM
                     if cached:
-                        descriptions.append(cached)
+                        descriptions.append(f"<Picture {index}>：{cached}")
                         hashes.append(content_hash)
+                    else:
+                        descriptions.append(placeholder)
                     continue
                 if self._vlm is None:
                     from models.vlm_client import VLM
@@ -349,10 +358,16 @@ class PromptRewriteAgent(AgentInterface):
                 # 失败/空描述同样缓存，避免同图反复重试 VLM；不记 hash（无有效描述）
                 self._grounding_cache[(abspath, content_hash)] = description
                 if description:
-                    descriptions.append(description)
+                    descriptions.append(f"<Picture {index}>：{description}")
                     hashes.append(content_hash)
+                else:
+                    descriptions.append(placeholder)
             except Exception as exc:  # noqa: BLE001 - grounding 失败回退文本输入，不阻塞
                 logger.warning("prompt_rewrite: 参考图 %s grounding 失败（回退纯文本）：%s", path, exc)
+                descriptions.append(placeholder)
+        if not hashes:
+            # 全部不可读：不发送整块占位，交由既有 text_only 降级处理
+            return "", []
         return "\n".join(descriptions), hashes
 
     @staticmethod
@@ -363,13 +378,32 @@ class PromptRewriteAgent(AgentInterface):
                 return ordered[index + 1] if index + 1 < len(ordered) else None
         return None
 
+    @staticmethod
+    def _reference_asset_images(segment: Dict[str, Any], artifacts: Dict[str, Any]) -> List[str]:
+        """Ref2VA：按消费计划的**同一顺序**（场景→角色）取物化后的选中图。
+
+        不自行按 `selected` 重推或按名称重匹配：回退规则（versions）与去重都由消费
+        计划统一，否则 `<Picture N>` 会与视频入参错位。
+        """
+        from core.consumption import reference_assets_for_segment
+
+        images: List[str] = []
+        for _container, _key, asset in reference_assets_for_segment(artifacts, segment):
+            path = str(asset.get("selected") or "").strip()
+            if path:
+                images.append(path)
+        return images
+
     def _grounding_images(self, segment: Dict[str, Any], ordered_segments: List[Dict[str, Any]],
-                          scene_map: Dict[str, Dict], mode: str) -> List[str]:
+                          scene_map: Dict[str, Dict], mode: str,
+                          artifacts: Optional[Dict[str, Any]] = None) -> List[str]:
         """按模式取 grounding 图：首帧 = 本分镜选中参考图；FL2VA 追加下一分镜选中图作尾帧。
 
         `ordered_segments` 必须是**完整有序分镜**（非本次目标子集），否则单条/批量
-        重写会取错邻接（B3）。
+        重写会取错邻接（B3）。Ref2VA 直接消费消费计划给出的有序参考集（B1）。
         """
+        if mode == "Ref2VA":
+            return self._reference_asset_images(segment, artifacts or {})
         scene = scene_map.get(segment["id"]) or {}
         selected = str(scene.get("selected") or "").strip()
         images = [selected] if selected else []
@@ -584,7 +618,7 @@ class PromptRewriteAgent(AgentInterface):
             if mode in ("I2VA", "FL2VA", "Ref2VA"):
                 grounding_desc, grounding_hashes = await asyncio.to_thread(
                     self._grounding_describe,
-                    self._grounding_images(segment, ordered, scene_map, mode),
+                    self._grounding_images(segment, ordered, scene_map, mode, artifacts=artifacts),
                     vlm_model,
                 )
             else:

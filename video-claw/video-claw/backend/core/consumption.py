@@ -221,17 +221,39 @@ def _asset_target(container: str, key: str, asset: Dict[str, Any], label: str) -
     return ConsumeTarget("character_design", container, key, "selected", False, True, label)
 
 
-def _asset_targets_for_segment(artifacts: Dict[str, Any], segment: Dict[str, Any], label: str) -> List[ConsumeTarget]:
+def reference_assets_for_segment(artifacts: Dict[str, Any], segment: Dict[str, Any]
+                                  ) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """参考集有序清单：**场景 → 角色**（角色按 `segment.characters` 顺序），按选中路径
+    去重并保序。
+
+    顺序以 `video_agent._get_segment_reference_assets` 为准（视频实际入参），
+    `<Picture N>` 必须与该顺序一一对应。
+    """
     characters = _items(artifacts, "character_design", "characters")
     settings_items = _items(artifacts, "character_design", "settings")
-    targets: List[ConsumeTarget] = []
+    ordered: List[Tuple[str, str, Dict[str, Any]]] = []
+    seen: set = set()
+
+    def add(container: str, key: Optional[str], items: Dict[str, Dict[str, Any]]) -> None:
+        if key is None:
+            return
+        asset = items.get(key) or {}
+        marker = str(asset.get("selected") or "").strip() or f"{container}:{key}"
+        if marker in seen:
+            return
+        seen.add(marker)
+        ordered.append((container, key, asset))
+
+    add("settings", _match_asset(str(segment.get("location") or ""), settings_items), settings_items)
     for name in segment.get("characters") or []:
-        key = _match_asset(str(name), characters)
-        if key is not None:
-            targets.append(_asset_target("characters", key, characters[key], label))
-    key = _match_asset(str(segment.get("location") or ""), settings_items)
-    if key is not None:
-        targets.append(_asset_target("settings", key, settings_items[key], label))
+        add("characters", _match_asset(str(name), characters), characters)
+    return ordered
+
+
+def _asset_targets_for_segment(artifacts: Dict[str, Any], segment: Dict[str, Any], label: str) -> List[ConsumeTarget]:
+    targets: List[ConsumeTarget] = []
+    for container, key, asset in reference_assets_for_segment(artifacts, segment):
+        targets.append(_asset_target(container, key, asset, label))
     return targets
 
 
@@ -292,8 +314,16 @@ def plan_targets(
     elif stage == "prompt_rewrite":
         if not (_grounding_enabled() if grounding is None else grounding):
             return []
-        ids = _segment_ids(_segments(artifacts))
+        segments = _segments(artifacts)
+        ids = _segment_ids(segments)
+        by_id = dict(zip(ids, segments))
         for seg_id in _wanted(ids, target_ids):
+            if mode == "reference":
+                # Ref2VA：与视频 reference 模式共用同一有序参考集（场景→角色）
+                targets.extend(_used_by(
+                    seg_id, _asset_targets_for_segment(artifacts, by_id[seg_id], "grounding")
+                ))
+                continue
             targets.append(ConsumeTarget("reference_generation", "scenes", seg_id, "selected", label="grounding",
                                          consumers=(seg_id,)))
             index = ids.index(seg_id)
