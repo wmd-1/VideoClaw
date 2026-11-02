@@ -509,14 +509,11 @@ class VideoDirectorAgent(AgentInterface):
           `manual_prompt*`：跳过重生成的片段不会重算，必须继承。
         """
         prev = prev_clip if isinstance(prev_clip, dict) else {}
-        prev_versions = prev.get("versions") if isinstance(prev.get("versions"), list) else []
-        generated_new = len(versions) > len(prev_versions)
-        latest = versions[-1] if versions else ""
-        # 本轮新增版本 → 取新版本；否则沿用已存选中（避免每次重建重置）
-        item["selected"] = latest if (generated_new or not prev.get("selected")) else str(prev.get("selected"))
+        # 选中规则只保留一处实现（避免两份逻辑漂移）
+        item["selected"] = VideoDirectorAgent._carry_over_selected(prev, versions)
         for field in (
             "prompt_source", "submitted_prompt", "submitted_prompt_truncated",
-            "duration_adjustment", "effective_prompt",
+            "duration_adjustment",
             "manual_prompt", "manual_prompt_fingerprint", "manual_prompt_dimensions",
         ):
             if field not in item and field in prev:
@@ -590,14 +587,12 @@ class VideoDirectorAgent(AgentInterface):
                     "stale_reasons": list(resolution.get("stale_reasons") or []),
                 }
                 submitted = str(resolution.get("submitted_prompt") or "")
-                if submitted:
-                    item["submitted_prompt"] = submitted[:1000]
-                    if len(submitted) > 1000:
-                        item["submitted_prompt_truncated"] = True
-                effective = str(resolution.get("text") or "")
-                if effective and str(resolution.get("source") or "") in ("h3", "manual"):
-                    # 编辑框预填用完整正文（不截断），description 回退由前端直接用 description
-                    item["effective_prompt"] = effective[:7000]
+                # 本轮有解析结果就以本轮为准（为空则清掉旧值，避免显示上次提交正文）
+                item["submitted_prompt"] = submitted[:1000]
+                if len(submitted) > 1000:
+                    item["submitted_prompt_truncated"] = True
+                else:
+                    item.pop("submitted_prompt_truncated", None)
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":

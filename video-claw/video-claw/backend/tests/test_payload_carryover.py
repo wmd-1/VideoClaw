@@ -79,18 +79,26 @@ def test_submitted_prompt_is_truncated_at_1000(monkeypatch):
     assert clip["submitted_prompt_truncated"] is True
 
 
-def test_effective_prompt_is_full_for_h3_and_absent_for_description(monkeypatch):
+def test_effective_prompt_is_not_persisted(monkeypatch):
+    """重复数据不落产物：预填按 source 从 manual_prompt / H3 条目 / description 取。"""
     agent = _agent(monkeypatch, [])
     agent._prompt_sources = {"s1": {
         "source": "h3", "freshness": "fresh", "stale_reasons": [],
-        "text": "y" * 2000,
+        "text": "y" * 2000, "submitted_prompt": "y" * 2000,
     }}
     clip = _clip(agent._build_payload("sid", SEGMENTS, []))
-    assert len(clip["effective_prompt"]) == 2000, "编辑预填不能用截断值"
+    assert "effective_prompt" not in clip
+    assert len(clip["submitted_prompt"]) == 1000
 
+
+def test_empty_submitted_prompt_clears_previous(monkeypatch):
+    agent = _agent(monkeypatch, ["v1.mp4"])
     agent._prompt_sources = {"s1": {
         "source": "description", "freshness": "stale",
-        "stale_reasons": ["duration_changed"], "text": "分镜描述",
+        "stale_reasons": ["duration_changed"], "text": "描述", "submitted_prompt": "",
     }}
-    clip = _clip(agent._build_payload("sid", SEGMENTS, []))
-    assert "effective_prompt" not in clip, "description 回退由前端直接用 description"
+    prev = {"id": "s1", "selected": "v1.mp4", "versions": ["v1.mp4"],
+            "submitted_prompt": "old", "submitted_prompt_truncated": True}
+    clip = _clip(agent._build_payload("sid", SEGMENTS, [prev]))
+    assert clip["submitted_prompt"] == ""
+    assert "submitted_prompt_truncated" not in clip
