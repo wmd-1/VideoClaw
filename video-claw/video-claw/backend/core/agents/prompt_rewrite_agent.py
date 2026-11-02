@@ -355,16 +355,28 @@ class PromptRewriteAgent(AgentInterface):
                 logger.warning("prompt_rewrite: 参考图 %s grounding 失败（回退纯文本）：%s", path, exc)
         return "\n".join(descriptions), hashes
 
-    def _grounding_images(self, segment: Dict[str, Any], segments: List[Dict[str, Any]],
+    @staticmethod
+    def _next_in_order(ordered: List[Dict[str, Any]], seg_id: str) -> Optional[Dict[str, Any]]:
+        """完整有序列表中的下一片段（B3：邻接只从全量算，目标集合不参与）。"""
+        for index, seg in enumerate(ordered):
+            if seg.get("id") == seg_id:
+                return ordered[index + 1] if index + 1 < len(ordered) else None
+        return None
+
+    def _grounding_images(self, segment: Dict[str, Any], ordered_segments: List[Dict[str, Any]],
                           scene_map: Dict[str, Dict], mode: str) -> List[str]:
-        """按模式取 grounding 图：首帧 = 本分镜选中参考图；FL2VA 追加下一分镜选中图作尾帧。"""
+        """按模式取 grounding 图：首帧 = 本分镜选中参考图；FL2VA 追加下一分镜选中图作尾帧。
+
+        `ordered_segments` 必须是**完整有序分镜**（非本次目标子集），否则单条/批量
+        重写会取错邻接（B3）。
+        """
         scene = scene_map.get(segment["id"]) or {}
         selected = str(scene.get("selected") or "").strip()
         images = [selected] if selected else []
         if mode == "FL2VA":
-            idx = next((i for i, s in enumerate(segments) if s["id"] == segment["id"]), -1)
-            if 0 <= idx < len(segments) - 1:
-                next_scene = scene_map.get(segments[idx + 1]["id"]) or {}
+            nxt = self._next_in_order(ordered_segments, segment["id"])
+            if nxt is not None:
+                next_scene = scene_map.get(nxt["id"]) or {}
                 next_selected = str(next_scene.get("selected") or "").strip()
                 if next_selected:
                     images.append(next_selected)
@@ -512,8 +524,14 @@ class PromptRewriteAgent(AgentInterface):
     async def _rewrite_segments(self, segments: List[Dict[str, Any]], input_data: Dict,
                                 prev_items_by_id: Dict[str, Dict[str, Any]],
                                 user_sections: Optional[Dict[str, str]] = None,
-                                continuity_seeds: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any]]:
-        """逐分镜串行改写（continuity 链）；条目级失败隔离，实时透出条目完成事件。"""
+                                continuity_seeds: Optional[Dict[str, str]] = None,
+                                ordered_segments: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
+        """逐分镜串行改写（continuity 链）；条目级失败隔离，实时透出条目完成事件。
+
+        `segments` 是本次要执行的条目；`ordered_segments` 是完整有序分镜，用于
+        计算首/尾帧邻接（B3）。未提供时两者相同（全量执行）。传入**空列表**会被当作
+        “无邻接”（不要用空列表表达“不限制”）。
+        """
         session_meta = self._session_meta(input_data)
         llm_model = (
             str(Config.H3_REWRITE_LLM_MODEL or "").strip()
@@ -536,6 +554,7 @@ class PromptRewriteAgent(AgentInterface):
         }
 
         system_prompt = load_prompt("prompt_rewrite", "system", "zh")
+        ordered = ordered_segments if ordered_segments is not None else segments
 
         # continuity 链：串行累积各分镜的主体/风格摘要
         continuity_summaries: List[str] = list(continuity_seeds or [])
@@ -549,8 +568,10 @@ class PromptRewriteAgent(AgentInterface):
             # 与 video_agent 的首尾帧取图逻辑一致；尾帧缺失时 resolver 落 I2VA，与传输层回退一致）
             selected = str((scene_map.get(segment["id"]) or {}).get("selected") or "").strip()
             next_selected = ""
-            if video_generation_mode == "start_end_frame" and i < len(segments) - 1:
-                next_selected = str((scene_map.get(segments[i + 1]["id"]) or {}).get("selected") or "").strip()
+            if video_generation_mode == "start_end_frame":
+                nxt = self._next_in_order(ordered, segment["id"])
+                if nxt is not None:
+                    next_selected = str((scene_map.get(nxt["id"]) or {}).get("selected") or "").strip()
             mode = resolve_h3_mode(
                 video_generation_mode,
                 has_first_frame=bool(selected),
@@ -563,7 +584,7 @@ class PromptRewriteAgent(AgentInterface):
             if mode in ("I2VA", "FL2VA", "Ref2VA"):
                 grounding_desc, grounding_hashes = await asyncio.to_thread(
                     self._grounding_describe,
-                    self._grounding_images(segment, segments, scene_map, mode),
+                    self._grounding_images(segment, ordered, scene_map, mode),
                     vlm_model,
                 )
             else:
@@ -678,8 +699,11 @@ class PromptRewriteAgent(AgentInterface):
             missing = [sid for sid in regenerate_items if sid not in {seg["id"] for seg in target_segments}]
             if missing:
                 raise ValueError(f"待重生成的分镜不存在：{', '.join(missing)}")
-            # 单条重生成不携带 continuity 链（独立重写），但保留权威事实与 grounding
-            results = await self._rewrite_segments(target_segments, input_data, prev_items_by_id)
+            # 单条重生成不携带 continuity 链（独立重写），但保留权威事实与 grounding；
+            # 邻接仍按完整列表计算（B3）：目标集合只决定执行哪些条目
+            results = await self._rewrite_segments(
+                target_segments, input_data, prev_items_by_id, ordered_segments=segments
+            )
             items = [results[sid] for sid in regenerate_items if sid in results]
             return {"payload": {"items": items}, "requires_intervention": True}
 
@@ -720,7 +744,8 @@ class PromptRewriteAgent(AgentInterface):
             return {"payload": {"items": []}, "requires_intervention": True}
 
         results = await self._rewrite_segments(
-            targets, input_data, prev_items_by_id, user_sections=user_sections
+            targets, input_data, prev_items_by_id, user_sections=user_sections,
+            ordered_segments=segments,
         )
         items = []
         for seg in targets:
