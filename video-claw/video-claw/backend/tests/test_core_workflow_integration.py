@@ -570,6 +570,27 @@ def test_item_event_evaluation_is_persisted(monkeypatch):
     assert item["evaluation"] == evaluation
 
 
+def test_background_regeneration_protects_user_description(monkeypatch):
+    """A1b：后台重生成期间手改 description 保留；未纳保护的 name 仍以本轮为准。"""
+    sid = _new_session()
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v1"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+
+    def rerun(agent, input_data, intervention):
+        # 执行期间用户改描述与新名
+        workflow_engine.update_artifact(sid, "character_design", {"characters": [
+            {"id": "c1", "description": "用户新描述", "name": "用户新名"}]})
+        return _character_agent(b"v2")(agent, input_data, intervention)
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, rerun)
+    _run(WorkflowStage.CHARACTER_DESIGN, sid, intervention={"regenerate_characters": ["c1"]})
+
+    item = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
+    assert item["description"] == "用户新描述", "受保护字段应保留执行期间的用户编辑"
+    assert item["name"] == "小明", "未纳保护的 name 仍应随本轮 payload"
+    assert len(item["versions"]) == 2, "新版本仍需保留"
+
+
 # ── 14.6 failure keeps the old success layer; delete queues cleanup ─────
 def test_finish_commit_failure_keeps_checkpoint_and_compensates(monkeypatch):
     sid = _new_session()

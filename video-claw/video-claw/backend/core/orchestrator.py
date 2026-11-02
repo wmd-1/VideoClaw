@@ -347,10 +347,15 @@ class WorkflowState:
 # _mutate 的变更函数返回此哨兵表示“无需提交”
 _NO_COMMIT = object()
 
-# 执行期间用户可编辑、结束合并时优先保留的条目字段
+# 执行期间用户可编辑、结束合并时优先保留的条目字段（全量路径）
 _USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt")
 
-# 区分“无基线信息”与“基线里选中为空”：前者无法判定执行期间是否手改
+# 后台单条重生成时按阶段保护的用户手改字段（A1b）。
+# 只纳入“保留用户值不会让下游语义失真”的字段：name 是下游匹配键、species 决定
+# 生成/评估路由、rewritten_prompt 属 B2 语义，均暂不纳入。
+_BACKGROUND_PROTECTED_FIELDS: Dict[str, tuple] = {"character_design": ("description",)}
+
+# 区分“无基线信息”与“基线里字段值本就为空”：前者无法判定执行期间是否手改
 _NO_BASELINE = object()
 
 
@@ -665,17 +670,18 @@ class WorkflowEngine:
 
     @classmethod
     def _merge_asset_update(cls, artifact: Dict[str, Any], asset_update: Dict[str, Any],
-                            baseline_selected: Optional[Dict[str, Any]] = None) -> None:
+                            baseline_fields: Optional[Dict[str, Any]] = None) -> None:
         """单条目事件合入产物副本（运行覆盖层与后台重生成提交共用同一口径）。
 
-        `baseline_selected` 为本次执行开始时的选中快照：提供时，执行期间被改过的条目
-        保留当前值（用户手选优先）；不提供（如运行中覆盖层）则以本次结果为准。
+        `baseline_fields` 为执行开始时的字段快照（`{container: {id: {field: value}}}`）：
+        提供时，执行期间被改过的 `selected` 保留当前值；不提供（如运行中覆盖层）
+        则以本次结果为准。
         """
         item_type = asset_update.get("type")
         item_id = asset_update.get("id")
         if not item_type or not item_id:
             return
-        baseline_map = baseline_selected or {}
+        baseline_map = (baseline_fields or {}).get(item_type) or {}
         items = artifact.setdefault(item_type, [])
         if not isinstance(items, list):
             items = []
@@ -689,7 +695,7 @@ class WorkflowEngine:
                 if "selected" in asset_update:
                     item["selected"] = cls._selected_after_asset_update(
                         item.get("selected"), asset_update.get("selected"),
-                        baseline_map.get(item_id, _NO_BASELINE),
+                        baseline_map.get(item_id, {}).get("selected", _NO_BASELINE),
                     )
                 if "versions" in asset_update:
                     item["versions"] = cls._merge_asset_versions(item.get("versions"), asset_update.get("versions"))
@@ -1487,12 +1493,16 @@ class WorkflowEngine:
         payload: Any,
         item_keys: List[str],
         target_ids_by_key: Optional[Dict[str, Set[str]]] = None,
-        baseline_selected: Optional[Dict[str, Any]] = None,
+        baseline_fields: Optional[Dict[str, Any]] = None,
+        protected_fields: tuple = (),
     ) -> Dict:
         """Merge concurrent single-item regeneration results without clobbering fresher items.
 
-        `baseline_selected` 为本次执行开始时的选中快照：目标条目若在执行期间被改过
-        （当前值 ≠ 基线），保留当前值，不用本轮结果覆盖（Q8 的安全阀）。
+        `baseline_fields` 为执行开始时的字段快照（`{container: {id: {field: value}}}`）。
+        目标条目里：
+        - `selected` 由 `_selected_after_asset_update` 判定（Q8）；
+        - `protected_fields`（A1b，按阶段声明）若在执行期间被改过，则保留用户值；
+          本轮送空字符串也视为“本轮没有该值”，同样回退当前值。
         """
         if not isinstance(existing, dict):
             existing = {}
@@ -1500,7 +1510,7 @@ class WorkflowEngine:
             return copy.deepcopy(existing)
 
         merged = copy.deepcopy(existing)
-        baseline_map = baseline_selected or {}
+        baseline_map: Dict[str, Any] = baseline_fields or {}
         for key, value in payload.items():
             if key not in item_keys:
                 merged[key] = copy.deepcopy(value)
@@ -1541,12 +1551,16 @@ class WorkflowEngine:
                 current_versions = current.get("versions") if isinstance(current.get("versions"), list) else []
                 item_versions = item.get("versions") if isinstance(item.get("versions"), list) else []
                 merged_versions = WorkflowEngine._merge_asset_versions(current_versions, item_versions)
+                base_item = (baseline_map.get(key) or {}).get(item_id) or {}
                 if len(item_versions) > len(current_versions):
                     merged_item = {**current, **copy.deepcopy(item)}
                     merged_item["versions"] = merged_versions
                     merged_item["selected"] = WorkflowEngine._selected_after_asset_update(
                         current.get("selected"), item.get("selected"),
-                        baseline_map.get(item_id, _NO_BASELINE),
+                        base_item.get("selected", _NO_BASELINE),
+                    )
+                    WorkflowEngine._apply_protected_fields(
+                        merged_item, current, item, base_item, protected_fields
                     )
                     if merged_item.get("selected") and item.get("status") in {"done", "failed"}:
                         merged_item["status"] = "done"
@@ -1555,7 +1569,10 @@ class WorkflowEngine:
                     merged_item = {**current, **copy.deepcopy(item)}
                     merged_item["selected"] = WorkflowEngine._selected_after_asset_update(
                         current.get("selected"), item.get("selected"),
-                        baseline_map.get(item_id, _NO_BASELINE),
+                        base_item.get("selected", _NO_BASELINE),
+                    )
+                    WorkflowEngine._apply_protected_fields(
+                        merged_item, current, item, base_item, protected_fields
                     )
                     if merged_item.get("selected") and item.get("status") in {"done", "failed"}:
                         merged_item["status"] = "done"
@@ -1594,17 +1611,45 @@ class WorkflowEngine:
         return new_selected or current_selected or ""
 
     @staticmethod
-    def _selected_snapshot(artifact: Any) -> Dict[str, Any]:
-        """条目 ID → 执行开始时的选中，用于区分“库里旧值”与“执行期间被改过的值”。"""
-        snapshot: Dict[str, Any] = {}
+    def _apply_protected_fields(merged_item: Dict[str, Any], current: Dict[str, Any],
+                                item: Dict[str, Any], base_item: Dict[str, Any],
+                                protected_fields: tuple) -> None:
+        """A1b：执行期间被改过的受保护字段保留用户值；本轮送空也回退当前值。
+
+        与 `_prefer_user_edits` 共用同一条“`current != base` 即用户改过”的判据，
+        不为后台路径另写第三套规则。
+        """
+        for field in protected_fields or ():
+            if field not in current:
+                continue
+            base_value = base_item.get(field, _NO_BASELINE)
+            edited = base_value is not _NO_BASELINE and current.get(field) != base_value
+            incoming = item.get(field)
+            if edited or incoming in (None, ""):
+                merged_item[field] = copy.deepcopy(current.get(field))
+
+    @staticmethod
+    def _user_edit_snapshot(artifact: Any) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """执行开始时用户可编辑字段的快照：`{container: {id: {field: value}}}`。
+
+        Q8（选中）与 A1b（字段级）共用同一结构，避免“选中基线来自 A、字段基线来自 B”。
+        """
+        snapshot: Dict[str, Dict[str, Dict[str, Any]]] = {}
         if not isinstance(artifact, dict):
             return snapshot
-        for items in artifact.values():
+        for container, items in artifact.items():
             if not isinstance(items, list):
                 continue
             for item in items:
-                if isinstance(item, dict) and item.get("id"):
-                    snapshot[item["id"]] = item.get("selected")
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                record = {
+                    field: copy.deepcopy(item[field])
+                    for field in _USER_EDIT_FIELDS
+                    if field in item
+                }
+                if record:
+                    snapshot.setdefault(str(container), {})[item["id"]] = record
         return snapshot
 
     async def execute_stage(self,
@@ -1955,13 +2000,13 @@ class WorkflowEngine:
             if not container or not item_id:
                 return item
             if run.background:
-                # 本次执行开始时的选中快照：执行期间被改过的条目保留用户新值（Q8）
-                baseline_selected = self._selected_snapshot(run.start_artifacts.get(stage_key))
+                # 本次执行开始时的字段快照：执行期间被改过的条目保留用户新值（Q8）
+                baseline_fields = self._user_edit_snapshot(run.start_artifacts.get(stage_key))
 
                 def apply(after: WorkflowState) -> None:
                     artifact = after.artifacts.get(stage_key)
                     artifact = copy.deepcopy(artifact) if isinstance(artifact, dict) else {}
-                    self._merge_asset_update(artifact, item, baseline_selected)
+                    self._merge_asset_update(artifact, item, baseline_fields)
                     after.artifacts[stage_key] = artifact
                     self._recalculate_all_statuses(after)
 
@@ -2038,7 +2083,8 @@ class WorkflowEngine:
                     targets = self._background_regeneration_targets(stage, run.intervention)
                     payload = self._merge_item_regeneration_payload(
                         after.artifacts.get(stage_key, {}), payload, keys, targets,
-                        baseline_selected=self._selected_snapshot(run.start_artifacts.get(stage_key)),
+                        baseline_fields=self._user_edit_snapshot(run.start_artifacts.get(stage_key)),
+                        protected_fields=_BACKGROUND_PROTECTED_FIELDS.get(stage_key, ()),
                     )
                 else:
                     payload = self._prefer_user_edits(
@@ -2142,7 +2188,13 @@ class WorkflowEngine:
 
     @staticmethod
     def _prefer_user_edits(stage: str, base: Any, latest: Any, payload: Any) -> Any:
-        """执行期间用户对同条目的修改胜出：晚到的模型结果只补充版本，不覆盖用户字段。"""
+        """执行期间用户对同条目的修改胜出：晚到的模型结果只补充版本，不覆盖用户字段。
+
+        注意：这是**全量路径**的保护，字段集合为 `_USER_EDIT_FIELDS`（6 个）。
+        后台单条重生成不走这里，只保护 `_BACKGROUND_PROTECTED_FIELDS[stage]`
+        （当前仅 `character_design.description`）；两者的差异是有意保留的，改动前
+        先确认下游语义（name 是匹配键、species 决定路由）。
+        """
         if not isinstance(payload, dict) or not isinstance(latest, dict) or base == latest:
             return payload
         merged = copy.deepcopy(payload)

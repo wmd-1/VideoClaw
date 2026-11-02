@@ -79,7 +79,7 @@ def test_asset_update_keeps_in_run_user_edit_with_baseline():
         artifact,
         {"type": "characters", "id": "c1", "status": "done",
          "selected": "v3.png", "versions": ["v1.png", "v2.png", "v3.png"]},
-        {"c1": "v1.png"},
+        {"characters": {"c1": {"selected": "v1.png"}}},
     )
     assert artifact["characters"][0]["selected"] == "v2.png"
     # 版本仍合并，不因保留选中而丢掉新版本
@@ -94,18 +94,81 @@ def test_regeneration_merge_keeps_in_run_user_edit():
                                "versions": ["v1.png", "v2.png", "v3.png"]}]}
     merged = WorkflowEngine._merge_item_regeneration_payload(
         existing, payload, ["characters"], {"characters": {"c1"}},
-        baseline_selected={"c1": "v1.png"},
+        baseline_fields={"characters": {"c1": {"selected": "v1.png"}}},
     )
     item = merged["characters"][0]
     assert item["selected"] == "v2.png"
     assert "v3.png" in item["versions"]
 
 
-def test_selected_snapshot_reads_item_containers():
+def test_user_edit_snapshot_is_container_keyed_with_fields():
     artifact = {
-        "characters": [{"id": "c1", "selected": "v1.png"}, {"id": "c2"}],
+        "characters": [{"id": "c1", "selected": "v1.png", "description": "旧描述",
+                        "internal": "不应进入快照"}],
         "settings": [{"id": "s1", "selected": "s1.png"}],
         "meta": {"k": 1},
     }
-    assert WorkflowEngine._selected_snapshot(artifact) == {"c1": "v1.png", "c2": None, "s1": "s1.png"}
-    assert WorkflowEngine._selected_snapshot(None) == {}
+    snapshot = WorkflowEngine._user_edit_snapshot(artifact)
+    assert snapshot["characters"]["c1"] == {"selected": "v1.png", "description": "旧描述"}
+    assert snapshot["settings"]["s1"] == {"selected": "s1.png"}
+    assert "internal" not in snapshot["characters"]["c1"]
+    assert WorkflowEngine._user_edit_snapshot(None) == {}
+
+
+# ─────────────── A1b：后台按阶段保护 description ───────────────
+
+_PROTECTED = ("description",)
+_BASE = {"characters": {"c1": {"selected": "v1.png", "description": "旧描述"}}}
+
+
+def _regenerate(current: dict, payload_item: dict, baseline=_BASE):
+    existing = {"characters": [dict({"id": "c1", "status": "done",
+                                      "versions": ["v1.png"]}, **current)]}
+    payload = {"characters": [dict({"id": "c1", "status": "done"}, **payload_item)]}
+    merged = WorkflowEngine._merge_item_regeneration_payload(
+        existing, payload, ["characters"], {"characters": {"c1"}},
+        baseline_fields=baseline, protected_fields=_PROTECTED,
+    )
+    return merged["characters"][0]
+
+
+def test_protected_description_keeps_in_run_user_edit():
+    """手改描述 + 本轮生成成功 → 保留用户描述，但新图与新版本仍生效。"""
+    item = _regenerate(
+        {"selected": "v1.png", "description": "用户新描述", "versions": ["v1.png"]},
+        {"selected": "v2.png", "description": "旧描述", "versions": ["v1.png", "v2.png"]},
+    )
+    assert item["description"] == "用户新描述"
+    assert item["selected"] == "v2.png"
+    assert item["versions"] == ["v1.png", "v2.png"]
+
+
+def test_protected_description_overwritten_when_not_edited():
+    """反向：未手改时本轮描述必须生效，防止“全保留”的过度保护。"""
+    item = _regenerate(
+        {"selected": "v1.png", "description": "旧描述", "versions": ["v1.png"]},
+        {"selected": "v2.png", "description": "本轮新描述", "versions": ["v1.png", "v2.png"]},
+    )
+    assert item["description"] == "本轮新描述"
+    assert item["selected"] == "v2.png"
+
+
+def test_unprotected_field_still_takes_payload_value():
+    """name 不在 A1b 保护范围内：即使执行期间手改，也以本轮 payload 为准。"""
+    base = {"characters": {"c1": {"selected": "v1.png", "name": "旧名", "description": "旧描述"}}}
+    item = _regenerate(
+        {"selected": "v1.png", "name": "用户新名", "description": "旧描述", "versions": ["v1.png"]},
+        {"selected": "v2.png", "name": "本轮旧名", "description": "旧描述",
+         "versions": ["v1.png", "v2.png"]},
+        baseline=base,
+    )
+    assert item["name"] == "本轮旧名"
+
+
+def test_protected_description_empty_payload_falls_back():
+    """payload 送空字符串视为“本轮没有该值”，回退当前值。"""
+    item = _regenerate(
+        {"selected": "v1.png", "description": "用户新描述", "versions": ["v1.png"]},
+        {"selected": "v2.png", "description": "", "versions": ["v1.png", "v2.png"]},
+    )
+    assert item["description"] == "用户新描述"
