@@ -195,3 +195,172 @@ def test_select_best_reports_selection_without_fabricating_pass(monkeypatch, tmp
     assert best_eval["selection"] == {"source": "vlm_best", "index": 0, "candidates": 2}
     assert "score" not in best_eval
     assert "is_acceptable" not in best_eval
+
+
+# ─────────────── Q9：评估状态落库白名单 ───────────────
+
+
+def test_evaluation_payload_keeps_only_whitelisted_keys():
+    view = CharacterDesignerAgent._evaluation_payload({
+        "evaluated": False,
+        "eval_status": "selection_only",
+        "selection": {"source": "vlm_best", "index": 0, "candidates": 3},
+        "score": 7,
+        "issues": ["内部问题"],
+        "suggestion": "内部建议",
+        "hard_failures": ["内部硬性项"],
+    })
+    assert view == {
+        "evaluated": False,
+        "eval_status": "selection_only",
+        "selection": {"source": "vlm_best", "index": 0, "candidates": 3},
+        "score": 7,
+    }
+    for leaked in ("issues", "suggestion", "hard_failures"):
+        assert leaked not in view
+
+
+def test_evaluation_payload_marks_unknown_without_overclaiming():
+    # 只有 score 的旧形态：不补合格，只标未知
+    assert CharacterDesignerAgent._evaluation_payload({"score": 6}) == {
+        "score": 6, "evaluated": None, "eval_status": "unknown",
+    }
+    assert CharacterDesignerAgent._evaluation_payload({"issues": ["x"]}) is None
+    assert CharacterDesignerAgent._evaluation_payload(None) is None
+
+
+def test_build_payload_attaches_evaluation_to_both_containers(monkeypatch):
+    agent = CharacterDesignerAgent()
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    payload = agent._build_payload(
+        "sid",
+        {"c1": {"name": "小陈", "description": "d"}},
+        {"s1": {"name": "办公室", "description": "d"}},
+        selected_chars={"c1": "v1.png"},
+        selected_sets={"s1": "v1.png"},
+        evaluations={
+            "characters": {"c1": {"evaluated": True, "eval_status": "ok", "score": 8, "issues": ["x"]}},
+            "settings": {"s1": {"evaluated": False, "eval_status": "unavailable"}},
+        },
+    )
+    char = payload["payload"]["characters"][0]
+    setting = payload["payload"]["settings"][0]
+    assert char["evaluation"] == {"evaluated": True, "eval_status": "ok", "score": 8}
+    assert setting["evaluation"] == {"evaluated": False, "eval_status": "unavailable"}
+
+
+def test_build_payload_omits_evaluation_when_absent(monkeypatch):
+    agent = CharacterDesignerAgent()
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    payload = agent._build_payload("sid", {"c1": {"name": "n", "description": "d"}}, {})
+    assert "evaluation" not in payload["payload"]["characters"][0]
+
+
+def test_existing_evaluations_reads_whitelisted_view():
+    artifact = {
+        "characters": [{"id": "c1", "evaluation": {"evaluated": True, "eval_status": "ok"}}],
+        "settings": "not-a-list",
+    }
+    assert CharacterDesignerAgent._existing_evaluations(artifact, "characters") == {
+        "c1": {"evaluated": True, "eval_status": "ok"},
+    }
+    assert CharacterDesignerAgent._existing_evaluations(artifact, "settings") == {}
+    assert CharacterDesignerAgent._existing_evaluations(None, "characters") == {}
+
+
+def test_build_payload_inherits_existing_evaluation(monkeypatch):
+    """全量空跑（本轮未生成）不得把历史评估状态抹掉。"""
+    agent = CharacterDesignerAgent()
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    payload = agent._build_payload(
+        "sid", {"c1": {"name": "n", "description": "d"}}, {},
+        existing_evaluations={
+            "characters": {"c1": {"evaluated": False, "eval_status": "unavailable"}},
+            "settings": {},
+        },
+    )
+    assert payload["payload"]["characters"][0]["evaluation"] == {
+        "evaluated": False, "eval_status": "unavailable",
+    }
+
+
+def test_build_payload_prefers_this_run_evaluation(monkeypatch):
+    agent = CharacterDesignerAgent()
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    payload = agent._build_payload(
+        "sid", {"c1": {"name": "n", "description": "d"}}, {},
+        evaluations={"characters": {"c1": {"evaluated": True, "eval_status": "ok", "score": 8}},
+                     "settings": {}},
+        existing_evaluations={"characters": {"c1": {"evaluated": False, "eval_status": "unavailable"}},
+                              "settings": {}},
+    )
+    assert payload["payload"]["characters"][0]["evaluation"] == {
+        "evaluated": True, "eval_status": "ok", "score": 8,
+    }
+
+
+def test_build_payload_falls_back_to_existing_when_this_run_unevaluable(monkeypatch):
+    """本轮返回的只是失败标记（不可落库）时，不能算“本轮有评估”。"""
+    agent = CharacterDesignerAgent()
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    payload = agent._build_payload(
+        "sid", {"c1": {"name": "n", "description": "d"}}, {},
+        evaluations={"characters": {"c1": {"error_type": "model_unavailable", "error": "down"}},
+                     "settings": {}},
+        existing_evaluations={"characters": {"c1": {"evaluated": True, "eval_status": "ok", "score": 8}},
+                              "settings": {}},
+    )
+    assert payload["payload"]["characters"][0]["evaluation"] == {
+        "evaluated": True, "eval_status": "ok", "score": 8,
+    }
+
+
+def test_process_events_carry_whitelisted_evaluation(monkeypatch):
+    """事件层同样不能带原始 VLM 文本：issues/suggestion 不得进入 asset_complete。"""
+    import asyncio
+
+    import models.config_model as config_model
+    import models.image_client as image_client
+
+    class FakeImageClient:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(image_client, "ImageClient", FakeImageClient)
+    monkeypatch.setattr(config_model, "get_max_concurrency", lambda model, enabled: 1)
+
+    agent = CharacterDesignerAgent()
+    events = []
+    calls = {"n": 0}
+
+    def fake_list(sid, atype, aid):
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else ["v1.png"]
+
+    monkeypatch.setattr(agent, "_list_versions", fake_list)
+    monkeypatch.setattr(agent, "_build_preview", lambda *a, **k: {})
+    monkeypatch.setattr(agent, "_report_progress", lambda *a, **k: events.append(k.get("data")))
+    monkeypatch.setattr(agent, "_session_meta", lambda input_data: {})
+    monkeypatch.setattr(agent, "_session_artifact", lambda input_data, key: {
+        "characters": [{"id": "c1", "selected": "", "versions": []}], "settings": [],
+    })
+    monkeypatch.setattr(agent, "_generate_one", lambda *a, **k: (
+        "c1", "v1.png", {
+            "evaluated": True, "eval_status": "ok", "score": 7,
+            "issues": ["VLM_RAW_ISSUE"], "suggestion": "VLM_RAW_SUGGESTION",
+        }, None,
+    ))
+
+    asyncio.run(agent.process({
+        "session_id": "sid", "style": "anime", "image_t2i_model": "t2i", "vlm_model": "vlm",
+        "characters": {"c1": {"name": "小陈", "description": "d"}}, "settings": {},
+    }))
+
+    done = [
+        data["asset_complete"] for data in events
+        if isinstance(data, dict) and (data.get("asset_complete") or {}).get("status") == "done"
+    ]
+    assert done, "未捕获到完成事件"
+    evaluation = done[-1]["evaluation"]
+    assert evaluation == {"evaluated": True, "eval_status": "ok", "score": 7}
+    assert "issues" not in evaluation and "suggestion" not in evaluation

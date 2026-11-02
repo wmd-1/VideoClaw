@@ -524,6 +524,52 @@ def test_background_regeneration_keeps_in_run_user_selection(monkeypatch):
     assert len(item["versions"]) == 3  # 新版本仍然保留
 
 
+def test_stage_payload_evaluation_is_persisted(monkeypatch):
+    """Q9 收尾路径：阶段产物里的 evaluation 必须随条目落库。"""
+    sid = _new_session()
+    evaluation = {"evaluated": True, "eval_status": "ok", "score": 8}
+
+    def behavior(agent, _input, _intervention):
+        path = _write(agent, "Assets/characters/c1.png", b"v1")
+        versions = agent._history_versions("characters", "c1") + [path]
+        return {"payload": {"characters": [{
+            "id": "c1", "name": "小明", "description": "主角", "selected": path,
+            "versions": versions, "status": "done", "evaluation": evaluation,
+        }], "settings": []}, "stage_completed": True}
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, behavior)
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+
+    item = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
+    assert item["evaluation"] == evaluation
+
+
+def test_item_event_evaluation_is_persisted(monkeypatch):
+    """Q9 事件路径：后台重生成的条目完成事件也要带上 evaluation。"""
+    sid = _new_session()
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v1"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+
+    evaluation = {"evaluated": False, "eval_status": "selection_only",
+                  "selection": {"source": "vlm_best", "index": 0, "candidates": 2}}
+
+    def rerun(agent, input_data, intervention):
+        result = _character_agent(b"v2")(agent, input_data, intervention)
+        payload_item = result["payload"]["characters"][0]
+        agent._report_progress("角色设计", "完成", 100, data={"asset_complete": {
+            "type": "characters", "id": "c1", "status": "done",
+            "selected": payload_item["selected"], "versions": payload_item["versions"],
+            "evaluation": evaluation,
+        }})
+        return result
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, rerun)
+    _run(WorkflowStage.CHARACTER_DESIGN, sid, intervention={"regenerate_characters": ["c1"]})
+
+    item = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
+    assert item["evaluation"] == evaluation
+
+
 # ── 14.6 failure keeps the old success layer; delete queues cleanup ─────
 def test_finish_commit_failure_keeps_checkpoint_and_compensates(monkeypatch):
     sid = _new_session()

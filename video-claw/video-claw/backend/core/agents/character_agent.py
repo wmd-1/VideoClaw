@@ -114,6 +114,22 @@ class CharacterDesignerAgent(AgentInterface):
                 selected[item["id"]] = value
         return selected
 
+    @staticmethod
+    def _existing_evaluations(artifact: Dict, container: str) -> Dict[str, Any]:
+        """已存产物里的 evaluation（只含白名单字段）。
+
+        作为本轮未评估条目的底稿：本轮没重生成时不能把历史评估状态抹掉。
+        """
+        evaluations: Dict[str, Any] = {}
+        items = artifact.get(container) if isinstance(artifact, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            value = item.get("evaluation")
+            if isinstance(value, dict):
+                evaluations[item["id"]] = value
+        return evaluations
+
     def _next_version_path(self, sid: str, asset_type: str, asset_id: str) -> str:
         """获取下一个版本的文件路径（只看本地目录，历史版本不占用本地文件名）"""
         adir = os.path.join(self._asset_base(sid), asset_type)
@@ -573,6 +589,13 @@ class CharacterDesignerAgent(AgentInterface):
                 "characters": {**self._existing_selected(existing_cd, "characters"), **(select_chars or {})},
                 "settings": {**self._existing_selected(existing_cd, "settings"), **(select_sets or {})},
             }
+            # 本轮评估结果（Q9）：按容器收集，由 _build_payload 收敛为白名单后落库
+            evaluations: Dict[str, Dict[str, Any]] = {"characters": {}, "settings": {}}
+            # 已存评估作为底稿：本轮未参与生成的条目保留历史状态
+            existing_evaluations = {
+                "characters": self._existing_evaluations(existing_cd, "characters"),
+                "settings": self._existing_evaluations(existing_cd, "settings"),
+            }
 
             # 优先从 input_data (artifacts) 中恢复当前状态，确保之前在界面上做的修改能保留
             chars_desc = {}
@@ -678,14 +701,19 @@ class CharacterDesignerAgent(AgentInterface):
                             pct = 10 + int(85 * done / max(total, 1))
                             if rewrite_result:
                                 rewrite_results[atype][aid] = rewrite_result
+                            if isinstance(eval_result, dict):
+                                evaluations[atype][aid] = eval_result
                             if result_path:
                                 versions = self._list_versions(sid, atype, aid)
                                 selected_map[atype][aid] = result_path
+                                # 事件与产物同口径：原始 eval_result 不直接进入事件/工作层
+                                evaluation_view = self._evaluation_payload(eval_result)
                                 asset_complete = {
                                     "type": atype, "id": aid, "status": "done",
                                     "selected": result_path, "versions": versions,
-                                    "evaluation": eval_result,
                                 }
+                                if evaluation_view:
+                                    asset_complete["evaluation"] = evaluation_view
                                 if rewrite_result:
                                     asset_complete["rewrite_result"] = rewrite_result
                                 self._report_progress("角色设计", f"完成: {fname}", pct, data={
@@ -714,7 +742,8 @@ class CharacterDesignerAgent(AgentInterface):
             return self._build_payload(
                 sid, chars_desc, sets_desc,
                 selected_chars=selected_map["characters"], selected_sets=selected_map["settings"],
-                rewrite_results=rewrite_results,
+                rewrite_results=rewrite_results, evaluations=evaluations,
+                existing_evaluations=existing_evaluations,
             )
 
         # ═══════════ 正常流程: 全量首次生成 ═══════════
@@ -740,6 +769,13 @@ class CharacterDesignerAgent(AgentInterface):
         selected_map = {
             "characters": self._existing_selected(existing_cd, "characters"),
             "settings": self._existing_selected(existing_cd, "settings"),
+        }
+        # 本轮评估结果（Q9）：按容器收集，由 _build_payload 收敛为白名单后落库
+        evaluations: Dict[str, Dict[str, Any]] = {"characters": {}, "settings": {}}
+        # 已存评估作为底稿：本轮未参与生成的条目保留历史状态
+        existing_evaluations = {
+            "characters": self._existing_evaluations(existing_cd, "characters"),
+            "settings": self._existing_evaluations(existing_cd, "settings"),
         }
 
         # 发送素材预览（含所有素材和当前状态）——与 payload 同一选中口径
@@ -801,14 +837,19 @@ class CharacterDesignerAgent(AgentInterface):
                     pct = 10 + int(85 * done / max(total, 1))
                     if rewrite_result:
                         rewrite_results[atype][aid] = rewrite_result
+                    if isinstance(failure_info, dict):
+                        evaluations[atype][aid] = failure_info
                     if result_path:
                         versions = self._list_versions(sid, atype, aid)
                         selected_map[atype][aid] = result_path
+                        # 事件与产物同口径：原始评估结果不直接进入事件/工作层
+                        evaluation_view = self._evaluation_payload(failure_info)
                         asset_complete = {
                             "type": atype, "id": aid, "status": "done",
                             "selected": result_path, "versions": versions,
-                            "evaluation": failure_info,
                         }
+                        if evaluation_view:
+                            asset_complete["evaluation"] = evaluation_view
                         if rewrite_result:
                             asset_complete["rewrite_result"] = rewrite_result
                         self._report_progress("角色设计", f"完成: {fname}", pct, data={
@@ -838,16 +879,58 @@ class CharacterDesignerAgent(AgentInterface):
         return self._build_payload(
             sid, chars_desc, sets_desc,
             selected_chars=selected_map["characters"], selected_sets=selected_map["settings"],
-            rewrite_results=rewrite_results,
+            rewrite_results=rewrite_results, evaluations=evaluations,
+            existing_evaluations=existing_evaluations,
         )
+
+    # 评估状态落库白名单（Q9）：只存状态与相对选择，不存 VLM 原文
+    _EVALUATION_KEYS = ("evaluated", "eval_status", "selection", "score")
+
+    @classmethod
+    def _evaluation_payload(cls, evaluation: Any) -> Optional[Dict[str, Any]]:
+        """把评估结果收敛为可落库的最小集。
+
+        旧产物/旧返回可能缺字段，缺 `evaluated` 时显式写 `None`（未评估），
+        不得回填 `score=5` 之类的伪合格；`issues`/`suggestion` 原文一律不入产物。
+        """
+        if not isinstance(evaluation, dict):
+            return None
+        view = {key: evaluation[key] for key in cls._EVALUATION_KEYS if key in evaluation}
+        if not view:
+            return None
+        if "evaluated" not in view:
+            view["evaluated"] = None
+        if "eval_status" not in view:
+            view["eval_status"] = "unknown"
+        return view
 
     def _build_payload(self, sid: str, chars_desc: dict, sets_desc: dict,
                        selected_chars: dict = None, selected_sets: dict = None,
-                       rewrite_results: dict = None) -> dict:
-        """构建返回给前端的 payload"""
+                       rewrite_results: dict = None, evaluations: dict = None,
+                       existing_evaluations: dict = None) -> dict:
+        """构建返回给前端的 payload。
+
+        `evaluations` 是本轮评估（Q9），`existing_evaluations` 是已存底稿：
+        本轮未参与生成的条目保留历史评估状态，不能被“本轮没有”抹掉。
+        两者均只落白名单字段，不存 VLM 原文。
+        """
         selected_chars = selected_chars or {}
         selected_sets = selected_sets or {}
         rewrite_results = rewrite_results or {"characters": {}, "settings": {}}
+        evaluations = evaluations or {"characters": {}, "settings": {}}
+        existing_evaluations = existing_evaluations or {"characters": {}, "settings": {}}
+
+        def _evaluation_for(container: str, asset_id: str) -> Optional[Dict[str, Any]]:
+            """本轮有可落库评估则用本轮的，否则回退已存；都没有则不写键。
+
+            注意“本轮返回了字典”不等于“可落库”：生成失败时 3rd 返回值是
+            `{"error_type", "error"}`，白名单收敛后为空，此时必须回退已存评估，
+            否则“有图但无评估”（与空跑抹历史同一类问题）。
+            """
+            current = self._evaluation_payload(evaluations.get(container, {}).get(asset_id))
+            if current is not None:
+                return current
+            return self._evaluation_payload(existing_evaluations.get(container, {}).get(asset_id))
 
         characters = []
         for asset_id, info in chars_desc.items():
@@ -857,6 +940,9 @@ class CharacterDesignerAgent(AgentInterface):
             item = self._build_asset_info(sid, 'characters', asset_id, name, desc, sel)
             if rewrite_results.get("characters", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["characters"][asset_id]
+            evaluation = _evaluation_for("characters", asset_id)
+            if evaluation:
+                item["evaluation"] = evaluation
             characters.append(item)
 
         settings_list = []
@@ -867,6 +953,9 @@ class CharacterDesignerAgent(AgentInterface):
             item = self._build_asset_info(sid, 'settings', asset_id, name, desc, sel)
             if rewrite_results.get("settings", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["settings"][asset_id]
+            evaluation = _evaluation_for("settings", asset_id)
+            if evaluation:
+                item["evaluation"] = evaluation
             settings_list.append(item)
 
         # 图片生成完成即为阶段完成，用户选择图片只是更新数据

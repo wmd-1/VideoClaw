@@ -693,7 +693,7 @@ class WorkflowEngine:
                     )
                 if "versions" in asset_update:
                     item["versions"] = cls._merge_asset_versions(item.get("versions"), asset_update.get("versions"))
-                for key in ("rewrite_result", "error_type", "error"):
+                for key in ("rewrite_result", "evaluation", "error_type", "error"):
                     if key in asset_update:
                         item[key] = copy.deepcopy(asset_update[key])
                 return
@@ -703,7 +703,7 @@ class WorkflowEngine:
             "selected": asset_update.get("selected", ""),
             "versions": asset_update.get("versions", []),
         }
-        for key in ("rewrite_result", "error_type", "error"):
+        for key in ("rewrite_result", "evaluation", "error_type", "error"):
             if key in asset_update:
                 new_item[key] = copy.deepcopy(asset_update[key])
         items.append(new_item)
@@ -1968,7 +1968,8 @@ class WorkflowEngine:
                 self._mutate(sid, apply, published=published, publisher=run.publisher)
             else:
                 key = workflow_store.execution_item_key(container, item_id)
-                record = {k: copy.deepcopy(v) for k, v in item.items() if k not in ("type", "evaluation")}
+                # `evaluation` 已由 Agent 收敛为白名单（Q9），随条目一起透传落库
+                record = {k: copy.deepcopy(v) for k, v in item.items() if k != "type"}
                 record["seq"] = run.next_seq(key)
                 delta = {
                     "execution_id": run.execution_id,
