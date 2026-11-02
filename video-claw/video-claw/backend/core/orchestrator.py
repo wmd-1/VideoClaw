@@ -2356,6 +2356,16 @@ class WorkflowEngine:
             )
         except Exception as exc:  # noqa: BLE001 - 保存不被指纹计算阻断
             logger.warning("manual_prompt 指纹计算失败（保存仍生效）：%s", exc)
+            # 人工正文存在时 source 是确定的（人工优先），只是新鲜度未知；
+            # 清空操作失败则移除解析链，让前端落到“来源未知”。
+            if str(merged.get("manual_prompt") or "").strip():
+                merged["prompt_source"] = {
+                    "source": "manual",
+                    "freshness": "unknown",
+                    "stale_reasons": ["fingerprint_missing"],
+                }
+            else:
+                merged.pop("prompt_source", None)
             return
 
         if str(merged.get("manual_prompt") or "").strip():

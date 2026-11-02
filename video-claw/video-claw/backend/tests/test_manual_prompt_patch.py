@@ -46,15 +46,25 @@ def test_patch_stamps_fingerprint_and_dimensions():
     assert merged["prompt_source"]["freshness"] == "fresh"
 
 
-def test_patch_stamp_failure_does_not_block_save():
+def test_patch_stamp_failure_reports_manual_unknown():
     state = SimpleNamespace(artifacts=ARTIFACTS, meta={})  # 缺视频模型配置
     merged = {"id": "seg_01_01", "manual_prompt": "人工正文",
               "prompt_source": {"source": "h3", "freshness": "fresh", "stale_reasons": []}}
     WorkflowEngine._stamp_manual_prompt(state, merged, "seg_01_01")
     assert merged["manual_prompt"] == "人工正文"
     assert "manual_prompt_fingerprint" not in merged
-    # 失败不伪造解析链：保持原值
-    assert merged["prompt_source"]["source"] == "h3"
+    # 人工优先是确定的；只是无法证明新鲜
+    assert merged["prompt_source"] == {
+        "source": "manual", "freshness": "unknown", "stale_reasons": ["fingerprint_missing"],
+    }
+
+
+def test_clear_failure_drops_prompt_source():
+    state = SimpleNamespace(artifacts=ARTIFACTS, meta={})  # 缺视频模型配置
+    merged = {"id": "seg_01_01", "manual_prompt": "",
+              "prompt_source": {"source": "manual", "freshness": "fresh", "stale_reasons": []}}
+    WorkflowEngine._stamp_manual_prompt(state, merged, "seg_01_01")
+    assert "prompt_source" not in merged
 
 
 def test_clearing_manual_prompt_removes_fingerprint_and_refreshes_source():
