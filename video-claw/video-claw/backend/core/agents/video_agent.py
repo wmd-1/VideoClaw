@@ -505,6 +505,25 @@ class VideoDirectorAgent(AgentInterface):
                 results[clip["id"]] = clip["rewrite_result"]
         return results
 
+    @staticmethod
+    def _carry_over_item(item: dict, prev_clip: Optional[dict], versions: list) -> dict:
+        """产物重建时继承已存字段（本次没算出来就沿用，算出来则覆盖）。
+
+        - `selected`：已存选中优先，否则最新版本（避免每次重建重置为 versions[-1]）；
+        - `prompt_source` / `submitted_prompt` / `duration_adjustment` /
+          `manual_prompt*`：跳过重生成的片段不会重算，必须继承。
+        """
+        prev = prev_clip if isinstance(prev_clip, dict) else {}
+        item["selected"] = str(prev.get("selected") or (versions[-1] if versions else ""))
+        for field in (
+            "prompt_source", "submitted_prompt", "submitted_prompt_truncated",
+            "duration_adjustment", "manual_prompt", "manual_prompt_fingerprint",
+            "manual_prompt_dimensions",
+        ):
+            if field not in item and field in prev:
+                item[field] = prev[field]
+        return item
+
     def _build_preview(self, sid: str, segments: list, scene_map: dict,
                        video_clips: Optional[list] = None) -> list:
         preview = []
@@ -522,7 +541,8 @@ class VideoDirectorAgent(AgentInterface):
                 "index": seg_n,
                 "description": self._display_prompt(seg, clip_map.get(segment_id)),
                 "duration": seg.get('total_duration', 10),
-                "selected": versions[-1] if versions else "",
+                "selected": str((clip_map.get(segment_id) or {}).get("selected")
+                                or (versions[-1] if versions else "")),
                 "versions": versions,
                 "status": "done" if versions else "pending",
             }
@@ -555,6 +575,7 @@ class VideoDirectorAgent(AgentInterface):
                 "versions": versions,
                 "status": "done" if versions else "failed",
             }
+            item = self._carry_over_item(item, clip_map.get(segment_id), versions)
             rewrite_result = rewrite_results.get(segment_id) or existing_rewrite_results.get(segment_id)
             if rewrite_result:
                 item["rewrite_result"] = rewrite_result
@@ -572,8 +593,8 @@ class VideoDirectorAgent(AgentInterface):
                 }
                 submitted = str(resolution.get("submitted_prompt") or "")
                 if submitted:
-                    item["submitted_prompt"] = submitted[:4000]
-                    if len(submitted) > 4000:
+                    item["submitted_prompt"] = submitted[:1000]
+                    if len(submitted) > 1000:
                         item["submitted_prompt_truncated"] = True
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
