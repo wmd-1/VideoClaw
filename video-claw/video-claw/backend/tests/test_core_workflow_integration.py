@@ -477,7 +477,7 @@ def test_background_regeneration_takes_new_selection(monkeypatch):
 
 
 def test_background_regeneration_keeps_in_run_user_selection(monkeypatch):
-    """Q8 安全阀：后台重生成期间用户手选旧版本，晚到结果不得覆盖。"""
+    """Q8 安全阀：后台重生成期间用户手选旧版本，晚到结果不得覆盖（事件层 + 收尾层）。"""
     sid = _new_session()
     _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v1"))
     _run(WorkflowStage.CHARACTER_DESIGN, sid)
@@ -485,13 +485,39 @@ def test_background_regeneration_keeps_in_run_user_selection(monkeypatch):
     _run(WorkflowStage.CHARACTER_DESIGN, sid)
     versions = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]["versions"]
 
+    # 观察事件层单独落库后的条目（不经覆盖层）：用 committed snapshot 而非 get_state
+    seen: dict = {}
+    original_commit = workflow_engine._commit_item_event
+
+    def spy_commit(run, asset):
+        result = original_commit(run, asset)
+        seen["calls"] = seen.get("calls", 0) + 1
+        # 每次事件后都刷新，断言挂在最后一次上（不假设恰好只发一条）
+        seen["after_event"] = load_committed(sid)["checkpoints"]["character_design"]["characters"][0]
+        return result
+
+    monkeypatch.setattr(workflow_engine, "_commit_item_event", spy_commit)
+
     def rerun(agent, input_data, intervention):
         # 后台重生成进行中，用户把选择改回第一版
         workflow_engine.update_artifact(sid, "character_design", {"characters": [{"id": "c1", "selected": versions[0]}]})
-        return _character_agent(b"v3")(agent, input_data, intervention)
+        result = _character_agent(b"v3")(agent, input_data, intervention)
+        # 真实 agent 会随进度上报条目完成事件；这里复现同一路径以覆盖事件合入层
+        payload_item = result["payload"]["characters"][0]
+        agent._report_progress("角色设计", "完成", 100, data={"asset_complete": {
+            "type": "characters", "id": "c1", "status": "done",
+            "selected": payload_item["selected"], "versions": payload_item["versions"],
+        }})
+        return result
 
     _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, rerun)
     _run(WorkflowStage.CHARACTER_DESIGN, sid, intervention={"regenerate_characters": ["c1"]})
+
+    assert seen.get("calls", 0) >= 1, "条目完成事件未进入事件合入层，用例未覆盖真实链路"
+    after_event = seen["after_event"]
+    # 必须同时断言“合入确实生效”（挡把 _merge_asset_update 换成 no-op）与“保留了用户值”（挡丢基线）
+    assert len(after_event["versions"]) == 3, "事件合入未生效（no-op 实现也会让旧断言通过）"
+    assert after_event["selected"] == versions[0], "事件合入层未按基线保留用户手选"
 
     item = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
     assert item["selected"] == versions[0]  # 手改优先于晚到的本轮结果
