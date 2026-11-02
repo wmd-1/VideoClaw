@@ -30,11 +30,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import Config
 from core.agents.base_agent import AgentInterface
 from core.agents.video_agent import VideoDirectorAgent
-from core.prompt_fingerprint import (
-    build_payload,
-    dimension_hashes,
-    sha_of,
-)
+from core.h3_modes import authority_facts as _shared_authority_facts
+from core.h3_modes import fingerprint_parts as _shared_fingerprint_parts
+from core.h3_modes import next_in_order as _shared_next_in_order
+from core.h3_modes import resolve_grounding_model, resolve_h3_mode
+from core.h3_modes import setting_description as _shared_setting_description
+from core.h3_modes import setting_entry as _shared_setting_entry
 from core.video_params import resolve_effective_duration
 from prompts.loader import load_prompt
 
@@ -111,30 +112,6 @@ def _extract_prompt(assistant_text: str) -> str:
     if matches:
         return max(matches, key=len).strip()
     return text
-
-
-def resolve_h3_mode(video_generation_mode: str, has_first_frame: bool = False,
-                    has_last_frame: bool = False, has_reference_set: bool = False) -> str:
-    """mode resolver（纯函数，决策文档 §5.2 契约）。
-
-    video_generation_mode 为默认映射依据，输入素材角色为修正依据：
-    - reference 模式 + 参考集 → Ref2VA
-    - start_end / first_frame + 帧 → FL2VA / I2VA（仅尾帧 → L2VA）
-    - 无图像输入 → T2VA
-
-    传输层契约（custom_video.py::_task_for_input）：Ref2VA→ref2va、
-    T2VA→t2va、I2VA/L2VA/FL2VA→fl2va（帧语义由 frame_indices/conditions 区分）。
-    """
-    mode = str(video_generation_mode or "").strip().lower()
-    if has_reference_set or mode == "reference":
-        return "Ref2VA"
-    if has_first_frame and has_last_frame:
-        return "FL2VA"
-    if has_last_frame:
-        return "L2VA"
-    if has_first_frame:
-        return "I2VA"
-    return "T2VA"
 
 
 def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
@@ -278,28 +255,13 @@ class PromptRewriteAgent(AgentInterface):
 
     @staticmethod
     def _setting_entry(location: str, settings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """按稳定 ID 或规范名查找场景条目；不做模糊匹配，避免串到别的场景。"""
-        target = str(location or "").strip()
-        if not target:
-            return None
-        for item in settings:
-            if not isinstance(item, dict):
-                continue
-            names = {
-                str(item.get("id") or "").strip(),
-                str(item.get("setting_id") or "").strip(),
-                str(item.get("name") or "").strip(),
-            }
-            names.discard("")
-            if target in names:
-                return item
-        return None
+        """按稳定 ID 或规范名查找场景条目；与提示词注入/指纹共用。"""
+        return _shared_setting_entry(location, settings)
 
     @staticmethod
     def _setting_description(location: str, settings: List[Dict[str, Any]]) -> str:
         """场景描述（与提示词注入共用同一匹配）。"""
-        entry = PromptRewriteAgent._setting_entry(location, settings)
-        return str(entry.get("description") or "").strip() if entry else ""
+        return _shared_setting_description(location, settings)
 
     @staticmethod
     def _authoritative_context(segment: Dict[str, Any], character_artifact: Optional[Dict]) -> str:
@@ -379,10 +341,7 @@ class PromptRewriteAgent(AgentInterface):
     @staticmethod
     def _next_in_order(ordered: List[Dict[str, Any]], seg_id: str) -> Optional[Dict[str, Any]]:
         """完整有序列表中的下一片段（B3：邻接只从全量算，目标集合不参与）。"""
-        for index, seg in enumerate(ordered):
-            if seg.get("id") == seg_id:
-                return ordered[index + 1] if index + 1 < len(ordered) else None
-        return None
+        return _shared_next_in_order(ordered, seg_id)
 
     @staticmethod
     def _reference_asset_images(segment: Dict[str, Any], artifacts: Dict[str, Any]) -> List[str]:
@@ -403,72 +362,18 @@ class PromptRewriteAgent(AgentInterface):
     @staticmethod
     def _authority_facts(segment: Dict[str, Any], character_artifact: Optional[Dict]) -> List[Dict[str, Any]]:
         """本分镜的权威事实（**与 `_authoritative_context` 同一匹配**，保证指纹与提示词一致）。"""
-        artifact = character_artifact if isinstance(character_artifact, dict) else {}
-        characters = artifact.get("characters", [])
-        characters = characters if isinstance(characters, list) else []
-        settings = artifact.get("settings", [])
-        settings = settings if isinstance(settings, list) else []
-        facts: List[Dict[str, Any]] = []
-        for name in segment.get("characters", []) or []:
-            entry = next(
-                (c for c in characters if isinstance(c, dict)
-                 and str(c.get("name") or c.get("id") or "").strip() == str(name).strip()),
-                None,
-            )
-            if entry is None:
-                # 与 `_authoritative_context` 一致：未匹配到资产也会输出一行名称
-                facts.append({"kind": "character", "id": "", "name": str(name),
-                              "description": ""})
-                continue
-            facts.append({
-                "kind": "character",
-                "id": entry.get("id"),
-                "name": entry.get("name") or name,
-                "description": entry.get("description"),
-                "species": entry.get("species"),
-            })
-        location = str(segment.get("location") or "").strip()
-        if location:
-            entry = PromptRewriteAgent._setting_entry(location, settings)
-            if entry is not None:
-                facts.append({
-                    "kind": "setting",
-                    "id": entry.get("id") or entry.get("setting_id"),
-                    "name": entry.get("name") or location,
-                    "description": entry.get("description"),
-                    "location": location,
-                })
-        return facts
+        return _shared_authority_facts(segment, character_artifact)
 
     def _input_fingerprint_parts(self, segment: Dict[str, Any], mode: str,
                                  ordered: List[Dict[str, Any]], scene_map: Dict[str, Dict],
                                  artifacts: Dict[str, Any], input_data: Dict,
                                  session_meta: Dict, *, grounding_model: str = "") -> tuple:
-        """返回 (整体指纹, 逐维度哈希)；后者供 stale_reasons 结构化枚举。"""
-        references: List[tuple] = []
-        if mode == "Ref2VA":
-            from core.consumption import reference_assets_for_segment
-
-            for container, key, asset in reference_assets_for_segment(artifacts, segment):
-                references.append((container, key, asset.get("selected")))
-        else:
-            references.append(("reference_generation", "scenes",
-                               (scene_map.get(segment["id"]) or {}).get("selected")))
-            if mode == "FL2VA":
-                nxt = self._next_in_order(ordered, segment["id"])
-                if nxt is not None:
-                    references.append(("reference_generation", "scenes",
-                                       (scene_map.get(nxt["id"]) or {}).get("selected")))
-        payload = build_payload(
-            shot_content=segment.get("shot_content"),
-            duration=segment.get("duration"),
-            mode=mode,
-            references=references,
+        """返回 (整体指纹, 逐维度哈希)；与视频阶段共用同一实现。"""
+        return _shared_fingerprint_parts(
+            segment, mode, ordered, scene_map, artifacts,
             style=input_data.get("style") or session_meta.get("style") or "",
-            facts=self._authority_facts(segment, artifacts.get("character_design")),
             grounding_model=grounding_model,
         )
-        return sha_of(payload), dimension_hashes(payload)
 
     def _input_fingerprint(self, segment: Dict[str, Any], mode: str,
                            ordered: List[Dict[str, Any]], scene_map: Dict[str, Dict],
@@ -666,11 +571,7 @@ class PromptRewriteAgent(AgentInterface):
             or str(input_data.get("llm_model") or session_meta.get("llm_model") or "").strip()
             or str(Config.LLM_MODEL or "").strip()
         )
-        vlm_model = (
-            str(Config.H3_REWRITE_VLM_MODEL or "").strip()
-            or str(input_data.get("vlm_model") or session_meta.get("vlm_model") or "").strip()
-            or str(Config.VLM_MODEL or "").strip()
-        )
+        vlm_model = resolve_grounding_model(input_data, session_meta)
         video_generation_mode = str(
             input_data.get("video_generation_mode") or session_meta.get("video_generation_mode") or "first_frame"
         ).strip().lower()

@@ -29,6 +29,7 @@ STALE_REASONS = (
     "grounding_model_changed",
     "fingerprint_missing",
     "fingerprint_changed",
+    "h3_not_ready",
 )
 
 _DIMENSION_REASONS = {
@@ -43,8 +44,12 @@ _DIMENSION_REASONS = {
 
 
 def _changed_reasons(stored: Optional[Dict[str, str]], current: Dict[str, str]) -> List[str]:
+    """逐维度对比；缺任一侧维度时只报总哈希变化，不虚构“全维度都变了”。"""
     if not isinstance(stored, dict) or not stored:
-        return ["fingerprint_missing"]
+        # 旧版本条目可能只有总指纹、无维度；语义是“变了”，不是“缺指纹”
+        return ["fingerprint_changed"]
+    if not isinstance(current, dict) or not current:
+        return ["fingerprint_changed"]
     reasons = [
         reason for dimension, reason in _DIMENSION_REASONS.items()
         if str(stored.get(dimension) or "") != str(current.get(dimension) or "")
@@ -85,10 +90,17 @@ def resolve_effective_prompt(
         if stored_fp and stored_fp == current_fingerprint:
             return {"text": h3_text, "source": SOURCE_H3, "freshness": FRESHNESS_FRESH,
                     "stale_reasons": []}
+        if not stored_fp:
+            return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": FRESHNESS_UNKNOWN,
+                    "stale_reasons": ["fingerprint_missing"]}
         reasons = _changed_reasons(h3_item.get("input_dimensions"), dimensions)
-        freshness = FRESHNESS_UNKNOWN if not stored_fp else FRESHNESS_STALE
-        return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": freshness,
+        return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": FRESHNESS_STALE,
                 "stale_reasons": reasons}
+
+    if h3_item:
+        # 条目存在但无可用结果（未完成/失败/正文为空）：不是“没算过指纹”
+        return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": FRESHNESS_UNKNOWN,
+                "stale_reasons": ["h3_not_ready"]}
 
     return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": FRESHNESS_UNKNOWN,
             "stale_reasons": ["fingerprint_missing"]}

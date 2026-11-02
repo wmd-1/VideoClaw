@@ -111,3 +111,33 @@ def test_grounding_model_change_is_reported():
         current_fingerprint=fingerprint, current_dimensions=dimensions,
     )
     assert "grounding_model_changed" in result["stale_reasons"]
+
+
+def test_missing_current_dimensions_does_not_claim_all_changed():
+    fingerprint, _ = _current()
+    stale_fp, _ = _current(duration=12)
+    result = resolve_effective_prompt(
+        SEGMENT, _h3(input_fingerprint=stale_fp), {"description": "d"},
+        current_fingerprint=fingerprint, current_dimensions=None,
+    )
+    assert result["stale_reasons"] == ["fingerprint_changed"]
+
+
+def test_old_item_without_dimensions_reports_changed_not_missing():
+    fingerprint, dimensions = _current()
+    stale_fp, _ = _current(duration=12)
+    result = resolve_effective_prompt(
+        SEGMENT, _h3(input_fingerprint=stale_fp, input_dimensions={}), {"description": "d"},
+        current_fingerprint=fingerprint, current_dimensions=dimensions,
+    )
+    assert result["stale_reasons"] == ["fingerprint_changed"]
+
+
+def test_h3_item_not_done_reports_not_ready():
+    fingerprint, dimensions = _current()
+    result = resolve_effective_prompt(
+        SEGMENT, _h3(status="failed"), {"description": "d"},
+        current_fingerprint=fingerprint, current_dimensions=dimensions,
+    )
+    assert result["source"] == "description"
+    assert result["stale_reasons"] == ["h3_not_ready"]
