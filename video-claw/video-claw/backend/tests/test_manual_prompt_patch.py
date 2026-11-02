@@ -42,20 +42,28 @@ def test_patch_stamps_fingerprint_and_dimensions():
     assert merged["manual_prompt_fingerprint"] == fingerprint
     assert merged["manual_prompt_dimensions"] == dimensions
     assert dimensions, "必须有逐维度哈希，否则人工 stale 只能报“变了”"
+    assert merged["prompt_source"]["source"] == "manual"
+    assert merged["prompt_source"]["freshness"] == "fresh"
 
 
 def test_patch_stamp_failure_does_not_block_save():
     state = SimpleNamespace(artifacts=ARTIFACTS, meta={})  # 缺视频模型配置
-    merged = {"id": "seg_01_01", "manual_prompt": "人工正文"}
+    merged = {"id": "seg_01_01", "manual_prompt": "人工正文",
+              "prompt_source": {"source": "h3", "freshness": "fresh", "stale_reasons": []}}
     WorkflowEngine._stamp_manual_prompt(state, merged, "seg_01_01")
     assert merged["manual_prompt"] == "人工正文"
     assert "manual_prompt_fingerprint" not in merged
+    # 失败不伪造解析链：保持原值
+    assert merged["prompt_source"]["source"] == "h3"
 
 
-def test_clearing_manual_prompt_removes_fingerprint():
-    state = SimpleNamespace(artifacts=ARTIFACTS, meta={})
+def test_clearing_manual_prompt_removes_fingerprint_and_refreshes_source():
+    state = SimpleNamespace(artifacts=ARTIFACTS, meta={"video_first_frame_model": "m1"})
     merged = {"id": "seg_01_01", "manual_prompt": "",
-              "manual_prompt_fingerprint": "fp", "manual_prompt_dimensions": {"a": "b"}}
+              "manual_prompt_fingerprint": "fp", "manual_prompt_dimensions": {"a": "b"},
+              "prompt_source": {"source": "manual", "freshness": "fresh", "stale_reasons": []}}
     WorkflowEngine._stamp_manual_prompt(state, merged, "seg_01_01")
     assert "manual_prompt_fingerprint" not in merged
     assert "manual_prompt_dimensions" not in merged
+    assert merged["prompt_source"]["source"] != "manual"
+    assert merged["prompt_source"]["stale_reasons"] == ["h3_absent"]

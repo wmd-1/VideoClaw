@@ -2319,9 +2319,11 @@ class WorkflowEngine:
 
     @staticmethod
     def _stamp_manual_prompt(state: Any, merged: Dict[str, Any], seg_id: str) -> None:
-        """用户保存人工正文时，立刻用当前 artifacts 算指纹（PATCH 侧唯一入口）。
+        """用户保存/清空人工正文时，立刻用当前 artifacts 重算指纹与 prompt_source。
 
-        缺模型配置等异常不阻断保存：只保留正文，指纹缺失会让解析端记为 unknown。
+        PATCH 体只含产物字段，因此输入以会话 meta 为准（执行期会把 meta 合进
+        input_data，两侧等价）。缺模型配置等异常不阻断保存：正文仍保留，指纹与
+        解析链保持原值（不伪造 fresh）。
         """
         from core.agents.video_agent import VideoDirectorAgent
         from core.h3_modes import (
@@ -2330,17 +2332,12 @@ class WorkflowEngine:
             resolve_grounding_model,
             resolve_style_key,
         )
+        from core.prompt_source import resolve_effective_prompt
 
         artifacts = getattr(state, "artifacts", None)
         meta = getattr(state, "meta", None)
         artifacts = artifacts if isinstance(artifacts, dict) else {}
         meta = meta if isinstance(meta, dict) else {}
-        manual = str(merged.get("manual_prompt") or "").strip()
-        if not manual:
-            # 清空人工正文时一并清掉孤儿指纹/维度（避免 UI 误显“已保存”）
-            merged.pop("manual_prompt_fingerprint", None)
-            merged.pop("manual_prompt_dimensions", None)
-            return
         try:
             mode_key, video_model = VideoDirectorAgent._select_video_model({}, meta)
             h3_segments = collect_segments(
@@ -2360,8 +2357,34 @@ class WorkflowEngine:
         except Exception as exc:  # noqa: BLE001 - 保存不被指纹计算阻断
             logger.warning("manual_prompt 指纹计算失败（保存仍生效）：%s", exc)
             return
-        merged["manual_prompt_fingerprint"] = fingerprint
-        merged["manual_prompt_dimensions"] = dimensions
+
+        if str(merged.get("manual_prompt") or "").strip():
+            merged["manual_prompt_fingerprint"] = fingerprint
+            merged["manual_prompt_dimensions"] = dimensions
+        else:
+            # 清空人工正文：同时清掉孤儿指纹/维度，避免 UI 误显“已保存”
+            merged.pop("manual_prompt_fingerprint", None)
+            merged.pop("manual_prompt_dimensions", None)
+
+        # 刷新解析链：保存后前端立即读到 source=manual；清空后回到 H3/description
+        h3_segment = next(
+            (item for item in h3_segments if item.get("id") == seg_id),
+            {"id": seg_id, "shot_content": "", "duration": 0, "characters": [], "location": ""},
+        )
+        items = (artifacts.get("prompt_rewrite", {}) or {}).get("items", [])
+        h3_item = next(
+            (item for item in items or [] if isinstance(item, dict) and item.get("id") == seg_id),
+            None,
+        )
+        resolution = resolve_effective_prompt(
+            h3_segment, h3_item, merged,
+            current_fingerprint=fingerprint, current_dimensions=dimensions,
+        )
+        merged["prompt_source"] = {
+            "source": resolution["source"],
+            "freshness": resolution["freshness"],
+            "stale_reasons": list(resolution["stale_reasons"]),
+        }
 
     def _apply_artifact_update(self, state: WorkflowState, stage: str, body: Dict[str, Any]):
         """Apply a user edit to in-memory artifacts before the session is persisted."""
