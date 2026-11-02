@@ -54,10 +54,10 @@ def build_input_fingerprint(
     style: Any = "",
     facts: Iterable[Dict[str, Any]] = (),
     grounding_model: Any = "",
-    grounding_text: Any = "",
 ) -> str:
-    """grounding 是实际提示词的一部分：模型与描述文本哈希都纳入指纹。"""
-    grounding_blob = str(grounding_text or "").strip()
+    """grounding 只纳入**模型标识**：描述文本是 (参考图, 模型, 策略) 的派生结果，
+    参考图已在 references、模型属配置；把文本哈希塞进指纹会导致解析端无法重建、
+    且 VLM 非确定性会造成每次都 stale。"""
     payload = {
         "shot_content": str(shot_content or "").strip(),
         "duration": int(duration or 0),
@@ -65,10 +65,7 @@ def build_input_fingerprint(
         "references": [[str(container), str(key), media_ref(path)] for container, key, path in references],
         "style": str(style or "").strip(),
         "facts": normalize_facts(facts),
-        "grounding": {
-            "model": str(grounding_model or "").strip(),
-            "text_hash": hashlib.sha256(grounding_blob.encode("utf-8")).hexdigest() if grounding_blob else "",
-        },
+        "grounding_model": str(grounding_model or "").strip(),
     }
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

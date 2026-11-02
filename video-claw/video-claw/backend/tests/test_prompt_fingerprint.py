@@ -59,13 +59,13 @@ def test_http_query_is_stripped():
     assert media_ref("https://host/p/a.png?X-Amz-Signature=abc") == "https://host/p/a.png"
 
 
-def test_grounding_changes_fingerprint():
+def test_grounding_model_changes_fingerprint():
+    """grounding 文本不进指纹（派生结果），但模型配置变化必须失效。"""
     base = _fp()
-    same = _fp(grounding_model="vlm-a", grounding_text="<Picture 1>：画面描述")
+    same = _fp(grounding_model="vlm-a")
     assert same != base
-    assert same == _fp(grounding_model="vlm-a", grounding_text="<Picture 1>：画面描述")
-    assert same != _fp(grounding_model="vlm-b", grounding_text="<Picture 1>：画面描述")
-    assert same != _fp(grounding_model="vlm-a", grounding_text="<Picture 1>：另一张描述")
+    assert same == _fp(grounding_model="vlm-a")
+    assert same != _fp(grounding_model="vlm-b")
 
 
 def test_fact_order_does_not_matter():
@@ -137,3 +137,15 @@ def test_facts_use_the_same_matching_as_authoritative_context():
     context = PromptRewriteAgent._authoritative_context(segment, FACTS_ARTIFACTS)
     assert "银行职员" in context
     assert "其他" not in context
+
+
+def test_unmatched_character_is_kept_in_both_facts_and_context():
+    """分镜写了不存在的角色：提示词与指纹都要保留这行名称，否则两边不一致。"""
+    segment = {"id": "s1", "shot_content": "镜头", "duration": 8,
+               "characters": ["小陈", "路人甲"], "location": "支行办公室"}
+    facts = PromptRewriteAgent._authority_facts(segment, FACTS_ARTIFACTS)
+    unmatched = [item for item in facts if item["name"] == "路人甲"]
+    assert unmatched and unmatched[0]["id"] == ""
+
+    context = PromptRewriteAgent._authoritative_context(segment, FACTS_ARTIFACTS)
+    assert "- 路人甲" in context

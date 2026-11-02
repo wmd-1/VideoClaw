@@ -412,6 +412,9 @@ class PromptRewriteAgent(AgentInterface):
                 None,
             )
             if entry is None:
+                # 与 `_authoritative_context` 一致：未匹配到资产也会输出一行名称
+                facts.append({"kind": "character", "id": "", "name": str(name),
+                              "description": ""})
                 continue
             facts.append({
                 "kind": "character",
@@ -436,8 +439,7 @@ class PromptRewriteAgent(AgentInterface):
     def _input_fingerprint(self, segment: Dict[str, Any], mode: str,
                            ordered: List[Dict[str, Any]], scene_map: Dict[str, Dict],
                            artifacts: Dict[str, Any], input_data: Dict,
-                           session_meta: Dict, *, grounding_model: str = "",
-                           grounding_text: str = "") -> str:
+                           session_meta: Dict, *, grounding_model: str = "") -> str:
         """Q1：当次输入指纹（参考集用有序清单，不按名称）。"""
         references: List[tuple] = []
         if mode == "Ref2VA":
@@ -461,7 +463,6 @@ class PromptRewriteAgent(AgentInterface):
             style=input_data.get("style") or session_meta.get("style") or "",
             facts=self._authority_facts(segment, artifacts.get("character_design")),
             grounding_model=grounding_model,
-            grounding_text=grounding_text,
         )
 
     def _grounding_images(self, segment: Dict[str, Any], ordered_segments: List[Dict[str, Any]],
@@ -700,17 +701,19 @@ class PromptRewriteAgent(AgentInterface):
                 grounding_desc, grounding_hashes = "", []
             if grounding_desc or grounding_hashes:
                 grounding_meta = {"image_hash": grounding_hashes[0] if grounding_hashes else "",
+                                  "image_hashes": list(grounding_hashes),
+                                  "model": vlm_model,
                                   "described": bool(grounding_desc)}
             elif mode in ("I2VA", "FL2VA", "Ref2VA"):
-                grounding_meta = {"described": False, "text_only": True}
+                grounding_meta = {"described": False, "text_only": True, "model": vlm_model}
                 grounding_degraded += 1
             else:
                 grounding_meta = None
 
-            # Q1：当次输入指纹（grounding 文本是实际提示词的一部分，故在其后计算）
+            # Q1：当次输入指纹（grounding 只纳入模型标识，文本是其派生结果）
             fingerprint = self._input_fingerprint(
                 segment, mode, ordered, scene_map, artifacts, input_data, session_meta,
-                grounding_model=vlm_model, grounding_text=grounding_desc,
+                grounding_model=vlm_model,
             )
 
             sections = self._render_sections(
