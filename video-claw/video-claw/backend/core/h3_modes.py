@@ -37,7 +37,6 @@ def resolve_h3_mode(video_generation_mode: str, has_first_frame: bool = False,
 
 def resolve_grounding_model(input_data: Optional[Dict[str, Any]],
                             session_meta: Optional[Dict[str, Any]] = None) -> str:
-    """VLM 模型回退链：Config.H3_REWRITE_VLM_MODEL → input → session → Config.VLM_MODEL。"""
     from config import Config
 
     data = input_data if isinstance(input_data, dict) else {}
@@ -47,6 +46,63 @@ def resolve_grounding_model(input_data: Optional[Dict[str, Any]],
         or str(data.get("vlm_model") or meta.get("vlm_model") or "").strip()
         or str(Config.VLM_MODEL or "").strip()
     )
+
+
+def resolve_style_key(input_data: Optional[Dict[str, Any]],
+                      session_meta: Optional[Dict[str, Any]] = None) -> str:
+    """风格**原始键**（未转英文关键词）：两侧必须同源，默认空串。"""
+    data = input_data if isinstance(input_data, dict) else {}
+    meta = session_meta if isinstance(session_meta, dict) else {}
+    return str(data.get("style") or meta.get("style") or "").strip()
+
+
+def collect_segments(storyboard_artifact: Optional[Dict[str, Any]], model: str = "",
+                     session_override: Any = None) -> List[Dict[str, Any]]:
+    """storyboard → H3 分镜条目（id/描述/有效时长/角色/场景），按 id 排序。
+
+    H3 改写与视频阶段算指纹必须共用此归一化，否则 `shot_content` 取法不同会恒 stale。
+    注意：视频侧执行用的原始 segment 仍应保留自己的形状，不要用它替换。
+    """
+    from core.video_params import resolve_effective_duration
+
+    artifact = storyboard_artifact if isinstance(storyboard_artifact, dict) else {}
+    segments: List[Dict[str, Any]] = []
+    episodes = artifact.get("episodes", [])
+    if not isinstance(episodes, list):
+        return segments
+    for ep in episodes:
+        if not isinstance(ep, dict):
+            continue
+        ep_n = ep.get("episode_number", 0)
+        for s_i, seg in enumerate(ep.get("segments", []), 1):
+            if not isinstance(seg, dict):
+                continue
+            seg_id = seg.get("segment_id") or f"seg_{ep_n:02d}_{s_i:02d}"
+            shots = seg.get("shots", [])
+            shot_content = "\n".join(
+                str(sh.get("content") or sh.get("plot") or "").strip()
+                for sh in shots if isinstance(sh, dict)
+            ).strip()
+            total_duration = seg.get("total_duration") or sum(
+                sh.get("duration", 0) for sh in shots if isinstance(sh, dict)
+            )
+            duration, duration_adjustments = resolve_effective_duration(
+                total_duration, session_override, model
+            )
+            location = str(seg.get("location") or seg.get("setting") or "").strip()
+            segments.append({
+                "id": seg_id,
+                "name": f"第{ep_n}集-片段{s_i}",
+                "index": s_i,
+                "episode": ep_n,
+                "shot_content": shot_content,
+                "duration": duration,
+                "duration_adjustments": duration_adjustments,
+                "characters": [str(c) for c in (seg.get("characters") or []) if c],
+                "location": location,
+            })
+    segments.sort(key=lambda item: item["id"])
+    return segments
 
 
 def setting_entry(location: str, settings: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -165,11 +221,13 @@ def fingerprint_parts(segment: Dict[str, Any], mode: str,
 __all__ = [
     "NEXT_FRAME_MODES",
     "authority_facts",
+    "collect_segments",
     "fingerprint_parts",
     "media_references",
     "next_in_order",
     "resolve_grounding_model",
     "resolve_h3_mode",
+    "resolve_style_key",
     "setting_description",
     "setting_entry",
 ]

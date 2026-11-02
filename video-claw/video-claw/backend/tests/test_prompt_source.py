@@ -141,3 +141,12 @@ def test_h3_item_not_done_reports_not_ready():
     )
     assert result["source"] == "description"
     assert result["stale_reasons"] == ["h3_not_ready"]
+
+
+def test_no_h3_item_reports_absent():
+    fingerprint, dimensions = _current()
+    result = resolve_effective_prompt(
+        SEGMENT, {}, {"description": "d"},
+        current_fingerprint=fingerprint, current_dimensions=dimensions,
+    )
+    assert result["stale_reasons"] == ["h3_absent"]

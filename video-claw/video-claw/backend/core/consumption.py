@@ -30,13 +30,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core import media_refs
+from core.h3_modes import NEXT_FRAME_MODES
 from core.resource_claims import CLAIMS, local_identity
 from storage import StorageError
 
 _KEY_FIELDS = ("id", "segment_id", "character_id", "setting_id", "clip_id")
 _VERSION_PATH_FIELDS = ("path", "url", "image", "video", "selected")
 _FRAME_MODES = ("first_frame", "start_end_frame")
-_NEXT_FRAME_MODES = ("start_end_frame", "FL2VA")
+_NEXT_FRAME_MODES = NEXT_FRAME_MODES  # 单一来源：core.h3_modes（避免“物化了但 Agent 不用”）
 
 
 @dataclass(frozen=True)

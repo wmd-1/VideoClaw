@@ -31,12 +31,12 @@ from config import Config
 from core.agents.base_agent import AgentInterface
 from core.agents.video_agent import VideoDirectorAgent
 from core.h3_modes import authority_facts as _shared_authority_facts
+from core.h3_modes import collect_segments as _shared_collect_segments
 from core.h3_modes import fingerprint_parts as _shared_fingerprint_parts
 from core.h3_modes import next_in_order as _shared_next_in_order
-from core.h3_modes import resolve_grounding_model, resolve_h3_mode
+from core.h3_modes import resolve_grounding_model, resolve_h3_mode, resolve_style_key
 from core.h3_modes import setting_description as _shared_setting_description
 from core.h3_modes import setting_entry as _shared_setting_entry
-from core.video_params import resolve_effective_duration
 from prompts.loader import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -206,50 +206,12 @@ class PromptRewriteAgent(AgentInterface):
     @staticmethod
     def _collect_segments(storyboard_artifact: Dict, model: str = "",
                           session_override: Any = None) -> List[Dict[str, Any]]:
-        """从 storyboard 产物收集分镜条目（id/描述/时长/角色），保持 segment 顺序。
+        """从 storyboard 产物收集分镜条目（id/描述/有效时长/角色/场景）。
 
-        时长按 `core.video_params.resolve_effective_duration` 单点解析（Q2）：
-        会话覆盖 > 分镜时长 > 默认，再按所选模型能力夹取，与视频阶段同源。
+        时长与归一化由 `core.h3_modes.collect_segments` 单一实现，视频阶段算指纹时
+        必须调用同一函数，否则两侧 `shot_content` 取法不同会恒 stale。
         """
-        segments: List[Dict[str, Any]] = []
-        episodes = storyboard_artifact.get("episodes", [])
-        if not isinstance(episodes, list):
-            return segments
-        for ep in episodes:
-            if not isinstance(ep, dict):
-                continue
-            ep_n = ep.get("episode_number", 0)
-            for s_i, seg in enumerate(ep.get("segments", []), 1):
-                if not isinstance(seg, dict):
-                    continue
-                seg_id = seg.get("segment_id") or f"seg_{ep_n:02d}_{s_i:02d}"
-                shots = seg.get("shots", [])
-                shot_content = "\n".join(
-                    str(sh.get("content") or sh.get("plot") or "").strip()
-                    for sh in shots
-                    if isinstance(sh, dict)
-                ).strip()
-                total_duration = seg.get("total_duration") or sum(
-                    sh.get("duration", 0) for sh in shots if isinstance(sh, dict)
-                )
-                duration, duration_adjustments = resolve_effective_duration(
-                    total_duration, session_override, model
-                )
-                # 分镜产物写 location；早期/兼容产物只有 setting
-                location = str(seg.get("location") or seg.get("setting") or "").strip()
-                segments.append({
-                    "id": seg_id,
-                    "name": f"第{ep_n}集-片段{s_i}",
-                    "index": s_i,
-                    "episode": ep_n,
-                    "shot_content": shot_content,
-                    "duration": duration,
-                    "duration_adjustments": duration_adjustments,
-                    "characters": [str(c) for c in (seg.get("characters") or []) if c],
-                    "location": location,
-                })
-        segments.sort(key=lambda x: x["id"])
-        return segments
+        return _shared_collect_segments(storyboard_artifact, model, session_override)
 
     # ─── 权威事实（B：角色与场景知识注入） ───
 
@@ -371,7 +333,7 @@ class PromptRewriteAgent(AgentInterface):
         """返回 (整体指纹, 逐维度哈希)；与视频阶段共用同一实现。"""
         return _shared_fingerprint_parts(
             segment, mode, ordered, scene_map, artifacts,
-            style=input_data.get("style") or session_meta.get("style") or "",
+            style=resolve_style_key(input_data, session_meta),
             grounding_model=grounding_model,
         )
 

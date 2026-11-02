@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 
 from core.agents.prompt_rewrite_agent import PromptRewriteAgent
+from core.h3_modes import collect_segments, resolve_style_key
 from core.media_refs import ResolvedMedia
 from core.prompt_fingerprint import build_input_fingerprint, media_ref
 
@@ -149,3 +150,23 @@ def test_unmatched_character_is_kept_in_both_facts_and_context():
 
     context = PromptRewriteAgent._authoritative_context(segment, FACTS_ARTIFACTS)
     assert "- 路人甲" in context
+
+
+def test_style_key_is_shared_and_defaults_to_empty():
+    """两侧必须用同一风格取值，默认空串（不能一边用 realistic、一边用空）。"""
+    assert resolve_style_key({}, {}) == ""
+    assert resolve_style_key({"style": "anime"}, {}) == "anime"
+    assert resolve_style_key({}, {"style": "anime"}) == "anime"
+
+
+def test_collect_segments_sorted_and_setting_compatible():
+    storyboard = {"episodes": [{"episode_number": 1, "segments": [
+        {"segment_id": "seg_01_02", "setting": "办公室",
+         "shots": [{"content": "镜头B", "duration": 5}]},
+        {"segment_id": "seg_01_01", "location": "教室",
+         "shots": [{"content": "镜头A", "duration": 5}]},
+    ]}]}
+    segments = collect_segments(storyboard)
+    assert [item["id"] for item in segments] == ["seg_01_01", "seg_01_02"]
+    assert segments[0]["shot_content"] == "镜头A"
+    assert segments[1]["location"] == "办公室"

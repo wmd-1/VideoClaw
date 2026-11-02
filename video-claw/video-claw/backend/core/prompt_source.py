@@ -30,6 +30,7 @@ STALE_REASONS = (
     "fingerprint_missing",
     "fingerprint_changed",
     "h3_not_ready",
+    "h3_absent",
 )
 
 _DIMENSION_REASONS = {
@@ -102,8 +103,9 @@ def resolve_effective_prompt(
         return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": FRESHNESS_UNKNOWN,
                 "stale_reasons": ["h3_not_ready"]}
 
+    # 根本没有 H3 条目（阶段未跑/首次生成）
     return {"text": description, "source": SOURCE_DESCRIPTION, "freshness": FRESHNESS_UNKNOWN,
-            "stale_reasons": ["fingerprint_missing"]}
+            "stale_reasons": ["h3_absent"]}
 
 
 __all__ = [
