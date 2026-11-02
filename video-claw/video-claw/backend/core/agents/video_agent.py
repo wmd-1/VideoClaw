@@ -14,6 +14,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core.video_params import resolve_effective_duration
+
 from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,8 @@ class VideoDirectorAgent(AgentInterface):
 
     def __init__(self):
         super().__init__(name="VideoDirector")
+        # 时长夹取记录（Q2）：按片段 ID 收集，随条目事件透出
+        self._duration_adjustments: dict = {}
 
     # ─── 版本管理 ───
 
@@ -145,8 +149,13 @@ class VideoDirectorAgent(AgentInterface):
             }
 
         save_path = self._next_version_path(sid, segment_id)
-        # 会话级时长覆盖：未设置时沿用分镜时长
-        duration = video_duration or duration
+        # 时长单点解析（Q2）：会话覆盖 > 分镜 > 默认，再按模型能力夹取；
+        # 与 H3 改写阶段同源，夹取事实记录供事件透出
+        duration, adjustments = resolve_effective_duration(duration, video_duration, video_model)
+        if adjustments:
+            self._duration_adjustments[segment_id] = adjustments
+            for message in adjustments:
+                logger.info("VideoDirectorAgent: %s %s", segment_id, message)
         failure_marker: Optional[dict] = None
         try:
             from models.video_client import VideoClient
@@ -491,6 +500,10 @@ class VideoDirectorAgent(AgentInterface):
             rewrite_result = rewrite_results.get(segment_id) or existing_rewrite_results.get(segment_id)
             if rewrite_result:
                 item["rewrite_result"] = rewrite_result
+            adjustment = self._duration_adjustments.get(segment_id)
+            if adjustment:
+                # Q2：夹取事实随产物透出（值来自 resolve_effective_duration）
+                item["duration_adjustment"] = adjustment
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":

@@ -29,14 +29,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from config import Config
 from core.agents.base_agent import AgentInterface
+from core.agents.video_agent import VideoDirectorAgent
+from core.video_params import resolve_effective_duration
 from prompts.loader import load_prompt
 
 logger = logging.getLogger(__name__)
-
-# MiniMax H3 支持的视频时长范围（秒）；超出夹取到边界
-H3_DURATION_MIN = 4
-H3_DURATION_MAX = 15
-H3_DURATION_DEFAULT = 8
 
 # 校验失败重试上限（含首次共 1 + MAX 次调用）
 MAX_VALIDATE_RETRIES = 2
@@ -98,17 +95,6 @@ def _event_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
     if body:
         summary["rewritten_prompt"] = body[:EVENT_BODY_LIMIT]
     return summary
-
-
-def _clamp_duration(raw: Any) -> int:
-    """夹取到 H3 支持的 4~15 秒；缺失/非法/非正值回退默认 8 秒。"""
-    try:
-        value = int(round(float(raw)))
-    except (TypeError, ValueError):
-        return H3_DURATION_DEFAULT
-    if value <= 0:
-        return H3_DURATION_DEFAULT
-    return max(H3_DURATION_MIN, min(H3_DURATION_MAX, value))
 
 
 def _extract_prompt(assistant_text: str) -> str:
@@ -236,8 +222,13 @@ class PromptRewriteAgent(AgentInterface):
     # ─── 输入收集 ───
 
     @staticmethod
-    def _collect_segments(storyboard_artifact: Dict) -> List[Dict[str, Any]]:
-        """从 storyboard 产物收集分镜条目（id/描述/时长/角色），保持 segment 顺序。"""
+    def _collect_segments(storyboard_artifact: Dict, model: str = "",
+                          session_override: Any = None) -> List[Dict[str, Any]]:
+        """从 storyboard 产物收集分镜条目（id/描述/时长/角色），保持 segment 顺序。
+
+        时长按 `core.video_params.resolve_effective_duration` 单点解析（Q2）：
+        会话覆盖 > 分镜时长 > 默认，再按所选模型能力夹取，与视频阶段同源。
+        """
         segments: List[Dict[str, Any]] = []
         episodes = storyboard_artifact.get("episodes", [])
         if not isinstance(episodes, list):
@@ -259,6 +250,9 @@ class PromptRewriteAgent(AgentInterface):
                 total_duration = seg.get("total_duration") or sum(
                     sh.get("duration", 0) for sh in shots if isinstance(sh, dict)
                 )
+                duration, duration_adjustments = resolve_effective_duration(
+                    total_duration, session_override, model
+                )
                 # 分镜产物写 location；早期/兼容产物只有 setting
                 location = str(seg.get("location") or seg.get("setting") or "").strip()
                 segments.append({
@@ -267,7 +261,8 @@ class PromptRewriteAgent(AgentInterface):
                     "index": s_i,
                     "episode": ep_n,
                     "shot_content": shot_content,
-                    "duration": _clamp_duration(total_duration),
+                    "duration": duration,
+                    "duration_adjustments": duration_adjustments,
                     "characters": [str(c) for c in (seg.get("characters") or []) if c],
                     "location": location,
                 })
@@ -541,6 +536,9 @@ class PromptRewriteAgent(AgentInterface):
         }
         if grounding_meta is not None:
             item["grounding"] = grounding_meta
+        if segment.get("duration_adjustments"):
+            # Q2：时长夹取事实随条目透出（与视频阶段同源）
+            item["duration_adjustment"] = list(segment["duration_adjustments"])
         if not rewritten_prompt:
             item["error"] = "改写结果为空或未通过结构校验"
         return item
@@ -716,7 +714,13 @@ class PromptRewriteAgent(AgentInterface):
         prev_items = prev_artifact.get("items", []) if isinstance(prev_artifact.get("items"), list) else []
         prev_items_by_id = {item.get("id"): item for item in prev_items if isinstance(item, dict) and item.get("id")}
 
-        segments = self._collect_segments(storyboard_artifact)
+        # 时长与视频阶段同源（Q2）：会话覆盖 > 分镜 > 默认，再按所选模型能力夹取
+        session_meta = self._session_meta(input_data)
+        _, video_model = VideoDirectorAgent._select_video_model(input_data, session_meta)
+        session_override = input_data.get("video_duration") or session_meta.get("video_duration")
+        segments = self._collect_segments(
+            storyboard_artifact, model=video_model, session_override=session_override
+        )
         if not segments:
             raise ValueError("提示词改写阶段缺少分镜数据：请先完成分镜设计阶段")
 
