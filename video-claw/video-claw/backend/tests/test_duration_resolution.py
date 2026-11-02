@@ -83,6 +83,16 @@ def test_request_below_h3_lower_bound_is_raised_to_four(monkeypatch):
     assert adjustments and "4" in adjustments[0]
 
 
+def test_non_h3_model_below_four_is_raised_with_h3_reason(monkeypatch):
+    """产品口径：H3 4~15 是全流水线前置，非 H3 模型的 2~3s 在本流水线不可用。"""
+    _patch_range(monkeypatch, 2, 15)
+    value, adjustments = resolve_effective_duration(2, None, model="wan2.6-i2v-flash")
+    assert value == 4
+    assert adjustments and "H3 4~15" in adjustments[0]
+    # 区间内不受影响
+    assert resolve_effective_duration(12, None, model="wan2.6-i2v-flash") == (12, [])
+
+
 def test_h3_segments_use_effective_duration_and_expose_adjustment(monkeypatch):
     _patch_range(monkeypatch, 5, 10)
     segments = PromptRewriteAgent._collect_segments(STORYBOARD, model="m1", session_override=12)

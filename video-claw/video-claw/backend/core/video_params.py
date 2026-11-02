@@ -1,11 +1,11 @@
 """视频有效时长的单点解析（Q2）。
 
-优先级：会话覆盖 > 分镜时长 > 默认 8；再按所选视频模型的
-`capabilities.duration{min,max}` 夹取。H3 改写与视频生成必须消费同一结果，
-不得各自夹取（否则改写目标时长与实际请求会不一致）。
+优先级：会话覆盖 > 分镜时长 > 默认 8；有效区间取 **H3 协议硬区间 4~15**
+与所选模型 `capabilities.duration{min,max}` 的**交集**（模型只能收窄，不能放宽）。
+H3 改写与视频生成必须消费同一结果，不得各自夹取。
 
-夹取造成数值变化时返回可读的 adjustment 文案，供阶段进度/产物透出；
-只有能力区间本身非法时才抛错。
+夹取造成数值变化时返回可读的 adjustment 文案（写明是 H3 下限还是模型能力导致），
+供阶段进度/产物透出；能力区间非法或与 H3 无交集时才报错。
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ DEFAULT_DURATION = 8
 # H3 协议硬区间（vLLM/SGLang cookbook：4–15s），不是 fallback；模型只能在这个区间
 # 内进一步收窄
 H3_DURATION_RANGE = (4, 15)
-FALLBACK_RANGE = H3_DURATION_RANGE  # 兼容旧引用
 
 
 def _positive_int(value: Any) -> int:
@@ -40,7 +39,8 @@ def duration_range(model: str) -> Tuple[int, int]:
 
     capabilities = (get_model_config(model) or {}).get("capabilities") or {}
     contract = capabilities.get("duration") or {}
-    if not contract:
+    if not isinstance(contract, dict) or not contract:
+        # 未声明或形式非法（如写成 duration: 5）→ 只用 H3 区间
         return low, high
     try:
         declared_low = int(contract.get("min", low))
@@ -75,7 +75,8 @@ def resolve_effective_duration(
     adjustments: List[str] = []
     if effective != base:
         adjustments.append(
-            f"时长 {base}s（{source}）按模型能力夹取为 {effective}s（{low}~{high}s）"
+            f"时长 {base}s（{source}）按 H3 {H3_DURATION_RANGE[0]}~{H3_DURATION_RANGE[1]}s "
+            f"与模型能力（有效区间 {low}~{high}s）夹取为 {effective}s"
         )
     return effective, adjustments
 
@@ -91,7 +92,6 @@ def duration_source(segment_duration: Any = None, session_override: Any = None) 
 
 __all__ = [
     "DEFAULT_DURATION",
-    "FALLBACK_RANGE",
     "H3_DURATION_RANGE",
     "duration_range",
     "duration_source",
