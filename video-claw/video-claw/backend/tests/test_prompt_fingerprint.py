@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 
 from core.agents.prompt_rewrite_agent import PromptRewriteAgent
+from core.media_refs import ResolvedMedia
 from core.prompt_fingerprint import build_input_fingerprint, media_ref
 
 BASE = dict(
@@ -43,6 +44,28 @@ def test_local_absolute_paths_are_normalized_to_basename():
 
 def test_public_paths_are_kept_verbatim():
     assert media_ref("/code/result/_media/a.png") == "/code/result/_media/a.png"
+
+
+def test_resolved_media_identity_uses_public_path():
+    """同一素材：本地缓存形态（_refs）与 canonical public path 必须同指纹。"""
+    resolved = ResolvedMedia("/code/work/_refs/o/abc.png", public_path="/code/result/_media/a.png")
+    assert media_ref(resolved) == "/code/result/_media/a.png"
+    assert _fp(references=[("r", "s", resolved)]) == _fp(
+        references=[("r", "s", "/code/result/_media/a.png")]
+    )
+
+
+def test_http_query_is_stripped():
+    assert media_ref("https://host/p/a.png?X-Amz-Signature=abc") == "https://host/p/a.png"
+
+
+def test_grounding_changes_fingerprint():
+    base = _fp()
+    same = _fp(grounding_model="vlm-a", grounding_text="<Picture 1>：画面描述")
+    assert same != base
+    assert same == _fp(grounding_model="vlm-a", grounding_text="<Picture 1>：画面描述")
+    assert same != _fp(grounding_model="vlm-b", grounding_text="<Picture 1>：画面描述")
+    assert same != _fp(grounding_model="vlm-a", grounding_text="<Picture 1>：另一张描述")
 
 
 def test_fact_order_does_not_matter():
@@ -90,3 +113,27 @@ def test_make_item_carries_input_fingerprint():
         "正文", "I2VA", fingerprint="abc123",
     )
     assert item["input_fingerprint"] == "abc123"
+
+
+FACTS_ARTIFACTS = {
+    "characters": [
+        {"id": "c1", "name": "小陈", "description": "银行职员"},
+        {"id": "c2", "name": "小陈的同事", "description": "其他"},
+    ],
+    "settings": [{"id": "s1", "name": "支行办公室", "description": "办公室"}],
+}
+
+
+def test_facts_use_the_same_matching_as_authoritative_context():
+    """指纹与提示词必须命中同一集合：精确名称匹配，不做模糊。"""
+    segment = {"id": "s1", "shot_content": "镜头", "duration": 8,
+               "characters": ["小陈"], "location": "支行办公室"}
+    facts = PromptRewriteAgent._authority_facts(segment, FACTS_ARTIFACTS)
+    assert [(item["kind"], item["id"]) for item in facts] == [
+        ("character", "c1"),
+        ("setting", "s1"),
+    ]
+
+    context = PromptRewriteAgent._authoritative_context(segment, FACTS_ARTIFACTS)
+    assert "银行职员" in context
+    assert "其他" not in context

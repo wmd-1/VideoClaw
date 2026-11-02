@@ -14,16 +14,23 @@ import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-_PUBLIC_PREFIXES = ("/code/", "http://", "https://")
 _FACT_FIELDS = ("kind", "id", "name", "description", "species", "location")
 
 
 def media_ref(value: Any) -> str:
-    """媒体引用的稳定表示：public path/media id 原样；本地绝对路径取 basename。"""
-    text = str(value or "").strip()
+    """媒体身份：**以 public_path 为准**，不随本地缓存形态变化。
+
+    - `ResolvedMedia` 自带 canonical `public_path`（可能是本地 `_refs` 路径 + public 属性）；
+    - 纯字符串 public path 原样；本地绝对路径取 basename（兜底）；
+    - http(s) 去掉 query（presigned 签名每次不同）。
+    """
+    public = str(getattr(value, "public_path", "") or "").strip()
+    text = public or str(value or "").strip()
     if not text:
         return ""
-    if text.startswith(_PUBLIC_PREFIXES):
+    if text.startswith(("http://", "https://")):
+        return text.split("?", 1)[0]
+    if text.startswith("/code/"):
         return text
     return text.rsplit("/", 1)[-1]
 
@@ -46,7 +53,11 @@ def build_input_fingerprint(
     references: Sequence[Tuple[str, str, Any]],
     style: Any = "",
     facts: Iterable[Dict[str, Any]] = (),
+    grounding_model: Any = "",
+    grounding_text: Any = "",
 ) -> str:
+    """grounding 是实际提示词的一部分：模型与描述文本哈希都纳入指纹。"""
+    grounding_blob = str(grounding_text or "").strip()
     payload = {
         "shot_content": str(shot_content or "").strip(),
         "duration": int(duration or 0),
@@ -54,6 +65,10 @@ def build_input_fingerprint(
         "references": [[str(container), str(key), media_ref(path)] for container, key, path in references],
         "style": str(style or "").strip(),
         "facts": normalize_facts(facts),
+        "grounding": {
+            "model": str(grounding_model or "").strip(),
+            "text_hash": hashlib.sha256(grounding_blob.encode("utf-8")).hexdigest() if grounding_blob else "",
+        },
     }
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

@@ -273,11 +273,11 @@ class PromptRewriteAgent(AgentInterface):
     # ─── 权威事实（B：角色与场景知识注入） ───
 
     @staticmethod
-    def _setting_description(location: str, settings: List[Dict[str, Any]]) -> str:
-        """按稳定 ID 或规范名查找场景描述；不做模糊匹配，避免串到别的场景。"""
+    def _setting_entry(location: str, settings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """按稳定 ID 或规范名查找场景条目；不做模糊匹配，避免串到别的场景。"""
         target = str(location or "").strip()
         if not target:
-            return ""
+            return None
         for item in settings:
             if not isinstance(item, dict):
                 continue
@@ -288,8 +288,14 @@ class PromptRewriteAgent(AgentInterface):
             }
             names.discard("")
             if target in names:
-                return str(item.get("description") or "").strip()
-        return ""
+                return item
+        return None
+
+    @staticmethod
+    def _setting_description(location: str, settings: List[Dict[str, Any]]) -> str:
+        """场景描述（与提示词注入共用同一匹配）。"""
+        entry = PromptRewriteAgent._setting_entry(location, settings)
+        return str(entry.get("description") or "").strip() if entry else ""
 
     @staticmethod
     def _authoritative_context(segment: Dict[str, Any], character_artifact: Optional[Dict]) -> str:
@@ -391,26 +397,47 @@ class PromptRewriteAgent(AgentInterface):
         return images
 
     @staticmethod
-    def _authority_facts(artifacts: Dict[str, Any], segment: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """本分镜涉及的人物/场景权威事实（与消费计划同一匹配与顺序）。"""
-        from core.consumption import reference_assets_for_segment
-
+    def _authority_facts(segment: Dict[str, Any], character_artifact: Optional[Dict]) -> List[Dict[str, Any]]:
+        """本分镜的权威事实（**与 `_authoritative_context` 同一匹配**，保证指纹与提示词一致）。"""
+        artifact = character_artifact if isinstance(character_artifact, dict) else {}
+        characters = artifact.get("characters", [])
+        characters = characters if isinstance(characters, list) else []
+        settings = artifact.get("settings", [])
+        settings = settings if isinstance(settings, list) else []
         facts: List[Dict[str, Any]] = []
-        for container, key, asset in reference_assets_for_segment(artifacts, segment):
+        for name in segment.get("characters", []) or []:
+            entry = next(
+                (c for c in characters if isinstance(c, dict)
+                 and str(c.get("name") or c.get("id") or "").strip() == str(name).strip()),
+                None,
+            )
+            if entry is None:
+                continue
             facts.append({
-                "kind": "character" if container == "characters" else "setting",
-                "id": key,
-                "name": asset.get("name"),
-                "description": asset.get("description"),
-                "species": asset.get("species"),
-                "location": segment.get("location") if container == "settings" else "",
+                "kind": "character",
+                "id": entry.get("id"),
+                "name": entry.get("name") or name,
+                "description": entry.get("description"),
+                "species": entry.get("species"),
             })
+        location = str(segment.get("location") or "").strip()
+        if location:
+            entry = PromptRewriteAgent._setting_entry(location, settings)
+            if entry is not None:
+                facts.append({
+                    "kind": "setting",
+                    "id": entry.get("id") or entry.get("setting_id"),
+                    "name": entry.get("name") or location,
+                    "description": entry.get("description"),
+                    "location": location,
+                })
         return facts
 
     def _input_fingerprint(self, segment: Dict[str, Any], mode: str,
                            ordered: List[Dict[str, Any]], scene_map: Dict[str, Dict],
                            artifacts: Dict[str, Any], input_data: Dict,
-                           session_meta: Dict) -> str:
+                           session_meta: Dict, *, grounding_model: str = "",
+                           grounding_text: str = "") -> str:
         """Q1：当次输入指纹（参考集用有序清单，不按名称）。"""
         references: List[tuple] = []
         if mode == "Ref2VA":
@@ -432,7 +459,9 @@ class PromptRewriteAgent(AgentInterface):
             mode=mode,
             references=references,
             style=input_data.get("style") or session_meta.get("style") or "",
-            facts=self._authority_facts(artifacts, segment),
+            facts=self._authority_facts(segment, artifacts.get("character_design")),
+            grounding_model=grounding_model,
+            grounding_text=grounding_text,
         )
 
     def _grounding_images(self, segment: Dict[str, Any], ordered_segments: List[Dict[str, Any]],
@@ -659,12 +688,7 @@ class PromptRewriteAgent(AgentInterface):
                 has_last_frame=bool(next_selected),
                 has_reference_set=(video_generation_mode == "reference"),
             )
-            # Q1：当次输入指纹（与条目一起落库，供下游判定新鲜度）
-            fingerprint = self._input_fingerprint(
-                segment, mode, ordered, scene_map, artifacts, input_data, session_meta
-            )
             guide = await asyncio.to_thread(self._load_guide, mode)
-
             # C：VLM grounding（独立开关；失败回退文本输入，模式不变）
             if mode in ("I2VA", "FL2VA", "Ref2VA"):
                 grounding_desc, grounding_hashes = await asyncio.to_thread(
@@ -682,6 +706,12 @@ class PromptRewriteAgent(AgentInterface):
                 grounding_degraded += 1
             else:
                 grounding_meta = None
+
+            # Q1：当次输入指纹（grounding 文本是实际提示词的一部分，故在其后计算）
+            fingerprint = self._input_fingerprint(
+                segment, mode, ordered, scene_map, artifacts, input_data, session_meta,
+                grounding_model=vlm_model, grounding_text=grounding_desc,
+            )
 
             sections = self._render_sections(
                 authoritative=self._authoritative_context(segment, character_artifact),
