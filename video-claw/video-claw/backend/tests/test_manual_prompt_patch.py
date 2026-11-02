@@ -50,3 +50,12 @@ def test_patch_stamp_failure_does_not_block_save():
     WorkflowEngine._stamp_manual_prompt(state, merged, "seg_01_01")
     assert merged["manual_prompt"] == "人工正文"
     assert "manual_prompt_fingerprint" not in merged
+
+
+def test_clearing_manual_prompt_removes_fingerprint():
+    state = SimpleNamespace(artifacts=ARTIFACTS, meta={})
+    merged = {"id": "seg_01_01", "manual_prompt": "",
+              "manual_prompt_fingerprint": "fp", "manual_prompt_dimensions": {"a": "b"}}
+    WorkflowEngine._stamp_manual_prompt(state, merged, "seg_01_01")
+    assert "manual_prompt_fingerprint" not in merged
+    assert "manual_prompt_dimensions" not in merged

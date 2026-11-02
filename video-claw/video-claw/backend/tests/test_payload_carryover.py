@@ -19,10 +19,19 @@ def _clip(payload):
     return payload["payload"]["clips"][0]
 
 
-def test_selected_prefers_existing_over_latest_version(monkeypatch):
+def test_selected_prefers_existing_when_no_new_version(monkeypatch):
     agent = _agent(monkeypatch, ["v1.mp4", "v2.mp4"])
-    clip = _clip(agent._build_payload("sid", SEGMENTS, [{"id": "s1", "selected": "v1.mp4"}]))
+    prev = {"id": "s1", "selected": "v1.mp4", "versions": ["v1.mp4", "v2.mp4"]}
+    clip = _clip(agent._build_payload("sid", SEGMENTS, [prev]))
     assert clip["selected"] == "v1.mp4"
+
+
+def test_new_version_becomes_selected(monkeypatch):
+    """本轮新增版本必须成为选中，否则“重生成成功但看起来没变化”。"""
+    agent = _agent(monkeypatch, ["v1.mp4", "v2.mp4"])
+    prev = {"id": "s1", "selected": "v1.mp4", "versions": ["v1.mp4"]}
+    clip = _clip(agent._build_payload("sid", SEGMENTS, [prev]))
+    assert clip["selected"] == "v2.mp4"
 
 
 def test_skipped_segment_keeps_prompt_fields(monkeypatch):
@@ -68,3 +77,20 @@ def test_submitted_prompt_is_truncated_at_1000(monkeypatch):
     clip = _clip(agent._build_payload("sid", SEGMENTS, []))
     assert len(clip["submitted_prompt"]) == 1000
     assert clip["submitted_prompt_truncated"] is True
+
+
+def test_effective_prompt_is_full_for_h3_and_absent_for_description(monkeypatch):
+    agent = _agent(monkeypatch, [])
+    agent._prompt_sources = {"s1": {
+        "source": "h3", "freshness": "fresh", "stale_reasons": [],
+        "text": "y" * 2000,
+    }}
+    clip = _clip(agent._build_payload("sid", SEGMENTS, []))
+    assert len(clip["effective_prompt"]) == 2000, "编辑预填不能用截断值"
+
+    agent._prompt_sources = {"s1": {
+        "source": "description", "freshness": "stale",
+        "stale_reasons": ["duration_changed"], "text": "分镜描述",
+    }}
+    clip = _clip(agent._build_payload("sid", SEGMENTS, []))
+    assert "effective_prompt" not in clip, "description 回退由前端直接用 description"

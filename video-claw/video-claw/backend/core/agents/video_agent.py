@@ -492,6 +492,15 @@ class VideoDirectorAgent(AgentInterface):
         return results
 
     @staticmethod
+    def _carry_over_selected(prev_clip: Optional[dict], versions: list) -> str:
+        """预览/产物共用的选中规则：本轮新增版本优先，否则沿用已存选中。"""
+        prev = prev_clip if isinstance(prev_clip, dict) else {}
+        prev_versions = prev.get("versions") if isinstance(prev.get("versions"), list) else []
+        if len(versions) > len(prev_versions):
+            return versions[-1] if versions else ""
+        return str(prev.get("selected") or (versions[-1] if versions else ""))
+
+    @staticmethod
     def _carry_over_item(item: dict, prev_clip: Optional[dict], versions: list) -> dict:
         """产物重建时继承已存字段（本次没算出来就沿用，算出来则覆盖）。
 
@@ -500,7 +509,11 @@ class VideoDirectorAgent(AgentInterface):
           `manual_prompt*`：跳过重生成的片段不会重算，必须继承。
         """
         prev = prev_clip if isinstance(prev_clip, dict) else {}
-        item["selected"] = str(prev.get("selected") or (versions[-1] if versions else ""))
+        prev_versions = prev.get("versions") if isinstance(prev.get("versions"), list) else []
+        generated_new = len(versions) > len(prev_versions)
+        latest = versions[-1] if versions else ""
+        # 本轮新增版本 → 取新版本；否则沿用已存选中（避免每次重建重置）
+        item["selected"] = latest if (generated_new or not prev.get("selected")) else str(prev.get("selected"))
         for field in (
             "prompt_source", "submitted_prompt", "submitted_prompt_truncated",
             "duration_adjustment", "effective_prompt",
@@ -527,8 +540,7 @@ class VideoDirectorAgent(AgentInterface):
                 "index": seg_n,
                 "description": self._display_prompt(seg, clip_map.get(segment_id)),
                 "duration": seg.get('total_duration', 10),
-                "selected": str((clip_map.get(segment_id) or {}).get("selected")
-                                or (versions[-1] if versions else "")),
+                "selected": self._carry_over_selected(clip_map.get(segment_id), versions),
                 "versions": versions,
                 "status": "done" if versions else "pending",
             }
@@ -583,9 +595,9 @@ class VideoDirectorAgent(AgentInterface):
                     if len(submitted) > 1000:
                         item["submitted_prompt_truncated"] = True
                 effective = str(resolution.get("text") or "")
-                if effective:
-                    # 编辑框预填用“当前有效正文”，不是分镜描述
-                    item["effective_prompt"] = effective[:1000]
+                if effective and str(resolution.get("source") or "") in ("h3", "manual"):
+                    # 编辑框预填用完整正文（不截断），description 回退由前端直接用 description
+                    item["effective_prompt"] = effective[:7000]
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":

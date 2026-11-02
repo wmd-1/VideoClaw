@@ -2335,6 +2335,12 @@ class WorkflowEngine:
         meta = getattr(state, "meta", None)
         artifacts = artifacts if isinstance(artifacts, dict) else {}
         meta = meta if isinstance(meta, dict) else {}
+        manual = str(merged.get("manual_prompt") or "").strip()
+        if not manual:
+            # 清空人工正文时一并清掉孤儿指纹/维度（避免 UI 误显“已保存”）
+            merged.pop("manual_prompt_fingerprint", None)
+            merged.pop("manual_prompt_dimensions", None)
+            return
         try:
             mode_key, video_model = VideoDirectorAgent._select_video_model({}, meta)
             h3_segments = collect_segments(
@@ -2429,7 +2435,7 @@ class WorkflowEngine:
                             current.get("versions"),
                             incoming.get("versions"),
                         )
-                        if stage == "video_generation" and str(incoming.get("manual_prompt") or "").strip():
+                        if stage == "video_generation" and "manual_prompt" in incoming:
                             self._stamp_manual_prompt(state, merged, item_id)
                         if current.get("selected") and incoming.get("status") in {"failed", "pending"}:
                             merged["status"] = current.get("status", "done")
