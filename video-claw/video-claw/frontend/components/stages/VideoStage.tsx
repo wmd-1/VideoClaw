@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Film, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, AlertTriangle, Play, Edit2, Save, X } from 'lucide-react';
+import { Film, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, AlertTriangle, Play, Edit2, Save, X, RotateCcw } from 'lucide-react';
 import type { StageViewProps } from './types';
 import { FlaggedItemBanner } from './MissingInputs';
 import { assetUrl } from './utils';
@@ -59,18 +59,29 @@ const PROMPT_STALE_LABELS: Record<string, string> = {
 function promptSourceView(clip: ClipItem): { text: string; className: string } {
   const meta = clip.prompt_source;
   if (!meta) return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
+  const joinReasons = () => (meta.stale_reasons || [])
+    .map(reason => PROMPT_STALE_LABELS[reason] || reason)
+    .join('、');
   if (meta.source === 'manual') {
-    return meta.freshness === 'fresh'
-      ? { text: '人工正文', className: 'bg-blue-100 text-blue-700' }
-      : { text: '人工正文（未校验）', className: 'bg-amber-100 text-amber-700' };
+    if (meta.freshness === 'fresh') {
+      return { text: '人工正文', className: 'bg-blue-100 text-blue-700' };
+    }
+    if (meta.freshness === 'unknown') {
+      return { text: '人工正文（未校验）', className: 'bg-amber-100 text-amber-700' };
+    }
+    const reasons = joinReasons();
+    return {
+      text: `人工正文（已过期${reasons ? `：${reasons}` : ''}）`,
+      className: 'bg-amber-100 text-amber-700',
+    };
   }
   if (meta.source === 'h3') {
-    return { text: 'H3 改写', className: 'bg-violet-100 text-violet-700' };
+    return meta.freshness === 'fresh'
+      ? { text: 'H3 改写', className: 'bg-violet-100 text-violet-700' }
+      : { text: 'H3 改写（非新鲜）', className: 'bg-amber-100 text-amber-700' };
   }
   if (meta.source === 'description') {
-    const reasons = (meta.stale_reasons || [])
-      .map(reason => PROMPT_STALE_LABELS[reason] || reason)
-      .join('、');
+    const reasons = joinReasons();
     return {
       text: reasons ? `回退分镜描述（${reasons}）` : '回退分镜描述',
       className: 'bg-amber-100 text-amber-700',
@@ -219,6 +230,7 @@ function ClipRow({
   initialPrompt,
   onDescChange,
   onSavePrompt,
+  onClearManual,
   onRegenerate,
   onSelectVersion,
   onToggleEdit,
@@ -237,6 +249,7 @@ function ClipRow({
   initialPrompt?: string;
   onDescChange?: (val: string) => void;
   onSavePrompt?: () => void;
+  onClearManual?: () => void;
   onRegenerate: () => void;
   onSelectVersion: (path: string) => void;
   onToggleEdit?: () => void;
@@ -252,7 +265,7 @@ function ClipRow({
   const isRunning = clip.status === 'running' || isRegenerating;
   const isPending = clip.status === 'pending';
   const isFailed = clip.status === 'failed' && !isRegenerating;
-  const hasChanges = editDesc !== clip.description;
+  const hasChanges = editDesc !== undefined && editDesc !== (initialPrompt ?? clip.description);
   const hasVideo = Boolean(clip.selected) || clip.versions.length > 0;
   const isUnselectedCandidate = !clip.selected && clip.versions.length > 0;
   const canGenerateMissing = Boolean(allowMissingGenerate) && !hasVideo && !isRunning && !isRegenerating;
@@ -297,6 +310,15 @@ function ClipRow({
           {canEdit && !isStageRunning && (
             isEditing ? (
               <div className="ml-auto flex gap-1">
+                {clip.manual_prompt ? (
+                  <button
+                    onClick={onClearManual}
+                    disabled={isSaving}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-amber-600 bg-amber-50 hover:bg-amber-100"
+                  >
+                    <RotateCcw className="w-3 h-3" />恢复自动
+                  </button>
+                ) : null}
                 <button
                   onClick={onCancelEdit}
                   className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100"
@@ -328,12 +350,17 @@ function ClipRow({
           )}
         </div>
         {isEditing ? (
-          <textarea
+          <div>
+            <p className="mb-1 text-[10px] text-gray-400">
+              保存后本片段将固定使用这段正文，直到清空或再次修改
+            </p>
+            <textarea
             value={editDesc ?? initialPrompt ?? clip.description}
             onChange={e => onDescChange?.(e.target.value)}
             rows={4}
             className="h-[120px] text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2 resize-none focus:outline-none focus:ring-1 focus:ring-rose-300"
           />
+          </div>
         ) : clip.description ? (
           <div className="h-[120px] overflow-y-auto pr-1 custom-scrollbar">
              <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">{clip.description}</p>
@@ -572,8 +599,27 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
   const hasClips = clips.length > 0;
   const canEdit = state.status === 'waiting' || state.status === 'completed';
 
-  // 保存单个提示词到后端 JSON
   // 注意：manual_prompt 等新字段必须用数组形状；键控形状仅兼容旧的 description/duration
+  const patchManualPrompt = async (clipId: string, value: string): Promise<ClipItem | undefined> => {
+    const response = await apiFetch(`/api/project/${sessionId}/artifact/video_generation`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clips: [{ id: clipId, manual_prompt: value }] }),
+    });
+    if (!response.ok) return undefined;
+    // 后端会同时刷新 prompt_source；直接合并返回的条目（徽标立即回显）
+    const data = await response.json().catch(() => ({}));
+    const savedClip = (data?.artifact?.clips || []).find((item: ClipItem) => item.id === clipId);
+    if (onUpdateArtifact && artifact.clips) {
+      const updatedClips = artifact.clips.map((c: ClipItem) =>
+        c.id === clipId ? { ...c, ...(savedClip || { manual_prompt: value }) } : c
+      );
+      onUpdateArtifact({ clips: updatedClips });
+    }
+    return savedClip as ClipItem | undefined;
+  };
+
+  // 保存单个提示词：保存后本片段固定使用人工正文（直到清空或再次修改）
   const handleSavePrompt = async (clipId: string) => {
     const clip = clips.find(item => item.id === clipId);
     const newPrompt = (editDescs[clipId] ?? '').trim();
@@ -583,21 +629,8 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
 
     setSavingIds(prev => new Set(prev).add(clipId));
     try {
-      const response = await apiFetch(`/api/project/${sessionId}/artifact/video_generation`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clips: [{ id: clipId, manual_prompt: newPrompt }] })
-      });
-      if (response.ok) {
-        // 后端会同时刷新 prompt_source；直接合并返回的条目（徽标立即回显）
-        const data = await response.json().catch(() => ({}));
-        const savedClip = (data?.artifact?.clips || []).find((item: ClipItem) => item.id === clipId);
-        if (onUpdateArtifact && artifact.clips) {
-          const updatedClips = artifact.clips.map((c: ClipItem) =>
-            c.id === clipId ? { ...c, ...(savedClip || { manual_prompt: newPrompt }) } : c
-          );
-          onUpdateArtifact({ clips: updatedClips });
-        }
+      const savedClip = await patchManualPrompt(clipId, newPrompt);
+      if (savedClip !== undefined) {
         setEditingIds(prev => {
           const next = new Set(prev);
           next.delete(clipId);
@@ -610,6 +643,30 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
       }
     } catch (error) {
       console.error('保存提示词失败:', error);
+    } finally {
+      setSavingIds(prev => {
+        const next = new Set(prev);
+        next.delete(clipId);
+        return next;
+      });
+    }
+  };
+
+  // 恢复自动来源：清空人工正文（后端会重算 prompt_source）
+  const handleClearManual = async (clipId: string) => {
+    if (!window.confirm('清空人工正文并恢复自动来源？')) return;
+    const clip = clips.find(item => item.id === clipId);
+    setSavingIds(prev => new Set(prev).add(clipId));
+    try {
+      const savedClip = await patchManualPrompt(clipId, '');
+      if (savedClip !== undefined) {
+        setEditDescs(prev => ({
+          ...prev,
+          [clipId]: savedClip?.description ?? clip?.description ?? '',
+        }));
+      }
+    } catch (error) {
+      console.error('清空人工正文失败:', error);
     } finally {
       setSavingIds(prev => {
         const next = new Set(prev);
@@ -753,6 +810,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
                               initialPrompt={prefillPrompt(clip)}
                               onDescChange={canEdit ? (val => setEditDescs(prev => ({ ...prev, [clip.id]: val }))) : undefined}
                               onSavePrompt={() => handleSavePrompt(clip.id)}
+                              onClearManual={() => handleClearManual(clip.id)}
                               onRegenerate={() => handleRegenerate(clip.id)}
                               onSelectVersion={path => handleSelectVersion(clip.id, path)}
                               onToggleEdit={() => handleToggleEdit(clip.id)}
