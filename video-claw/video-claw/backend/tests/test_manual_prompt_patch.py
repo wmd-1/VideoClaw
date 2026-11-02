@@ -67,6 +67,58 @@ def test_clear_failure_drops_prompt_source():
     assert "prompt_source" not in merged
 
 
+# ─────────────── 接线层：_apply_artifact_update 的真实合并语义 ───────────────
+
+
+def _state():
+    return SimpleNamespace(
+        artifacts={
+            "storyboard": STORYBOARD,
+            "character_design": ARTIFACTS["character_design"],
+            "reference_generation": ARTIFACTS["reference_generation"],
+            "prompt_rewrite": {"items": []},
+            "video_generation": {"clips": [{
+                "id": "seg_01_01", "selected": "v1.mp4", "versions": ["v1.mp4"],
+                "description": "旧描述", "status": "done",
+            }]},
+        },
+        meta={"video_first_frame_model": "m1"},
+    )
+
+
+def test_apply_artifact_update_saves_manual_prompt_without_touching_others():
+    state = _state()
+    engine = object.__new__(WorkflowEngine)
+    engine._apply_artifact_update(
+        state, "video_generation", {"clips": [{"id": "seg_01_01", "manual_prompt": "新正文"}]}
+    )
+    clip = state.artifacts["video_generation"]["clips"][0]
+    assert clip["manual_prompt"] == "新正文"
+    assert clip["manual_prompt_fingerprint"]
+    assert clip["manual_prompt_dimensions"]
+    assert clip["prompt_source"]["source"] == "manual"
+    assert clip["selected"] == "v1.mp4"
+    assert clip["versions"] == ["v1.mp4"]
+    assert clip["status"] == "done"
+    assert clip["description"] == "旧描述"
+
+
+def test_apply_artifact_update_clears_manual_prompt_and_refreshes_source():
+    state = _state()
+    engine = object.__new__(WorkflowEngine)
+    engine._apply_artifact_update(
+        state, "video_generation", {"clips": [{"id": "seg_01_01", "manual_prompt": "新正文"}]}
+    )
+    engine._apply_artifact_update(
+        state, "video_generation", {"clips": [{"id": "seg_01_01", "manual_prompt": ""}]}
+    )
+    clip = state.artifacts["video_generation"]["clips"][0]
+    assert clip["manual_prompt"] == ""
+    assert "manual_prompt_fingerprint" not in clip
+    assert "manual_prompt_dimensions" not in clip
+    assert clip["prompt_source"]["source"] != "manual"
+
+
 def test_clearing_manual_prompt_removes_fingerprint_and_refreshes_source():
     state = SimpleNamespace(artifacts=ARTIFACTS, meta={"video_first_frame_model": "m1"})
     merged = {"id": "seg_01_01", "manual_prompt": "",
