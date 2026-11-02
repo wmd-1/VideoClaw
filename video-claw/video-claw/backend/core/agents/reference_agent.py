@@ -103,6 +103,22 @@ class ReferenceGeneratorAgent(AgentInterface):
                 
         return am
 
+    @staticmethod
+    def _script_original_text(script_json: Any) -> str:
+        """首帧提示词使用的剧本原文。
+
+        标准生成与保真导入产物都把完整基线存在 `meta.original_text`；
+        早期产物可能只有顶层 `original_text`，仅作兼容读取。
+        """
+        if not isinstance(script_json, dict):
+            return ""
+        meta = script_json.get("meta")
+        if isinstance(meta, dict):
+            text = str(meta.get("original_text") or "").strip()
+            if text:
+                return text
+        return str(script_json.get("original_text") or "").strip()
+
     def _collect_refs(self, segment: dict, asset_map: dict,
                       char_id_map: dict, setting_id_map: dict) -> List[str]:
         """为一个片段(Segment)收集参考原图路径（角色 + 场景素材）"""
@@ -351,6 +367,15 @@ class ReferenceGeneratorAgent(AgentInterface):
                                                       setting_description=setting_description,
                                                       vlm_model=vlm_model)
 
+                # 评估服务不可用：保留本次图片并停止重试，不把评估故障变成多次生图（WF-11）。
+                if eval_result.get("evaluated") is False:
+                    logger.warning(
+                        "[%s] 评估不可用（%s），保留本次图片并停止重试",
+                        segment_id, eval_result.get("eval_status"),
+                    )
+                    eval_result["final_visual_prompt"] = current_visual_prompt
+                    return segment_id, save_path, eval_result, rewrite_result
+
                 score = eval_result.get('score', 0)
                 hard_failures = eval_result.get('hard_failures') or []
                 if 'is_acceptable' in eval_result:
@@ -491,6 +516,8 @@ class ReferenceGeneratorAgent(AgentInterface):
 
         # 如果 VLM 选择失败，仍保留第一张候选图，避免“已有参考图”被误标成失败。
         return image_paths[0], {
+            "evaluated": False,
+            "eval_status": "selection_unavailable",
             "score": 0,
             "hard_failures": ["VLM选择最佳图片失败，无法确认硬性标准"],
             "issues": ["VLM选择最佳图片失败"],
@@ -532,11 +559,16 @@ class ReferenceGeneratorAgent(AgentInterface):
                 json_match = re.search(r'\{[^{}]*\}', result_text, re.DOTALL)
                 if json_match:
                     eval_result = json.loads(json_match.group())
+                    # 能解析即为已评估；失败分支显式 evaluated=False
+                    eval_result.setdefault("evaluated", True)
+                    eval_result.setdefault("eval_status", "ok")
                     return eval_result
             except Exception:
                 pass
 
             return {
+                "evaluated": False,
+                "eval_status": "parse_failed",
                 "score": 0,
                 "hard_failures": ["VLM评估解析失败，无法确认硬性标准"],
                 "issues": ["评估解析失败"],
@@ -546,6 +578,8 @@ class ReferenceGeneratorAgent(AgentInterface):
         except Exception as e:
             logger.warning(f"VLM evaluation failed: {e}")
             return {
+                "evaluated": False,
+                "eval_status": "unavailable",
                 "score": 0,
                 "hard_failures": ["VLM评估失败，无法确认硬性标准"],
                 "issues": [str(e)],
@@ -767,7 +801,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                                 ff_prompt_resp = self._cancellable_query(
                                     local_llm,
                                     prompt=ff_prompt_tpl.format(
-                                        original_text=script_json.get("original_text", ""),
+                                        original_text=self._script_original_text(script_json),
                                         plot=plot,
                                         character_description=char_desc,
                                         setting_description=set_desc
@@ -944,7 +978,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                             ff_prompt_resp = self._cancellable_query(
                                 local_llm,
                                 prompt=ff_prompt_tpl.format(
-                                    original_text=script_json.get("original_text", ""),
+                                    original_text=self._script_original_text(script_json),
                                     plot=plot,
                                     character_description=char_desc,
                                     setting_description=set_desc

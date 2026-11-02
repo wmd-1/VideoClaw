@@ -350,6 +350,9 @@ _NO_COMMIT = object()
 # 执行期间用户可编辑、结束合并时优先保留的条目字段
 _USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt")
 
+# 区分“无基线信息”与“基线里选中为空”：前者无法判定执行期间是否手改
+_NO_BASELINE = object()
+
 
 class _StageRun:
     """一次阶段执行的可信上下文（仅内存）：execution_id、发布器、条目事件序号与受管暂存。"""
@@ -661,12 +664,18 @@ class WorkflowEngine:
                     self._overlays.pop(session_id, None)
 
     @classmethod
-    def _merge_asset_update(cls, artifact: Dict[str, Any], asset_update: Dict[str, Any]) -> None:
-        """单条目事件合入产物副本（运行覆盖层与后台重生成提交共用同一口径）。"""
+    def _merge_asset_update(cls, artifact: Dict[str, Any], asset_update: Dict[str, Any],
+                            baseline_selected: Optional[Dict[str, Any]] = None) -> None:
+        """单条目事件合入产物副本（运行覆盖层与后台重生成提交共用同一口径）。
+
+        `baseline_selected` 为本次执行开始时的选中快照：提供时，执行期间被改过的条目
+        保留当前值（用户手选优先）；不提供（如运行中覆盖层）则以本次结果为准。
+        """
         item_type = asset_update.get("type")
         item_id = asset_update.get("id")
         if not item_type or not item_id:
             return
+        baseline_map = baseline_selected or {}
         items = artifact.setdefault(item_type, [])
         if not isinstance(items, list):
             items = []
@@ -680,6 +689,7 @@ class WorkflowEngine:
                 if "selected" in asset_update:
                     item["selected"] = cls._selected_after_asset_update(
                         item.get("selected"), asset_update.get("selected"),
+                        baseline_map.get(item_id, _NO_BASELINE),
                     )
                 if "versions" in asset_update:
                     item["versions"] = cls._merge_asset_versions(item.get("versions"), asset_update.get("versions"))
@@ -710,6 +720,8 @@ class WorkflowEngine:
             if artifact is None and overlay.get("items"):
                 artifact = copy.deepcopy(data["artifacts"].get(stage) or {})
             if artifact is not None:
+                # 运行中覆盖层不带基线：先显示本轮结果，收尾由 _prefer_user_edits /
+                # 基线保护回正（用户手改不会因此在落库时丢，但运行中可能短暂看到新图）。
                 for update in overlay.get("items", {}).values():
                     self._merge_asset_update(artifact, update)
                 data["artifacts"][stage] = artifact
@@ -1475,14 +1487,20 @@ class WorkflowEngine:
         payload: Any,
         item_keys: List[str],
         target_ids_by_key: Optional[Dict[str, Set[str]]] = None,
+        baseline_selected: Optional[Dict[str, Any]] = None,
     ) -> Dict:
-        """Merge concurrent single-item regeneration results without clobbering fresher items."""
+        """Merge concurrent single-item regeneration results without clobbering fresher items.
+
+        `baseline_selected` 为本次执行开始时的选中快照：目标条目若在执行期间被改过
+        （当前值 ≠ 基线），保留当前值，不用本轮结果覆盖（Q8 的安全阀）。
+        """
         if not isinstance(existing, dict):
             existing = {}
         if not isinstance(payload, dict):
             return copy.deepcopy(existing)
 
         merged = copy.deepcopy(existing)
+        baseline_map = baseline_selected or {}
         for key, value in payload.items():
             if key not in item_keys:
                 merged[key] = copy.deepcopy(value)
@@ -1526,19 +1544,21 @@ class WorkflowEngine:
                 if len(item_versions) > len(current_versions):
                     merged_item = {**current, **copy.deepcopy(item)}
                     merged_item["versions"] = merged_versions
-                    if current.get("selected"):
-                        merged_item["selected"] = current.get("selected")
-                        if item.get("status") in {"done", "failed"}:
-                            merged_item["status"] = "done"
+                    merged_item["selected"] = WorkflowEngine._selected_after_asset_update(
+                        current.get("selected"), item.get("selected"),
+                        baseline_map.get(item_id, _NO_BASELINE),
+                    )
+                    if merged_item.get("selected") and item.get("status") in {"done", "failed"}:
+                        merged_item["status"] = "done"
                     by_id[item_id] = merged_item
                 elif len(item_versions) == len(current_versions):
                     merged_item = {**current, **copy.deepcopy(item)}
-                    if not item.get("selected") and current.get("selected"):
-                        merged_item["selected"] = current.get("selected")
-                    if current.get("selected"):
-                        merged_item["selected"] = current.get("selected")
-                        if item.get("status") in {"done", "failed"}:
-                            merged_item["status"] = "done"
+                    merged_item["selected"] = WorkflowEngine._selected_after_asset_update(
+                        current.get("selected"), item.get("selected"),
+                        baseline_map.get(item_id, _NO_BASELINE),
+                    )
+                    if merged_item.get("selected") and item.get("status") in {"done", "failed"}:
+                        merged_item["status"] = "done"
                     if merged_versions:
                         merged_item["versions"] = merged_versions
                     if (
@@ -1561,8 +1581,31 @@ class WorkflowEngine:
         return merged
 
     @staticmethod
-    def _selected_after_asset_update(current_selected: Any, new_selected: Any) -> Any:
-        return current_selected or new_selected or ""
+    def _selected_after_asset_update(current_selected: Any, new_selected: Any,
+                                     baseline_selected: Any = _NO_BASELINE) -> Any:
+        """条目的有效选中（Q8）。
+
+        给了基线且当前值已偏离基线 → 视为“执行期间用户改过”，保留当前值；
+        否则显式重生成的新结果生效（旧值仅在本次为空时回退）。
+        未给基线时无法判定手改，按“本次优先”处理。
+        """
+        if baseline_selected is not _NO_BASELINE and current_selected != baseline_selected:
+            return current_selected
+        return new_selected or current_selected or ""
+
+    @staticmethod
+    def _selected_snapshot(artifact: Any) -> Dict[str, Any]:
+        """条目 ID → 执行开始时的选中，用于区分“库里旧值”与“执行期间被改过的值”。"""
+        snapshot: Dict[str, Any] = {}
+        if not isinstance(artifact, dict):
+            return snapshot
+        for items in artifact.values():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict) and item.get("id"):
+                    snapshot[item["id"]] = item.get("selected")
+        return snapshot
 
     async def execute_stage(self,
                             state: WorkflowState,
@@ -1912,10 +1955,13 @@ class WorkflowEngine:
             if not container or not item_id:
                 return item
             if run.background:
+                # 本次执行开始时的选中快照：执行期间被改过的条目保留用户新值（Q8）
+                baseline_selected = self._selected_snapshot(run.start_artifacts.get(stage_key))
+
                 def apply(after: WorkflowState) -> None:
                     artifact = after.artifacts.get(stage_key)
                     artifact = copy.deepcopy(artifact) if isinstance(artifact, dict) else {}
-                    self._merge_asset_update(artifact, item)
+                    self._merge_asset_update(artifact, item, baseline_selected)
                     after.artifacts[stage_key] = artifact
                     self._recalculate_all_statuses(after)
 
@@ -1989,7 +2035,10 @@ class WorkflowEngine:
                 if run.background:
                     keys = list(workflow_store.ITEM_CONTAINERS.get(stage_key, ()))
                     targets = self._background_regeneration_targets(stage, run.intervention)
-                    payload = self._merge_item_regeneration_payload(after.artifacts.get(stage_key, {}), payload, keys, targets)
+                    payload = self._merge_item_regeneration_payload(
+                        after.artifacts.get(stage_key, {}), payload, keys, targets,
+                        baseline_selected=self._selected_snapshot(run.start_artifacts.get(stage_key)),
+                    )
                 else:
                     payload = self._prefer_user_edits(
                         stage_key, run.start_artifacts.get(stage_key), after.artifacts.get(stage_key), payload,

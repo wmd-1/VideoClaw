@@ -97,6 +97,23 @@ class CharacterDesignerAgent(AgentInterface):
         """
         return self._merge_history(asset_type, asset_id, self._local_versions(sid, asset_type, asset_id))
 
+    @staticmethod
+    def _existing_selected(artifact: Dict, container: str) -> Dict[str, str]:
+        """已存产物中的选中项（资产 ID → 路径）。
+
+        作为 payload 底稿，避免未参与本轮生成的条目被 `versions[-1]` 覆盖（WF-03）。
+        """
+        selected: Dict[str, str] = {}
+        items = artifact.get(container) if isinstance(artifact, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            value = str(item.get("selected") or "").strip()
+            if value:
+                # 保留原始键类型：_build_payload 用资产表自身的 key 取值，不能替它做 str 归一
+                selected[item["id"]] = value
+        return selected
+
     def _next_version_path(self, sid: str, asset_type: str, asset_id: str) -> str:
         """获取下一个版本的文件路径（只看本地目录，历史版本不占用本地文件名）"""
         adir = os.path.join(self._asset_base(sid), asset_type)
@@ -175,8 +192,14 @@ class CharacterDesignerAgent(AgentInterface):
                 raise RuntimeError("Image generation returned no output after doctor rewrite")
             return paths, rewrite, rewrite_result
 
-    def _build_preview(self, sid: str, chars_desc: dict, sets_desc: dict) -> dict:
-        """构建素材预览列表（含当前状态）用于前端实时显示"""
+    def _build_preview(self, sid: str, chars_desc: dict, sets_desc: dict,
+                       selected_map: Optional[Dict[str, Dict[str, str]]] = None) -> dict:
+        """构建素材预览列表（含当前状态）用于前端实时显示。
+
+        选中来源与 `_build_payload` 保持一致：先取已存产物里的选中，缺失再回退最新版本；
+        不能两处各用一套口径（否则同一次执行内“预览选中 ≠ 最终选中”）。
+        """
+        selected_map = selected_map or {}
         preview = {"characters": [], "settings": []}
         for asset_id, info in chars_desc.items():
             existing = self._list_versions(sid, 'characters', asset_id)
@@ -184,7 +207,8 @@ class CharacterDesignerAgent(AgentInterface):
                 "id": asset_id,
                 "name": info.get("name", ""),
                 "description": info.get("description", ""),
-                "selected": existing[-1] if existing else "",
+                "selected": (selected_map.get("characters") or {}).get(asset_id)
+                            or (existing[-1] if existing else ""),
                 "versions": existing,
                 "status": "done" if existing else "pending",
             })
@@ -196,7 +220,8 @@ class CharacterDesignerAgent(AgentInterface):
                 "id": asset_id,
                 "name": name,
                 "description": desc,
-                "selected": existing[-1] if existing else "",
+                "selected": (selected_map.get("settings") or {}).get(asset_id)
+                            or (existing[-1] if existing else ""),
                 "versions": existing,
                 "status": "done" if existing else "pending",
             })
@@ -252,6 +277,15 @@ class CharacterDesignerAgent(AgentInterface):
 
                 # VLM 评估
                 eval_result = self._evaluate_with_vlm(save_path, desc, asset_type, vlm_model)
+
+                # 评估服务不可用（调用失败/输出不可解析）：保留本次图片并停止重试，
+                # 不把评估故障变成额外的生图费用（WF-11）。
+                if eval_result.get("evaluated") is False:
+                    logger.warning(
+                        f"[{asset_type}] {name} 评估不可用（{eval_result.get('eval_status')}），"
+                        "保留本次图片并停止重试"
+                    )
+                    return asset_id, save_path, eval_result, rewrite_result
 
                 score = eval_result.get('score', 0)
                 issues = eval_result.get('issues', [])
@@ -362,15 +396,28 @@ class CharacterDesignerAgent(AgentInterface):
                 json_match = re.search(r'\{[^{}]*\}', result_text, re.DOTALL)
                 if json_match:
                     eval_result = json.loads(json_match.group())
+                    # 三态靠字段表达：能解析即为已评估；失败分支显式 evaluated=False
+                    eval_result.setdefault("evaluated", True)
+                    eval_result.setdefault("eval_status", "ok")
                     return eval_result
             except Exception:
                 pass
 
-            return {"score": 5, "issues": ["评估解析失败"], "is_acceptable": True}
+            return {
+                "evaluated": False,
+                "eval_status": "parse_failed",
+                "issues": ["评估解析失败"],
+                "is_acceptable": False,
+            }
 
         except Exception as e:
             logger.warning(f"VLM evaluation failed: {e}")
-            return {"score": 5, "issues": [str(e)], "is_acceptable": True}
+            return {
+                "evaluated": False,
+                "eval_status": "unavailable",
+                "issues": [str(e)],
+                "is_acceptable": False,
+            }
 
     def _select_best_with_vlm(self, image_paths: List[str], name: str, description: str,
                                asset_type: str, species: str = "", vlm_model: str = "qwen3.5-plus") -> tuple:
@@ -434,7 +481,19 @@ class CharacterDesignerAgent(AgentInterface):
             # 如果找到了 best_index，选择对应的图片
             if best_index is not None and 0 <= best_index < len(image_paths):
                 best_path = image_paths[best_index]
-                best_eval = {"score": 8, "issues": [], "is_acceptable": True, "reason": f"VLM selected image {best_index + 1} of {len(image_paths)}"}
+                # 相对选优只说明“这几张里相对最好”，不代表达到质量门槛（WF-11）：
+                # 不伪造绝对分数，也不把选优当成评估通过。
+                best_eval = {
+                    "evaluated": False,
+                    "eval_status": "selection_only",
+                    "selection": {
+                        "source": "vlm_best",
+                        "index": best_index,
+                        "candidates": len(image_paths),
+                    },
+                    "issues": [],
+                    "reason": f"VLM selected image {best_index + 1} of {len(image_paths)}",
+                }
                 logger.info(f"[{asset_type}] {name} Selected image: {best_path}")
                 return best_path, best_eval
             else:
@@ -499,7 +558,8 @@ class CharacterDesignerAgent(AgentInterface):
             ark_api_key=settings.ARK_API_KEY,
             ark_base_url=settings.ARK_BASE_URL,
         )
-        rewrite_results = self._collect_rewrite_results(self._session_artifact(input_data, "character_design"))
+        existing_cd = self._session_artifact(input_data, "character_design") or {}
+        rewrite_results = self._collect_rewrite_results(existing_cd)
 
         # ═══════════ 介入: 重新生成指定素材 ═══════════
         if intervention:
@@ -508,6 +568,11 @@ class CharacterDesignerAgent(AgentInterface):
             select_chars = intervention.get("select_characters", {})      # {asset_id: path}
             select_sets = intervention.get("select_settings", {})         # {asset_id: path}
             update_descriptions = intervention.get("update_descriptions", {})  # {characters: {}, settings: {}}
+            # 已存选中作为底稿：本次介入未改动的条目保持原选择（WF-03）
+            selected_map = {
+                "characters": {**self._existing_selected(existing_cd, "characters"), **(select_chars or {})},
+                "settings": {**self._existing_selected(existing_cd, "settings"), **(select_sets or {})},
+            }
 
             # 优先从 input_data (artifacts) 中恢复当前状态，确保之前在界面上做的修改能保留
             chars_desc = {}
@@ -615,6 +680,7 @@ class CharacterDesignerAgent(AgentInterface):
                                 rewrite_results[atype][aid] = rewrite_result
                             if result_path:
                                 versions = self._list_versions(sid, atype, aid)
+                                selected_map[atype][aid] = result_path
                                 asset_complete = {
                                     "type": atype, "id": aid, "status": "done",
                                     "selected": result_path, "versions": versions,
@@ -645,7 +711,11 @@ class CharacterDesignerAgent(AgentInterface):
                 await loop.run_in_executor(None, regen_run)
 
             self._report_progress("角色设计", "完成", 100)
-            return self._build_payload(sid, chars_desc, sets_desc, select_chars, select_sets, rewrite_results)
+            return self._build_payload(
+                sid, chars_desc, sets_desc,
+                selected_chars=selected_map["characters"], selected_sets=selected_map["settings"],
+                rewrite_results=rewrite_results,
+            )
 
         # ═══════════ 正常流程: 全量首次生成 ═══════════
         self._report_progress("角色设计", "读取剧本数据...", 5)
@@ -666,14 +736,20 @@ class CharacterDesignerAgent(AgentInterface):
         if not chars_desc and not sets_desc:
             raise Exception("未能从剧本中读取到角色或场景描述数据")
 
-        # 发送素材预览（含所有素材和当前状态）
-        preview = self._build_preview(sid, chars_desc, sets_desc)
+        # 已存选中作为底稿：未参与本轮生成的条目保持原选择（WF-03）
+        selected_map = {
+            "characters": self._existing_selected(existing_cd, "characters"),
+            "settings": self._existing_selected(existing_cd, "settings"),
+        }
+
+        # 发送素材预览（含所有素材和当前状态）——与 payload 同一选中口径
+        preview = self._build_preview(sid, chars_desc, sets_desc, selected_map)
         self._report_progress("角色设计", "加载素材列表", 8, data={"assets_preview": preview})
 
         def run():
             all_tasks = []
             # 失败条目即使留有历史版本也要重跑（重新配置模型后的恢复路径）
-            existing_artifact = self._session_artifact(input_data, "character_design") or {}
+            existing_artifact = existing_cd
             failed_ids = {
                 str(item.get("id"))
                 for key in ("characters", "settings")
@@ -727,9 +803,11 @@ class CharacterDesignerAgent(AgentInterface):
                         rewrite_results[atype][aid] = rewrite_result
                     if result_path:
                         versions = self._list_versions(sid, atype, aid)
+                        selected_map[atype][aid] = result_path
                         asset_complete = {
                             "type": atype, "id": aid, "status": "done",
                             "selected": result_path, "versions": versions,
+                            "evaluation": failure_info,
                         }
                         if rewrite_result:
                             asset_complete["rewrite_result"] = rewrite_result
@@ -757,7 +835,11 @@ class CharacterDesignerAgent(AgentInterface):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, run)
 
-        return self._build_payload(sid, chars_desc, sets_desc, rewrite_results=rewrite_results)
+        return self._build_payload(
+            sid, chars_desc, sets_desc,
+            selected_chars=selected_map["characters"], selected_sets=selected_map["settings"],
+            rewrite_results=rewrite_results,
+        )
 
     def _build_payload(self, sid: str, chars_desc: dict, sets_desc: dict,
                        selected_chars: dict = None, selected_sets: dict = None,

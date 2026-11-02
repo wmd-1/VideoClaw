@@ -459,6 +459,45 @@ def test_user_selection_during_run_is_not_overwritten(monkeypatch):
     assert len(item["versions"]) == 3  # 晚到模型结果只作为新版本
 
 
+def test_background_regeneration_takes_new_selection(monkeypatch):
+    """Q8 正向：未手改时，后台显式重生成的新图应成为 selected（旧行为会保留 v1）。"""
+    sid = _new_session()
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v1"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+    first = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v2"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid, intervention={"regenerate_characters": ["c1"]})
+
+    item = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
+    assert item["selected"] != first["selected"]
+    assert item["selected"] == item["versions"][-1]
+    assert len(item["versions"]) == 2
+    assert _bytes(item["selected"]) == b"v2"
+
+
+def test_background_regeneration_keeps_in_run_user_selection(monkeypatch):
+    """Q8 安全阀：后台重生成期间用户手选旧版本，晚到结果不得覆盖。"""
+    sid = _new_session()
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v1"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v2"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+    versions = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]["versions"]
+
+    def rerun(agent, input_data, intervention):
+        # 后台重生成进行中，用户把选择改回第一版
+        workflow_engine.update_artifact(sid, "character_design", {"characters": [{"id": "c1", "selected": versions[0]}]})
+        return _character_agent(b"v3")(agent, input_data, intervention)
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, rerun)
+    _run(WorkflowStage.CHARACTER_DESIGN, sid, intervention={"regenerate_characters": ["c1"]})
+
+    item = workflow_engine.get_state(sid).artifacts["character_design"]["characters"][0]
+    assert item["selected"] == versions[0]  # 手改优先于晚到的本轮结果
+    assert len(item["versions"]) == 3  # 新版本仍然保留
+
+
 # ── 14.6 failure keeps the old success layer; delete queues cleanup ─────
 def test_finish_commit_failure_keeps_checkpoint_and_compensates(monkeypatch):
     sid = _new_session()
