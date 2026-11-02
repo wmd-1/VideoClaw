@@ -37,7 +37,9 @@ def duration_range(model: str) -> Tuple[int, int]:
 
     from models.config_model import get_model_config
 
-    capabilities = (get_model_config(model) or {}).get("capabilities") or {}
+    capabilities = (get_model_config(model) or {}).get("capabilities")
+    if not isinstance(capabilities, dict):
+        return low, high
     contract = capabilities.get("duration") or {}
     if not isinstance(contract, dict) or not contract:
         # 未声明或形式非法（如写成 duration: 5）→ 只用 H3 区间
@@ -81,19 +83,9 @@ def resolve_effective_duration(
     return effective, adjustments
 
 
-def duration_source(segment_duration: Any = None, session_override: Any = None) -> str:
-    """解析来源（仅用于展示/诊断，不参与计算）。"""
-    if _positive_int(session_override):
-        return "session"
-    if _positive_int(segment_duration):
-        return "segment"
-    return "default"
-
-
 __all__ = [
     "DEFAULT_DURATION",
     "H3_DURATION_RANGE",
     "duration_range",
-    "duration_source",
     "resolve_effective_duration",
 ]

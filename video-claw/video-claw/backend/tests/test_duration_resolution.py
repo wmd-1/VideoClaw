@@ -70,6 +70,11 @@ def test_empty_model_name_uses_h3_range_without_lookup(monkeypatch):
     assert duration_range("") == (4, 15)
 
 
+def test_non_dict_capabilities_falls_back_to_h3_range(monkeypatch):
+    monkeypatch.setattr(config_model, "get_model_config", lambda model: {"capabilities": "oops"})
+    assert duration_range("m1") == (4, 15)
+
+
 def test_disjoint_capability_range_fails_loudly(monkeypatch):
     _patch_range(monkeypatch, 16, 20)
     with pytest.raises(ValueError, match="无交集"):
