@@ -52,6 +52,37 @@ def test_invalid_capability_range_fails_loudly(monkeypatch):
         duration_range("m1")
 
 
+def test_range_is_intersection_with_h3(monkeypatch):
+    """H3 4~15 是硬区间，模型能力只能收窄，不能放宽。"""
+    _patch_range(monkeypatch, 2, 10)
+    assert duration_range("wan") == (4, 10)
+    _patch_range(monkeypatch, 3, 15)
+    assert duration_range("kling") == (4, 15)
+    _patch_range(monkeypatch, 2, 15)
+    assert duration_range("wan") == (4, 15)
+
+
+def test_empty_model_name_uses_h3_range_without_lookup(monkeypatch):
+    def boom(_model):
+        raise AssertionError("空模型名不应进入配置模糊匹配")
+
+    monkeypatch.setattr(config_model, "get_model_config", boom)
+    assert duration_range("") == (4, 15)
+
+
+def test_disjoint_capability_range_fails_loudly(monkeypatch):
+    _patch_range(monkeypatch, 16, 20)
+    with pytest.raises(ValueError, match="无交集"):
+        duration_range("m1")
+
+
+def test_request_below_h3_lower_bound_is_raised_to_four(monkeypatch):
+    _patch_range(monkeypatch, 2, 10)
+    value, adjustments = resolve_effective_duration(2, None, model="wan")
+    assert value == 4
+    assert adjustments and "4" in adjustments[0]
+
+
 def test_h3_segments_use_effective_duration_and_expose_adjustment(monkeypatch):
     _patch_range(monkeypatch, 5, 10)
     segments = PromptRewriteAgent._collect_segments(STORYBOARD, model="m1", session_override=12)
@@ -68,12 +99,12 @@ def test_h3_and_adapter_agree_on_final_duration(monkeypatch):
     )[0]
 
     client = CustomVideoClient(
-        {"id": "m1", "protocol": "vllm-omni", "base_url": "http://127.0.0.1:1/v1",
+        {"id": "m1", "protocol": "sglang", "base_url": "http://127.0.0.1:1/v1",
          "capabilities": {"duration": {"min": 5, "max": 10}}},
         poll_interval=0.01, poll_timeout=1, timeout=1,
     )
-    adapter_duration = client._clamp_duration(segment["duration"])
-    assert adapter_duration == segment["duration"], "改写与适配器必须得到同一时长"
+    target = client._sglang_target(segment["duration"], "16:9", None, "720P", False)
+    assert target["duration_seconds"] == segment["duration"], "sglang 请求时长必须与改写目标一致"
 
 
 def test_h3_item_carries_duration_adjustment(monkeypatch):

@@ -12,8 +12,10 @@ from __future__ import annotations
 from typing import Any, List, Tuple
 
 DEFAULT_DURATION = 8
-# 仅在模型未声明 duration 能力时使用；与既有 H3 硬编码区间保持一致
-FALLBACK_RANGE = (4, 15)
+# H3 协议硬区间（vLLM/SGLang cookbook：4–15s），不是 fallback；模型只能在这个区间
+# 内进一步收窄
+H3_DURATION_RANGE = (4, 15)
+FALLBACK_RANGE = H3_DURATION_RANGE  # 兼容旧引用
 
 
 def _positive_int(value: Any) -> int:
@@ -25,18 +27,35 @@ def _positive_int(value: Any) -> int:
 
 
 def duration_range(model: str) -> Tuple[int, int]:
-    """所选视频模型声明的时长区间；未声明回退 4~15。"""
+    """H3 4~15 与所选模型声明能力的**交集**。
+
+    - 模型未声明/名称为空 → 直接用 H3 区间（空名称不进入模糊匹配）；
+    - 声明越界则收窄；交集为空 → 报错（不能生成违反 H3 协议的时长）。
+    """
+    low, high = H3_DURATION_RANGE
+    if not str(model or "").strip():
+        return low, high
+
     from models.config_model import get_model_config
 
-    capabilities = (get_model_config(model or "") or {}).get("capabilities") or {}
+    capabilities = (get_model_config(model) or {}).get("capabilities") or {}
     contract = capabilities.get("duration") or {}
+    if not contract:
+        return low, high
     try:
-        low = int(contract.get("min", FALLBACK_RANGE[0]))
-        high = int(contract.get("max", FALLBACK_RANGE[1]))
+        declared_low = int(contract.get("min", low))
+        declared_high = int(contract.get("max", high))
     except (TypeError, ValueError):
-        return FALLBACK_RANGE
-    if low <= 0 or high < low:
+        return low, high
+    if declared_low > declared_high:
         raise ValueError(f"视频模型 {model} 的 duration 能力区间非法：{contract}")
+
+    low = max(low, declared_low)
+    high = min(high, declared_high)
+    if low > high:
+        raise ValueError(
+            f"视频模型 {model} 的时长能力与 H3 {H3_DURATION_RANGE[0]}~{H3_DURATION_RANGE[1]}s 无交集"
+        )
     return low, high
 
 
@@ -73,6 +92,7 @@ def duration_source(segment_duration: Any = None, session_override: Any = None) 
 __all__ = [
     "DEFAULT_DURATION",
     "FALLBACK_RANGE",
+    "H3_DURATION_RANGE",
     "duration_range",
     "duration_source",
     "resolve_effective_duration",
