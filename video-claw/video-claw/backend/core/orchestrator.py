@@ -348,7 +348,7 @@ class WorkflowState:
 _NO_COMMIT = object()
 
 # 执行期间用户可编辑、结束合并时优先保留的条目字段（全量路径）
-_USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt")
+_USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt", "manual_prompt")
 
 # 后台单条重生成时按阶段保护的用户手改字段（A1b）。
 # 只纳入“保留用户值不会让下游语义失真”的字段：name 是下游匹配键、species 决定
@@ -2317,6 +2317,46 @@ class WorkflowEngine:
             "artifact": copy.deepcopy(view["artifacts"].get(stage)),
         }
 
+    @staticmethod
+    def _stamp_manual_prompt(state: Any, merged: Dict[str, Any], seg_id: str) -> None:
+        """用户保存人工正文时，立刻用当前 artifacts 算指纹（PATCH 侧唯一入口）。
+
+        缺模型配置等异常不阻断保存：只保留正文，指纹缺失会让解析端记为 unknown。
+        """
+        from core.agents.video_agent import VideoDirectorAgent
+        from core.h3_modes import (
+            collect_segments,
+            current_fingerprint,
+            resolve_grounding_model,
+            resolve_style_key,
+        )
+
+        artifacts = getattr(state, "artifacts", None)
+        meta = getattr(state, "meta", None)
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        try:
+            mode_key, video_model = VideoDirectorAgent._select_video_model({}, meta)
+            h3_segments = collect_segments(
+                artifacts.get("storyboard", {}), model=video_model,
+                session_override=meta.get("video_duration"),
+            )
+            scene_map = {
+                item.get("id"): item
+                for item in (artifacts.get("reference_generation", {}) or {}).get("scenes", [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            _mode, fingerprint, dimensions = current_fingerprint(
+                seg_id, mode_key, h3_segments, scene_map, artifacts,
+                style=resolve_style_key({}, meta),
+                grounding_model=resolve_grounding_model({}, meta),
+            )
+        except Exception as exc:  # noqa: BLE001 - 保存不被指纹计算阻断
+            logger.warning("manual_prompt 指纹计算失败（保存仍生效）：%s", exc)
+            return
+        merged["manual_prompt_fingerprint"] = fingerprint
+        merged["manual_prompt_dimensions"] = dimensions
+
     def _apply_artifact_update(self, state: WorkflowState, stage: str, body: Dict[str, Any]):
         """Apply a user edit to in-memory artifacts before the session is persisted."""
         # 派生字段（行区间/标注/场景映射）只能在最终合并之后由服务端重建，
@@ -2389,6 +2429,8 @@ class WorkflowEngine:
                             current.get("versions"),
                             incoming.get("versions"),
                         )
+                        if stage == "video_generation" and str(incoming.get("manual_prompt") or "").strip():
+                            self._stamp_manual_prompt(state, merged, item_id)
                         if current.get("selected") and incoming.get("status") in {"failed", "pending"}:
                             merged["status"] = current.get("status", "done")
                         merged_items.append(merged)

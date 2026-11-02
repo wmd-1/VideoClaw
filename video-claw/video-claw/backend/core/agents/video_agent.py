@@ -16,10 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from core.h3_modes import (
     collect_segments,
-    fingerprint_parts,
-    next_in_order,
+    current_fingerprint,
     resolve_grounding_model,
-    resolve_h3_mode,
     resolve_style_key,
 )
 from core.prompt_source import resolve_effective_prompt
@@ -346,20 +344,8 @@ class VideoDirectorAgent(AgentInterface):
         h3_segment = h3_segment_by_id.get(seg_id) or {
             "id": seg_id, "shot_content": "", "duration": 0, "characters": [], "location": "",
         }
-        selected = str((scene_map.get(seg_id) or {}).get("selected") or "").strip()
-        next_selected = ""
-        if video_generation_mode == "start_end_frame":
-            nxt = next_in_order(h3_segments, seg_id)
-            if nxt is not None:
-                next_selected = str((scene_map.get(nxt["id"]) or {}).get("selected") or "").strip()
-        mode = resolve_h3_mode(
-            video_generation_mode,
-            has_first_frame=bool(selected),
-            has_last_frame=bool(next_selected),
-            has_reference_set=(video_generation_mode == "reference"),
-        )
-        fingerprint, dimensions = fingerprint_parts(
-            h3_segment, mode, h3_segments, scene_map, artifacts,
+        _mode, fingerprint, dimensions = current_fingerprint(
+            seg_id, video_generation_mode, h3_segments, scene_map, artifacts,
             style=style, grounding_model=grounding_model,
         )
         items = prompt_rewrite_art.get("items") if isinstance(prompt_rewrite_art, dict) else []
@@ -517,8 +503,8 @@ class VideoDirectorAgent(AgentInterface):
         item["selected"] = str(prev.get("selected") or (versions[-1] if versions else ""))
         for field in (
             "prompt_source", "submitted_prompt", "submitted_prompt_truncated",
-            "duration_adjustment", "manual_prompt", "manual_prompt_fingerprint",
-            "manual_prompt_dimensions",
+            "duration_adjustment", "effective_prompt",
+            "manual_prompt", "manual_prompt_fingerprint", "manual_prompt_dimensions",
         ):
             if field not in item and field in prev:
                 item[field] = prev[field]
@@ -596,6 +582,10 @@ class VideoDirectorAgent(AgentInterface):
                     item["submitted_prompt"] = submitted[:1000]
                     if len(submitted) > 1000:
                         item["submitted_prompt_truncated"] = True
+                effective = str(resolution.get("text") or "")
+                if effective:
+                    # 编辑框预填用“当前有效正文”，不是分镜描述
+                    item["effective_prompt"] = effective[:1000]
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":

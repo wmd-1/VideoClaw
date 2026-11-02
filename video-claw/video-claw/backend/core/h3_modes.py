@@ -218,10 +218,40 @@ def fingerprint_parts(segment: Dict[str, Any], mode: str,
     return sha_of(payload), dimension_hashes(payload)
 
 
+def current_fingerprint(seg_id: str, video_generation_mode: str,
+                        h3_segments: Sequence[Dict[str, Any]],
+                        scene_map: Optional[Dict[str, Dict]],
+                        artifacts: Optional[Dict[str, Any]],
+                        style: Any = "", grounding_model: str = "") -> Tuple[str, str, Dict[str, str]]:
+    """(mode, 整体指纹, 逐维度哈希)：模式与指纹的**唯一**入口。"""
+    h3_segment = next(
+        (item for item in h3_segments or [] if item.get("id") == seg_id),
+        None,
+    ) or {"id": seg_id, "shot_content": "", "duration": 0, "characters": [], "location": ""}
+    selected = str(((scene_map or {}).get(seg_id) or {}).get("selected") or "").strip()
+    next_selected = ""
+    if video_generation_mode == "start_end_frame":
+        nxt = next_in_order(h3_segments, seg_id)
+        if nxt is not None:
+            next_selected = str(((scene_map or {}).get(nxt["id"]) or {}).get("selected") or "").strip()
+    mode = resolve_h3_mode(
+        video_generation_mode,
+        has_first_frame=bool(selected),
+        has_last_frame=bool(next_selected),
+        has_reference_set=(video_generation_mode == "reference"),
+    )
+    fingerprint, dimensions = fingerprint_parts(
+        h3_segment, mode, h3_segments, scene_map, artifacts,
+        style=style, grounding_model=grounding_model,
+    )
+    return mode, fingerprint, dimensions
+
+
 __all__ = [
     "NEXT_FRAME_MODES",
     "authority_facts",
     "collect_segments",
+    "current_fingerprint",
     "fingerprint_parts",
     "media_references",
     "next_in_order",
