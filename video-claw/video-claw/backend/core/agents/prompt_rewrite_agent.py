@@ -259,6 +259,8 @@ class PromptRewriteAgent(AgentInterface):
                 total_duration = seg.get("total_duration") or sum(
                     sh.get("duration", 0) for sh in shots if isinstance(sh, dict)
                 )
+                # 分镜产物写 location；早期/兼容产物只有 setting
+                location = str(seg.get("location") or seg.get("setting") or "").strip()
                 segments.append({
                     "id": seg_id,
                     "name": f"第{ep_n}集-片段{s_i}",
@@ -267,7 +269,7 @@ class PromptRewriteAgent(AgentInterface):
                     "shot_content": shot_content,
                     "duration": _clamp_duration(total_duration),
                     "characters": [str(c) for c in (seg.get("characters") or []) if c],
-                    "setting": str(seg.get("setting") or "").strip(),
+                    "location": location,
                 })
         segments.sort(key=lambda x: x["id"])
         return segments
@@ -275,10 +277,33 @@ class PromptRewriteAgent(AgentInterface):
     # ─── 权威事实（B：角色与场景知识注入） ───
 
     @staticmethod
+    def _setting_description(location: str, settings: List[Dict[str, Any]]) -> str:
+        """按稳定 ID 或规范名查找场景描述；不做模糊匹配，避免串到别的场景。"""
+        target = str(location or "").strip()
+        if not target:
+            return ""
+        for item in settings:
+            if not isinstance(item, dict):
+                continue
+            names = {
+                str(item.get("id") or "").strip(),
+                str(item.get("setting_id") or "").strip(),
+                str(item.get("name") or "").strip(),
+            }
+            names.discard("")
+            if target in names:
+                return str(item.get("description") or "").strip()
+        return ""
+
+    @staticmethod
     def _authoritative_context(segment: Dict[str, Any], character_artifact: Optional[Dict]) -> str:
         """提取该分镜命中的角色外观描述与场景设定（五级优先级第 1 级）。"""
+        artifact = character_artifact if isinstance(character_artifact, dict) else {}
+        characters = artifact.get("characters", [])
+        characters = characters if isinstance(characters, list) else []
+        settings = artifact.get("settings", [])
+        settings = settings if isinstance(settings, list) else []
         lines: List[str] = []
-        characters = character_artifact.get("characters", []) if isinstance(character_artifact, dict) else []
         for name in segment.get("characters", []):
             entry = next(
                 (c for c in characters if isinstance(c, dict)
@@ -287,8 +312,10 @@ class PromptRewriteAgent(AgentInterface):
             )
             desc = str(entry.get("description") or "").strip() if entry else ""
             lines.append(f"- {name}：{desc}" if desc else f"- {name}")
-        if segment.get("setting"):
-            lines.append(f"- 场景：{segment['setting']}")
+        location = str(segment.get("location") or "").strip()
+        if location:
+            scene_desc = PromptRewriteAgent._setting_description(location, settings)
+            lines.append(f"- 场景：{location}：{scene_desc}" if scene_desc else f"- 场景：{location}")
         if not lines:
             return ""
         return "【权威事实·角色与场景设定（最高优先级，冲突时以此为准）】\n" + "\n".join(lines) + "\n"
