@@ -172,3 +172,26 @@ def test_protected_description_empty_payload_falls_back():
         {"selected": "v2.png", "description": "", "versions": ["v1.png", "v2.png"]},
     )
     assert item["description"] == "用户新描述"
+
+
+# ─────────────── 全量路径：重构后与旧语义逐字等价 ───────────────
+
+
+def _prefer(base_item: dict, latest_item: dict):
+    base = {"characters": [dict({"id": "c1"}, **base_item)]}
+    latest = {"characters": [dict({"id": "c1"}, **latest_item)]}
+    payload = {"characters": [{"id": "c1"}]}
+    merged = WorkflowEngine._prefer_user_edits("character_design", base, latest, payload)
+    return merged["characters"][0]
+
+
+def test_prefer_user_edits_does_not_write_null_for_new_field():
+    """基线缺字段、当前值为 None：旧实现不写键，重构后必须仍然不写。"""
+    item = _prefer({}, {"species": None})
+    assert "species" not in item
+
+
+def test_prefer_user_edits_writes_new_field_when_value_present():
+    item = _prefer({}, {"species": "cat"})
+    assert item["species"] == "cat"
+

@@ -21,7 +21,7 @@ from core import media_refs
 from core.agents.base_agent import AgentInterface
 from core.media_refs import ResolvedMedia
 from core.object_operations import ObjectCleanupWorker
-from core.orchestrator import WorkflowStage
+from core.orchestrator import WorkflowEngine, WorkflowStage
 from db import database
 from db.repositories import FileRepo, StageArtifactRepo
 from db.repositories.commits import CommitConflict, commit_session_change, load_committed, load_working
@@ -589,6 +589,36 @@ def test_background_regeneration_protects_user_description(monkeypatch):
     assert item["description"] == "用户新描述", "受保护字段应保留执行期间的用户编辑"
     assert item["name"] == "小明", "未纳保护的 name 仍应随本轮 payload"
     assert len(item["versions"]) == 2, "新版本仍需保留"
+
+
+def test_stage_baseline_snapshot_computed_once_per_execution(monkeypatch):
+    """A1b：同一执行内基线只算一次（事件 + 收尾合并共用），而不是每个事件重算。"""
+    sid = _new_session()
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, _character_agent(b"v1"))
+    _run(WorkflowStage.CHARACTER_DESIGN, sid)
+
+    calls = {"n": 0}
+    original = WorkflowEngine._user_edit_snapshot
+
+    def counting(artifact):
+        calls["n"] += 1
+        return original(artifact)
+
+    monkeypatch.setattr(WorkflowEngine, "_user_edit_snapshot", staticmethod(counting))
+
+    def rerun(agent, input_data, intervention):
+        result = _character_agent(b"v2")(agent, input_data, intervention)
+        item = result["payload"]["characters"][0]
+        agent._report_progress("角色设计", "完成", 100, data={"asset_complete": {
+            "type": "characters", "id": "c1", "status": "done",
+            "selected": item["selected"], "versions": item["versions"],
+        }})
+        return result
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, rerun)
+    _run(WorkflowStage.CHARACTER_DESIGN, sid, intervention={"regenerate_characters": ["c1"]})
+
+    assert calls["n"] == 1, "基线快照应在一次执行内只计算一次"
 
 
 # ── 14.6 failure keeps the old success layer; delete queues cleanup ─────

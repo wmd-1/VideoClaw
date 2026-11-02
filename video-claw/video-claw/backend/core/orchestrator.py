@@ -371,6 +371,8 @@ class _StageRun:
         self.intervention = intervention
         self.owner = ""
         self.start_artifacts: Dict[str, Any] = {}
+        # 本次执行的字段基线（懒计算一次；所有事件与收尾看到同一份）
+        self.baseline_fields: Optional[Dict[str, Any]] = None
         self.publisher: Optional[workflow_store.ExecutionPublisher] = None
         self.active_registered = False
         self.finished = False
@@ -1611,22 +1613,39 @@ class WorkflowEngine:
         return new_selected or current_selected or ""
 
     @staticmethod
+    def _field_edited_by_user(current: Any, base: Any, field: str) -> bool:
+        """`current[field]` 是否偏离基线（Q8/A1b/全量路径共用的比较口径）。
+
+        仅回答“两边都存在且不同”；基线缺字段算不算手改由调用方决定：
+        后台保护视作“未改”（payload 生效），全量路径保留其原有“基线缺 = 改过”语义。
+        """
+        if not isinstance(current, dict) or field not in current:
+            return False
+        if not isinstance(base, dict) or field not in base:
+            return False
+        return current.get(field) != base.get(field)
+
+    @staticmethod
     def _apply_protected_fields(merged_item: Dict[str, Any], current: Dict[str, Any],
                                 item: Dict[str, Any], base_item: Dict[str, Any],
                                 protected_fields: tuple) -> None:
         """A1b：执行期间被改过的受保护字段保留用户值；本轮送空也回退当前值。
 
-        与 `_prefer_user_edits` 共用同一条“`current != base` 即用户改过”的判据，
-        不为后台路径另写第三套规则。
+        `selected` 不在此处理（由 `_selected_after_asset_update` 单独管）。
         """
         for field in protected_fields or ():
             if field not in current:
                 continue
-            base_value = base_item.get(field, _NO_BASELINE)
-            edited = base_value is not _NO_BASELINE and current.get(field) != base_value
+            edited = WorkflowEngine._field_edited_by_user(current, base_item, field)
             incoming = item.get(field)
             if edited or incoming in (None, ""):
                 merged_item[field] = copy.deepcopy(current.get(field))
+
+    def _stage_baseline(self, run: "_StageRun") -> Dict[str, Any]:
+        """本次执行的字段基线：同一执行内只算一次，所有事件与收尾看到同一份。"""
+        if run.baseline_fields is None:
+            run.baseline_fields = self._user_edit_snapshot(run.start_artifacts.get(run.stage.value))
+        return run.baseline_fields
 
     @staticmethod
     def _user_edit_snapshot(artifact: Any) -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -2000,8 +2019,8 @@ class WorkflowEngine:
             if not container or not item_id:
                 return item
             if run.background:
-                # 本次执行开始时的字段快照：执行期间被改过的条目保留用户新值（Q8）
-                baseline_fields = self._user_edit_snapshot(run.start_artifacts.get(stage_key))
+                # 本次执行的字段基线：同一执行内只算一次（Q8/A1b 共用）
+                baseline_fields = self._stage_baseline(run)
 
                 def apply(after: WorkflowState) -> None:
                     artifact = after.artifacts.get(stage_key)
@@ -2083,7 +2102,7 @@ class WorkflowEngine:
                     targets = self._background_regeneration_targets(stage, run.intervention)
                     payload = self._merge_item_regeneration_payload(
                         after.artifacts.get(stage_key, {}), payload, keys, targets,
-                        baseline_fields=self._user_edit_snapshot(run.start_artifacts.get(stage_key)),
+                        baseline_fields=self._stage_baseline(run),
                         protected_fields=_BACKGROUND_PROTECTED_FIELDS.get(stage_key, ()),
                     )
                 else:
@@ -2213,7 +2232,14 @@ class WorkflowEngine:
                     continue
                 original = base_items.get(item.get("id")) or {}
                 for field in _USER_EDIT_FIELDS:
-                    if field in current and current.get(field) != original.get(field):
+                    if field not in current:
+                        continue
+                    if field not in original:
+                        # 基线缺该字段：仅当当前值非 None 才算用户新增（与旧语义逐字等价，
+                        # 避免把 `species: null` 这类键写进产物）
+                        if current.get(field) is not None:
+                            item[field] = copy.deepcopy(current[field])
+                    elif WorkflowEngine._field_edited_by_user(current, original, field):
                         item[field] = copy.deepcopy(current[field])
                 item["versions"] = WorkflowEngine._merge_asset_versions(current.get("versions"), item.get("versions"))
             present = {item.get("id") for item in items if isinstance(item, dict)}
