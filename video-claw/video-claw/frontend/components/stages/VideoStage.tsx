@@ -21,12 +21,78 @@ interface ClipItem {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';
   rewrite_result?: RewriteResult;
+  /** 当前有效正文来源（Q1）：manual / h3 / description + 新鲜度 */
+  prompt_source?: {
+    source?: 'manual' | 'h3' | 'description' | string;
+    freshness?: 'fresh' | 'stale' | 'unknown' | string;
+    stale_reasons?: string[];
+  };
+  /** 用户保存的权威正文（PATCH 写入，Agent 不产出） */
+  manual_prompt?: string;
+  manual_prompt_fingerprint?: string;
+  manual_prompt_dimensions?: Record<string, string>;
+  /** 本次视频生成实际提交的正文（限长快照，仅供展示） */
+  submitted_prompt?: string;
+  submitted_prompt_truncated?: boolean;
   /** 失败原因与类别（由后端逐条失败分类写入；未尝试的占位片段不带这两个字段） */
   error?: string;
   error_type?: string;
   /** 后端动态 JSON 附加字段（按消费处声明） */
   episode?: number;
   episode_title?: string;
+}
+
+const PROMPT_STALE_LABELS: Record<string, string> = {
+  shot_changed: '镜头内容变化',
+  duration_changed: '时长变化',
+  mode_changed: '模式变化',
+  references_changed: '参考图变化',
+  style_changed: '风格变化',
+  facts_changed: '角色/场景设定变化',
+  grounding_model_changed: '识别模型变化',
+  fingerprint_missing: '缺少输入记录',
+  fingerprint_changed: '输入已变化',
+  h3_not_ready: '上次改写未完成',
+  h3_absent: '未执行改写',
+};
+
+function promptSourceView(clip: ClipItem): { text: string; className: string } {
+  const meta = clip.prompt_source;
+  if (!meta) return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
+  if (meta.source === 'manual') {
+    return meta.freshness === 'fresh'
+      ? { text: '人工正文', className: 'bg-blue-100 text-blue-700' }
+      : { text: '人工正文（未校验）', className: 'bg-amber-100 text-amber-700' };
+  }
+  if (meta.source === 'h3') {
+    return { text: 'H3 改写', className: 'bg-violet-100 text-violet-700' };
+  }
+  if (meta.source === 'description') {
+    const reasons = (meta.stale_reasons || [])
+      .map(reason => PROMPT_STALE_LABELS[reason] || reason)
+      .join('、');
+    return {
+      text: reasons ? `回退分镜描述（${reasons}）` : '回退分镜描述',
+      className: 'bg-amber-100 text-amber-700',
+    };
+  }
+  return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
+}
+
+function PromptSourceBadge({ clip }: { clip: ClipItem }) {
+  const view = promptSourceView(clip);
+  // 来源只看 prompt_source；submitted_prompt 仅作“本次已提交”的提示
+  const title = clip.submitted_prompt
+    ? `本次已提交：${clip.submitted_prompt}${clip.submitted_prompt_truncated ? '（已截断）' : ''}`
+    : undefined;
+  return (
+    <span
+      className={`h-6 px-1.5 rounded-full text-[10px] font-bold whitespace-nowrap ${view.className}`}
+      title={title}
+    >
+      {view.text}
+    </span>
+  );
 }
 
 /** 本阶段 artifact 的本地结构（后端动态 JSON，按消费字段声明） */
@@ -150,6 +216,7 @@ function VideoGallery({
 function ClipRow({
   clip,
   editDesc,
+  initialPrompt,
   onDescChange,
   onSavePrompt,
   onRegenerate,
@@ -166,6 +233,8 @@ function ClipRow({
 }: {
   clip: ClipItem;
   editDesc?: string;
+  /** 当前有效正文（按 prompt_source 选源），仅用于预填 */
+  initialPrompt?: string;
   onDescChange?: (val: string) => void;
   onSavePrompt?: () => void;
   onRegenerate: () => void;
@@ -196,6 +265,7 @@ function ClipRow({
       <div className="w-full xl:w-80 xl:flex-shrink-0 p-4 border-b xl:border-b-0 xl:border-r border-gray-100 flex flex-col">
         <div className="flex items-center gap-2 mb-2">
           <RewriteResultBadge rewriteResult={clip.rewrite_result} />
+          <PromptSourceBadge clip={clip} />
           <span className="flex items-center justify-center h-6 px-1.5 rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold flex-shrink-0 whitespace-nowrap">
             {clip.index ?? clip.id.replace('Scene_', '')}
           </span>
@@ -259,7 +329,7 @@ function ClipRow({
         </div>
         {isEditing ? (
           <textarea
-            value={editDesc ?? clip.description}
+            value={editDesc ?? initialPrompt ?? clip.description}
             onChange={e => onDescChange?.(e.target.value)}
             rows={4}
             className="h-[120px] text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2 resize-none focus:outline-none focus:ring-1 focus:ring-rose-300"
@@ -273,6 +343,9 @@ function ClipRow({
             <p className="text-xs text-gray-400 italic">无提示词</p>
           </div>
         )}
+        {isEditing && clip.manual_prompt ? (
+          <p className="mt-1 text-[10px] text-gray-400">清空后保存将恢复自动来源</p>
+        ) : null}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {/* 已有视频显示重新生成；失败/旧数据空资源允许补生成。 */}
           {!isStageRunning && (hasVideo || isFailed || canGenerateMissing) && (
@@ -381,7 +454,7 @@ function ClipRow({
 }
 
 /* ─── 主组件 ─── */
-export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage }: StageViewProps) {
+export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, artifacts }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as VideoStageArtifact;
   // 提取剧集标题映射
   const episodeTitleMap = React.useMemo(() => {
@@ -399,6 +472,26 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
     }
     return map;
   }, [scriptArtifact]);
+
+  // Q1：H3 正文按分镜 id 索引（编辑预填用；不在组件内另起请求）
+  const h3PromptById = React.useMemo(() => {
+    const items =
+      (artifacts?.prompt_rewrite as { items?: Array<{ id?: string; rewritten_prompt?: string }> } | undefined)
+        ?.items || [];
+    const map: Record<string, string> = {};
+    items.forEach(item => {
+      if (item?.id && item.rewritten_prompt) map[item.id] = item.rewritten_prompt;
+    });
+    return map;
+  }, [artifacts]);
+
+  /** 预填规则：只认 prompt_source（manual → manual_prompt，h3 → H3 条目，其余 → description） */
+  const prefillPrompt = React.useCallback((clip: ClipItem): string => {
+    const source = clip.prompt_source?.source;
+    if (source === 'manual') return (clip.manual_prompt || '').trim() || clip.description;
+    if (source === 'h3') return h3PromptById[clip.id] || clip.description;
+    return clip.description;
+  }, [h3PromptById]);
 
   // 检查每个 clip 是否有对应的参考图
   const hasReferenceImage = useCallback((clipId: string): boolean => {
@@ -449,7 +542,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
     if (clips.length > 0) {
       setEditDescs(prev => {
         const next: Record<string, string> = {};
-        clips.forEach(c => { next[c.id] = prev[c.id] ?? c.description; });
+        clips.forEach(c => { next[c.id] = prev[c.id] ?? prefillPrompt(c); });
         return next;
       });
     }
@@ -480,24 +573,28 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
   const canEdit = state.status === 'waiting' || state.status === 'completed';
 
   // 保存单个提示词到后端 JSON
+  // 注意：manual_prompt 等新字段必须用数组形状；键控形状仅兼容旧的 description/duration
   const handleSavePrompt = async (clipId: string) => {
-    const newPrompt = editDescs[clipId];
-    if (!newPrompt) return;
+    const clip = clips.find(item => item.id === clipId);
+    const newPrompt = (editDescs[clipId] ?? '').trim();
+    const hadManual = Boolean(clip?.manual_prompt);
+    if (!newPrompt && !hadManual) return;
+    if (!newPrompt && hadManual && !window.confirm('清空人工正文并恢复自动来源？')) return;
 
     setSavingIds(prev => new Set(prev).add(clipId));
     try {
       const response = await apiFetch(`/api/project/${sessionId}/artifact/video_generation`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          [clipId]: { description: newPrompt }
-        })
+        body: JSON.stringify({ clips: [{ id: clipId, manual_prompt: newPrompt }] })
       });
       if (response.ok) {
-        // 更新前端缓存的 clips.description
+        // 后端会同时刷新 prompt_source；直接合并返回的条目（徽标立即回显）
+        const data = await response.json().catch(() => ({}));
+        const savedClip = (data?.artifact?.clips || []).find((item: ClipItem) => item.id === clipId);
         if (onUpdateArtifact && artifact.clips) {
           const updatedClips = artifact.clips.map((c: ClipItem) =>
-            c.id === clipId ? { ...c, description: newPrompt } : c
+            c.id === clipId ? { ...c, ...(savedClip || { manual_prompt: newPrompt }) } : c
           );
           onUpdateArtifact({ clips: updatedClips });
         }
@@ -506,7 +603,10 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
           next.delete(clipId);
           return next;
         });
-        setEditDescs(prev => ({ ...prev, [clipId]: newPrompt }));
+        setEditDescs(prev => ({
+          ...prev,
+          [clipId]: newPrompt || (savedClip?.description ?? clip?.description ?? ''),
+        }));
       }
     } catch (error) {
       console.error('保存提示词失败:', error);
@@ -534,7 +634,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
 
   const handleCancelEdit = (clipId: string) => {
     const clip = clips.find(item => item.id === clipId);
-    setEditDescs(prev => ({ ...prev, [clipId]: clip?.description || '' }));
+    setEditDescs(prev => ({ ...prev, [clipId]: clip ? prefillPrompt(clip) : '' }));
     setEditingIds(prev => {
       const next = new Set(prev);
       next.delete(clipId);
@@ -650,6 +750,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
                             <ClipRow
                               clip={{ ...clip, selected: getSelected(clip) }}
                               editDesc={editDescs[clip.id]}
+                              initialPrompt={prefillPrompt(clip)}
                               onDescChange={canEdit ? (val => setEditDescs(prev => ({ ...prev, [clip.id]: val }))) : undefined}
                               onSavePrompt={() => handleSavePrompt(clip.id)}
                               onRegenerate={() => handleRegenerate(clip.id)}
