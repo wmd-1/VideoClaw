@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import Config
 from core.agents.base_agent import AgentInterface
 from core.agents.video_agent import VideoDirectorAgent
+from core.prompt_fingerprint import build_input_fingerprint
 from core.video_params import resolve_effective_duration
 from prompts.loader import load_prompt
 
@@ -389,6 +390,51 @@ class PromptRewriteAgent(AgentInterface):
                 images.append(path)
         return images
 
+    @staticmethod
+    def _authority_facts(artifacts: Dict[str, Any], segment: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """本分镜涉及的人物/场景权威事实（与消费计划同一匹配与顺序）。"""
+        from core.consumption import reference_assets_for_segment
+
+        facts: List[Dict[str, Any]] = []
+        for container, key, asset in reference_assets_for_segment(artifacts, segment):
+            facts.append({
+                "kind": "character" if container == "characters" else "setting",
+                "id": key,
+                "name": asset.get("name"),
+                "description": asset.get("description"),
+                "species": asset.get("species"),
+                "location": segment.get("location") if container == "settings" else "",
+            })
+        return facts
+
+    def _input_fingerprint(self, segment: Dict[str, Any], mode: str,
+                           ordered: List[Dict[str, Any]], scene_map: Dict[str, Dict],
+                           artifacts: Dict[str, Any], input_data: Dict,
+                           session_meta: Dict) -> str:
+        """Q1：当次输入指纹（参考集用有序清单，不按名称）。"""
+        references: List[tuple] = []
+        if mode == "Ref2VA":
+            from core.consumption import reference_assets_for_segment
+
+            for container, key, asset in reference_assets_for_segment(artifacts, segment):
+                references.append((container, key, asset.get("selected")))
+        else:
+            references.append(("reference_generation", "scenes",
+                               (scene_map.get(segment["id"]) or {}).get("selected")))
+            if mode == "FL2VA":
+                nxt = self._next_in_order(ordered, segment["id"])
+                if nxt is not None:
+                    references.append(("reference_generation", "scenes",
+                                       (scene_map.get(nxt["id"]) or {}).get("selected")))
+        return build_input_fingerprint(
+            shot_content=segment.get("shot_content"),
+            duration=segment.get("duration"),
+            mode=mode,
+            references=references,
+            style=input_data.get("style") or session_meta.get("style") or "",
+            facts=self._authority_facts(artifacts, segment),
+        )
+
     def _grounding_images(self, segment: Dict[str, Any], ordered_segments: List[Dict[str, Any]],
                           scene_map: Dict[str, Dict], mode: str,
                           artifacts: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -518,7 +564,8 @@ class PromptRewriteAgent(AgentInterface):
     @staticmethod
     def _make_item(segment: Dict[str, Any], rewritten_prompt: str, mode: str,
                    grounding_meta: Optional[Dict] = None,
-                   prev_item: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   prev_item: Optional[Dict[str, Any]] = None,
+                   fingerprint: str = "") -> Dict[str, Any]:
         item: Dict[str, Any] = {
             "id": segment["id"],
             "name": segment["name"],
@@ -536,6 +583,8 @@ class PromptRewriteAgent(AgentInterface):
         }
         if grounding_meta is not None:
             item["grounding"] = grounding_meta
+        # Q1：当次输入指纹（空串 = unknown，不得视为新鲜）
+        item["input_fingerprint"] = fingerprint
         if segment.get("duration_adjustments"):
             # Q2：时长夹取事实随条目透出（与视频阶段同源）
             item["duration_adjustment"] = list(segment["duration_adjustments"])
@@ -610,6 +659,10 @@ class PromptRewriteAgent(AgentInterface):
                 has_last_frame=bool(next_selected),
                 has_reference_set=(video_generation_mode == "reference"),
             )
+            # Q1：当次输入指纹（与条目一起落库，供下游判定新鲜度）
+            fingerprint = self._input_fingerprint(
+                segment, mode, ordered, scene_map, artifacts, input_data, session_meta
+            )
             guide = await asyncio.to_thread(self._load_guide, mode)
 
             # C：VLM grounding（独立开关；失败回退文本输入，模式不变）
@@ -638,7 +691,7 @@ class PromptRewriteAgent(AgentInterface):
                 grounding_desc=grounding_desc,
             )
 
-            item = self._make_item(segment, "", mode, grounding_meta, prev_item)
+            item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint)
             # 条目级「改写中」事件：进入 _rewrite_one（含 1+2 次调用的重试环）之前发一次，
             # 沿用 _event_item_summary 但剔除 rewritten_prompt / truncated（D1/D2：只带身份与渲染
             # 字段、不带正文）；status=running 不在 wrapped_progress_callback 的落盘集合内，天然不写盘。
@@ -666,19 +719,19 @@ class PromptRewriteAgent(AgentInterface):
                     segment, mode, system_prompt, guide, llm_model, sections
                 )
                 if rewritten:
-                    item = self._make_item(segment, rewritten, mode, grounding_meta, prev_item)
+                    item = self._make_item(segment, rewritten, mode, grounding_meta, prev_item, fingerprint=fingerprint)
                     self._append_version(item, rewritten, source="agent")
                     item["continuity"] = _continuity_from_prompt(rewritten, mode)
                     continuity_summaries.append(item["continuity"])
                 else:
-                    item = self._make_item(segment, "", mode, grounding_meta, prev_item)
+                    item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint)
                     item["status"] = "failed"
                     item["error"] = "结构校验未通过：" + "；".join(violations)
                     if rejected:
                         item["rejected_output"] = rejected  # 保留最后被拒输出供诊断/人工采用
             except Exception as exc:  # noqa: BLE001 - 单条目失败不阻塞其他条目
                 logger.warning("prompt_rewrite: 分镜 %s 改写失败: %s", segment["id"], exc)
-                item = self._make_item(segment, "", mode, grounding_meta, prev_item)
+                item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint)
                 item["status"] = "failed"
                 item["error"] = str(exc)
             results[segment["id"]] = item

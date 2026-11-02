@@ -1,0 +1,92 @@
+"""Q1 回归：H3 输入指纹（覆盖全集、可复现、参考集按路径）。"""
+from __future__ import annotations
+
+import copy
+
+from core.agents.prompt_rewrite_agent import PromptRewriteAgent
+from core.prompt_fingerprint import build_input_fingerprint, media_ref
+
+BASE = dict(
+    shot_content="镜头：小陈推门进入办公室",
+    duration=8,
+    mode="I2VA",
+    references=[("reference_generation", "scenes", "/code/result/_media/a.png")],
+    style="写实",
+    facts=[{"kind": "character", "id": "c1", "name": "小陈", "description": "银行职员"}],
+)
+
+
+def _fp(**overrides):
+    return build_input_fingerprint(**{**BASE, **overrides})
+
+
+def test_same_inputs_produce_same_fingerprint():
+    assert _fp() == _fp()
+
+
+def test_each_dimension_changes_fingerprint():
+    base = _fp()
+    assert _fp(shot_content="镜头：小陈离开") != base
+    assert _fp(duration=10) != base
+    assert _fp(mode="FL2VA") != base
+    assert _fp(references=[("reference_generation", "scenes", "/code/result/_media/b.png")]) != base
+    assert _fp(style="动漫") != base
+    assert _fp(facts=[]) != base
+
+
+def test_local_absolute_paths_are_normalized_to_basename():
+    assert media_ref("/tmp/x/a.png") == media_ref("/home/y/a.png") == "a.png"
+    assert _fp(references=[("r", "s", "/tmp/x/a.png")]) == _fp(
+        references=[("r", "s", "/home/y/a.png")]
+    )
+
+
+def test_public_paths_are_kept_verbatim():
+    assert media_ref("/code/result/_media/a.png") == "/code/result/_media/a.png"
+
+
+def test_fact_order_does_not_matter():
+    facts = [
+        {"kind": "character", "id": "c1", "name": "小陈"},
+        {"kind": "character", "id": "c2", "name": "小周"},
+    ]
+    assert _fp(facts=list(reversed(facts))) == _fp(facts=facts)
+
+
+SEGMENT = {"id": "seg_01_01", "shot_content": "镜头", "duration": 8,
+           "characters": ["小陈"], "location": "支行办公室"}
+
+ARTIFACTS = {
+    "character_design": {
+        "characters": [{"id": "c1", "name": "小陈", "selected": "/code/result/_media/c1.png",
+                        "description": "银行职员"}],
+        "settings": [{"id": "s1", "name": "支行办公室", "selected": "/code/result/_media/s1.png"}],
+    },
+    "reference_generation": {"scenes": [{"id": "seg_01_01", "selected": "/code/result/_media/f1.png"}]},
+}
+
+
+def test_agent_fingerprint_reacts_to_selected_reference_change():
+    agent = PromptRewriteAgent()
+    first = agent._input_fingerprint(SEGMENT, "Ref2VA", [SEGMENT], {}, ARTIFACTS, {}, {})
+    assert first == agent._input_fingerprint(SEGMENT, "Ref2VA", [SEGMENT], {}, ARTIFACTS, {}, {})
+
+    changed = copy.deepcopy(ARTIFACTS)
+    changed["character_design"]["characters"][0]["selected"] = "/code/result/_media/c1_v2.png"
+    assert agent._input_fingerprint(SEGMENT, "Ref2VA", [SEGMENT], {}, changed, {}, {}) != first
+
+
+def test_agent_fingerprint_frame_mode_uses_scene_selection():
+    agent = PromptRewriteAgent()
+    scene_map = {"seg_01_01": {"id": "seg_01_01", "selected": "/code/result/_media/f1.png"}}
+    base = agent._input_fingerprint(SEGMENT, "I2VA", [SEGMENT], scene_map, ARTIFACTS, {}, {})
+    scene_map["seg_01_01"]["selected"] = "/code/result/_media/f2.png"
+    assert agent._input_fingerprint(SEGMENT, "I2VA", [SEGMENT], scene_map, ARTIFACTS, {}, {}) != base
+
+
+def test_make_item_carries_input_fingerprint():
+    item = PromptRewriteAgent._make_item(
+        {"id": "s1", "name": "第1集-片段1", "index": 1, "shot_content": "镜头", "duration": 8},
+        "正文", "I2VA", fingerprint="abc123",
+    )
+    assert item["input_fingerprint"] == "abc123"
