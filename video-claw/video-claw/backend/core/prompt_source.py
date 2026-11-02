@@ -81,7 +81,9 @@ def resolve_effective_prompt(
         elif stored == current_fingerprint:
             freshness, reasons = FRESHNESS_FRESH, []
         else:
-            freshness, reasons = FRESHNESS_STALE, ["fingerprint_changed"]
+            # 与 H3 同一逐维度对比：PATCH 时会存 manual_prompt_dimensions
+            reasons = _changed_reasons(video_item.get("manual_prompt_dimensions"), dimensions)
+            freshness = FRESHNESS_STALE
         return {"text": manual, "source": SOURCE_MANUAL, "freshness": freshness,
                 "stale_reasons": reasons}
 

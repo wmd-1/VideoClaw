@@ -57,6 +57,19 @@ def test_manual_stale_still_used():
     assert result["stale_reasons"] == ["fingerprint_changed"]
 
 
+def test_manual_stale_reports_specific_reason_from_dimensions():
+    fingerprint, dimensions = _current()
+    stale_fp, stale_dims = _current(duration=12)
+    result = resolve_effective_prompt(
+        SEGMENT, _h3(),
+        {"manual_prompt": "人工正文", "manual_prompt_fingerprint": stale_fp,
+         "manual_prompt_dimensions": stale_dims},
+        current_fingerprint=fingerprint, current_dimensions=dimensions,
+    )
+    assert result["freshness"] == "stale"
+    assert result["stale_reasons"] == ["duration_changed"]
+
+
 def test_h3_fresh_used_without_manual():
     fingerprint, dimensions = _current()
     result = resolve_effective_prompt(
