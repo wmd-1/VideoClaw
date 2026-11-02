@@ -103,3 +103,40 @@ def test_missing_prompt_rewrite_artifact_reports_absent():
     )
     assert result["text"] == "分镜描述"
     assert result["stale_reasons"] == ["h3_absent"]
+
+
+VIDEO_SEGMENT = {
+    "segment_id": "seg_01_01", "segment_name": "第1集-片段1", "total_duration": 8,
+    "shots": [{"content": "走进办公室", "duration": 8}],
+}
+
+
+def test_final_prompt_description_uses_full_assembly():
+    """description 分支不得退化成一句分镜描述：风格/人物/负向约束必须保留。"""
+    agent = VideoDirectorAgent()
+    resolution = {"text": "走进办公室", "source": "description", "freshness": "stale",
+                  "stale_reasons": ["duration_changed"]}
+    prompt = agent._final_prompt(
+        VIDEO_SEGMENT, "anime style,", ARTIFACTS["character_design"],
+        video_data={"description": "走进办公室"}, prompt_rewrite_art=None,
+        seg_id="seg_01_01", resolution=resolution,
+    )
+    assert "风格控制：" in prompt
+    assert "人物列表：" in prompt
+    assert prompt == agent._assemble_prompt(
+        VIDEO_SEGMENT, "anime style,", ARTIFACTS["character_design"],
+        video_data={"description": "走进办公室"},
+    )
+
+
+def test_final_prompt_h3_and_manual_are_verbatim():
+    agent = VideoDirectorAgent()
+    for source, text in (("h3", "H3 完整正文"), ("manual", "人工完整正文")):
+        prompt = agent._final_prompt(
+            VIDEO_SEGMENT, "anime style,", ARTIFACTS["character_design"],
+            video_data={"description": "描述"}, prompt_rewrite_art=None,
+            seg_id="seg_01_01",
+            resolution={"text": text, "source": source, "freshness": "fresh",
+                        "stale_reasons": []},
+        )
+        assert prompt == text

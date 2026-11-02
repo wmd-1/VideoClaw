@@ -321,11 +321,17 @@ class VideoDirectorAgent(AgentInterface):
                       seg_id: str, resolution: Optional[dict] = None) -> str:
         """视频模型最终提示词。
 
-        Q1 之后只负责消费 `resolve_effective_prompt` 的结果（人工 > 新鲜 H3 > description）；
-        `resolution` 缺省时保留旧行为（供未接线的调用/兼容）。
+        Q1 之后只负责消费 `resolve_effective_prompt` 的结果：
+        - `h3` / `manual`：逐字使用完整正文；
+        - `description`：继续走 `_assemble_prompt`（风格/人物/分镜/负向约束），
+          不得退化成一句分镜描述。
+        `resolution=None` 仅测试/兼容旧调用。
         """
         if resolution is not None:
-            return str(resolution.get("text") or "")
+            source = str(resolution.get("source") or "")
+            if source in ("h3", "manual"):
+                return str(resolution.get("text") or "")
+            return self._assemble_prompt(segment, style_prompt, character_artifact, video_data=video_data)
         rewritten = self._lookup_rewritten_prompt(prompt_rewrite_art, seg_id)
         if rewritten:
             return rewritten
@@ -558,12 +564,17 @@ class VideoDirectorAgent(AgentInterface):
                 item["duration_adjustment"] = adjustment
             resolution = self._prompt_sources.get(segment_id)
             if resolution:
-                # Q1：解析链摘要（不塞正文；正文在 item["prompt"] 里）
+                # Q1：解析链摘要 + 实际提交正文（限长，避免产物膨胀）
                 item["prompt_source"] = {
                     "source": str(resolution.get("source") or ""),
                     "freshness": str(resolution.get("freshness") or ""),
                     "stale_reasons": list(resolution.get("stale_reasons") or []),
                 }
+                submitted = str(resolution.get("submitted_prompt") or "")
+                if submitted:
+                    item["submitted_prompt"] = submitted[:4000]
+                    if len(submitted) > 4000:
+                        item["submitted_prompt_truncated"] = True
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":
@@ -692,6 +703,7 @@ class VideoDirectorAgent(AgentInterface):
                             prompt = self._final_prompt(seg, style_prompt, character_art, video_data=clip,
                                                         prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id,
                                                         resolution=resolution)
+                            resolution["submitted_prompt"] = prompt
 
                             reference_image_paths = None
                             if video_generation_mode == "reference":
@@ -799,6 +811,7 @@ class VideoDirectorAgent(AgentInterface):
                 prompt = self._final_prompt(seg, style_prompt, character_art, video_data=None,
                                             prompt_rewrite_art=prompt_rewrite_art, seg_id=seg_id,
                                             resolution=resolution)
+                resolution["submitted_prompt"] = prompt
                 reference_image_paths = None
                 if video_generation_mode == "reference":
                     img_path = None
