@@ -136,16 +136,21 @@ function PromptDetails({
   const sourceSentence = (() => {
     if (!meta) return '缺少输入记录，无法判断内容是否仍匹配当前分镜';
     if (meta.source === 'manual') {
-      return meta.freshness === 'fresh'
-        ? '内容仍匹配当前分镜'
-        : `当前分镜已变化${reasons.short ? `：${reasons.short}` : ''}`;
+      return meta.freshness === 'fresh' ? '内容仍匹配当前分镜' : '当前分镜已变化';
     }
-    if (meta.source === 'h3') return '内容仍匹配当前改写输入';
-    if (meta.source === 'description') {
-      return reasons.short ? `相比生成时：${reasons.short}` : '使用分镜描述作为正文';
+    if (meta.source === 'h3') {
+      return meta.freshness === 'fresh' ? '内容仍匹配当前改写输入' : 'H3 结果可能已过期';
     }
+    if (meta.source === 'description') return '使用分镜描述作为正文';
     return '缺少输入记录，无法判断';
   })();
+  const reasonLabel = meta?.source === 'manual' ? '相比保存时：' : '相比生成时：';
+
+  const submittedText = clip.submitted_prompt
+    ? `${clip.submitted_prompt}${clip.submitted_prompt_truncated ? '（仅显示前 1000 字）' : ''}`
+    : generated
+      ? '旧版本未记录提交正文（功能上线前生成）'
+      : '本片段尚无生成记录';
 
   const generationText = !generated ? '未生成' : (regenerationText(clip) || '已生成');
   const manualExplain =
@@ -186,17 +191,12 @@ function PromptDetails({
       <div>
         <span className="font-medium text-gray-700">来源与新鲜度：</span>
         {meta ? `${promptSourceView(clip).text}——${sourceSentence}` : sourceSentence}
-        {reasons.full ? <div className="mt-0.5">相比生成时：{reasons.full}</div> : null}
+        {reasons.full ? <div className="mt-0.5">{reasonLabel}{reasons.full}</div> : null}
       </div>
 
       <div>
         <span className="font-medium text-gray-700">本次已提交：</span>
-        {clip.submitted_prompt ? (
-          <span className="whitespace-pre-wrap break-words">
-            {clip.submitted_prompt}
-            {clip.submitted_prompt_truncated ? '（仅显示前 1000 字）' : ''}
-          </span>
-        ) : '本片段尚无生成记录'}
+        <span className="whitespace-pre-wrap break-words">{submittedText}</span>
       </div>
 
       <div>
@@ -207,7 +207,7 @@ function PromptDetails({
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="font-medium text-gray-700">H3 阶段：</span>
+        <span className="font-medium text-gray-700">改写阶段：</span>
         {h3Text}
         {onNavigateH3 ? (
           <button onClick={onNavigateH3} className="text-[10px] text-blue-600 hover:underline">
