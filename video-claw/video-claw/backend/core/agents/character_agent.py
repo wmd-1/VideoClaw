@@ -14,6 +14,13 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core.asset_quality import (
+    EVALUATION_KEYS,
+    evaluation_payload,
+)
+from core.asset_quality import (
+    existing_evaluations as _existing_evaluations_shared,
+)
 from prompts.loader import load_prompt
 
 from .base_agent import AgentInterface
@@ -116,19 +123,8 @@ class CharacterDesignerAgent(AgentInterface):
 
     @staticmethod
     def _existing_evaluations(artifact: Dict, container: str) -> Dict[str, Any]:
-        """已存产物里的 evaluation（只含白名单字段）。
-
-        作为本轮未评估条目的底稿：本轮没重生成时不能把历史评估状态抹掉。
-        """
-        evaluations: Dict[str, Any] = {}
-        items = artifact.get(container) if isinstance(artifact, dict) else None
-        for item in items if isinstance(items, list) else []:
-            if not isinstance(item, dict) or not item.get("id"):
-                continue
-            value = item.get("evaluation")
-            if isinstance(value, dict):
-                evaluations[item["id"]] = value
-        return evaluations
+        """已存产物里的 evaluation（白名单实现见 core.asset_quality）。"""
+        return _existing_evaluations_shared(artifact, container)
 
     def _next_version_path(self, sid: str, asset_type: str, asset_id: str) -> str:
         """获取下一个版本的文件路径（只看本地目录，历史版本不占用本地文件名）"""
@@ -884,25 +880,12 @@ class CharacterDesignerAgent(AgentInterface):
         )
 
     # 评估状态落库白名单（Q9）：只存状态与相对选择，不存 VLM 原文
-    _EVALUATION_KEYS = ("evaluated", "eval_status", "selection", "score")
+    _EVALUATION_KEYS = EVALUATION_KEYS
 
     @classmethod
     def _evaluation_payload(cls, evaluation: Any) -> Optional[Dict[str, Any]]:
-        """把评估结果收敛为可落库的最小集。
-
-        旧产物/旧返回可能缺字段，缺 `evaluated` 时显式写 `None`（未评估），
-        不得回填 `score=5` 之类的伪合格；`issues`/`suggestion` 原文一律不入产物。
-        """
-        if not isinstance(evaluation, dict):
-            return None
-        view = {key: evaluation[key] for key in cls._EVALUATION_KEYS if key in evaluation}
-        if not view:
-            return None
-        if "evaluated" not in view:
-            view["evaluated"] = None
-        if "eval_status" not in view:
-            view["eval_status"] = "unknown"
-        return view
+        """把评估结果收敛为可落库的最小集（实现见 core.asset_quality）。"""
+        return evaluation_payload(evaluation)
 
     def _build_payload(self, sid: str, chars_desc: dict, sets_desc: dict,
                        selected_chars: dict = None, selected_sets: dict = None,

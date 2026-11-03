@@ -15,6 +15,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core.asset_quality import evaluation_for, evaluation_payload, existing_evaluations
 from prompts.loader import load_prompt
 
 from .base_agent import AgentInterface
@@ -596,6 +597,8 @@ class ReferenceGeneratorAgent(AgentInterface):
         prompts_map: dict = None,
         selected_images: dict = None,
         rewrite_results: dict = None,
+        evaluations: dict = None,
+        existing_evaluation_map: dict = None,
     ) -> dict:
         """构建最终 payload"""
         scenes = []
@@ -604,6 +607,13 @@ class ReferenceGeneratorAgent(AgentInterface):
         if selected_images is None:
             selected_images = {}
         rewrite_results = rewrite_results or {}
+        evaluations = evaluations or {}
+        if existing_evaluation_map is None:
+            existing_evaluation_map = {}
+            if session_data and "artifacts" in session_data:
+                existing_evaluation_map = existing_evaluations(
+                    (session_data["artifacts"] or {}).get("reference_generation") or {}, "scenes"
+                )
 
         # 建立 scene_id 到 selected 路径的映射
         selected_map = {}
@@ -651,6 +661,9 @@ class ReferenceGeneratorAgent(AgentInterface):
             rewrite_result = rewrite_results.get(segment_id) or existing_rewrite_results.get(segment_id)
             if rewrite_result:
                 item["rewrite_result"] = rewrite_result
+            evaluation = evaluation_for(evaluations, existing_evaluation_map, segment_id)
+            if evaluation is not None:
+                item["evaluation"] = evaluation
             scenes.append(item)
         return {
             "payload": {
@@ -765,6 +778,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                 selected_images = {}
                 prompt_map = {}  # segment_id → first_frame_prompt
                 rewrite_results_map = {}
+                evaluations_map: Dict[str, Any] = {}
 
                 def regen_run():
                     total = len(regen_scenes)
@@ -847,6 +861,8 @@ class ReferenceGeneratorAgent(AgentInterface):
                             try:
                                 _, result_path, eval_result, ff_prompt, rewrite_result = fut.result()
                                 prompt_map[segment_id_done] = ff_prompt
+                                if isinstance(eval_result, dict):
+                                    evaluations_map[segment_id_done] = eval_result
                                 if rewrite_result:
                                     rewrite_results_map[segment_id_done] = rewrite_result
                             except Exception as e:
@@ -865,6 +881,9 @@ class ReferenceGeneratorAgent(AgentInterface):
                                 }
                                 if rewrite_results_map.get(segment_id_done):
                                     asset_complete["rewrite_result"] = rewrite_results_map[segment_id_done]
+                                evaluation_view = evaluation_payload(eval_result)
+                                if evaluation_view is not None:
+                                    asset_complete["evaluation"] = evaluation_view
                                 self._report_progress("参考图", f"完成: {segment_id_done}", pct, data={
                                     "asset_complete": asset_complete
                                 })
@@ -886,6 +905,9 @@ class ReferenceGeneratorAgent(AgentInterface):
                                         asset_complete["error"] = eval_result["error"]
                                 if rewrite_results_map.get(segment_id_done):
                                     asset_complete["rewrite_result"] = rewrite_results_map[segment_id_done]
+                                evaluation_view = evaluation_payload(eval_result)
+                                if evaluation_view is not None:
+                                    asset_complete["evaluation"] = evaluation_view
                                 message = f"完成: {segment_id_done}" if fallback_path else f"失败: {segment_id_done}"
                                 self._report_progress("参考图", message, pct, data={
                                     "asset_complete": asset_complete
@@ -902,7 +924,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                 await loop.run_in_executor(None, regen_run)
 
                 self._report_progress("参考图", "完成", 100)
-                return self._build_payload(sid, fresh_segments, session_data, prompt_map, selected_images, rewrite_results_map)
+                return self._build_payload(sid, fresh_segments, session_data, prompt_map, selected_images, rewrite_results_map, evaluations_map)
 
         # ═══ 正常流程：全量生成 ═══
         self._report_progress("参考图", "加载分镜数据...", 5)
@@ -914,6 +936,7 @@ class ReferenceGeneratorAgent(AgentInterface):
         first_frame_prompts = {}  # 提升作用域，用于最后写回结果文件
         selected_images_map = {}  # 提升作用域，记录本轮新生成且 VLM 挑选出来的图片路径
         rewrite_results_map = {}
+        evaluations_map: Dict[str, Any] = {}
 
         def run():
             nonlocal first_frame_prompts
@@ -1022,6 +1045,8 @@ class ReferenceGeneratorAgent(AgentInterface):
                     try:
                         _, result_path, eval_result, ff_prompt, rewrite_result = fut.result()
                         first_frame_prompts[segment_id_done] = ff_prompt
+                        if isinstance(eval_result, dict):
+                            evaluations_map[segment_id_done] = eval_result
                         if rewrite_result:
                             rewrite_results_map[segment_id_done] = rewrite_result
                     except Exception as e:
@@ -1042,6 +1067,9 @@ class ReferenceGeneratorAgent(AgentInterface):
                         }
                         if rewrite_results_map.get(segment_id_done):
                             asset_complete["rewrite_result"] = rewrite_results_map[segment_id_done]
+                        evaluation_view = evaluation_payload(eval_result)
+                        if evaluation_view is not None:
+                            asset_complete["evaluation"] = evaluation_view
                         self._report_progress("参考图", f"完成: {segment_id_done}", pct, data={
                             "asset_complete": asset_complete
                         })
@@ -1063,6 +1091,9 @@ class ReferenceGeneratorAgent(AgentInterface):
                                 asset_complete["error"] = eval_result["error"]
                         if rewrite_results_map.get(segment_id_done):
                             asset_complete["rewrite_result"] = rewrite_results_map[segment_id_done]
+                        evaluation_view = evaluation_payload(eval_result)
+                        if evaluation_view is not None:
+                            asset_complete["evaluation"] = evaluation_view
                         message = f"完成: {segment_id_done}" if fallback_path else f"失败: {segment_id_done}"
                         self._report_progress("参考图", message, pct, data={
                             "asset_complete": asset_complete
@@ -1089,8 +1120,8 @@ class ReferenceGeneratorAgent(AgentInterface):
             if "cancel" in str(e).lower():
                 logger.info("ReferenceGeneratorAgent: 用户取消，返回已完成部分结果")
                 self._report_progress("参考图", "已取消（保留已完成图片）", 100)
-                return self._build_payload(sid, segments, session_data, first_frame_prompts, selected_images_map, rewrite_results_map)
+                return self._build_payload(sid, segments, session_data, first_frame_prompts, selected_images_map, rewrite_results_map, evaluations_map)
             raise
 
         self._report_progress("参考图", "完成", 100)
-        return self._build_payload(sid, segments, session_data, first_frame_prompts, selected_images_map, rewrite_results_map)
+        return self._build_payload(sid, segments, session_data, first_frame_prompts, selected_images_map, rewrite_results_map, evaluations_map)
