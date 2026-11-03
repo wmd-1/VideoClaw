@@ -47,8 +47,8 @@ export function evaluationView(evaluation?: AssetEvaluation | null): EvaluationV
   if (evaluation.eval_status === 'parse_failed') {
     return { state: 'parse_failed', text: '解析失败', className: 'bg-amber-50 text-amber-700' };
   }
-  if (evaluation.evaluated === null) {
-    // 旧形态：有评估字段但缺 evaluated，与“整体缺键”分开展示
+  if (evaluation.evaluated === null || evaluation.evaluated === undefined) {
+    // 旧形态：有评估字段但缺 evaluated（含未写键的 undefined），与“整体缺键”分开展示
     return { state: 'unknown', text: '未评估（旧记录）', className: 'bg-gray-100 text-gray-500' };
   }
   return { state: 'missing', text: '未评估', className: 'bg-gray-100 text-gray-500' };

@@ -206,7 +206,7 @@ function SceneRow({
           <span className="flex items-center justify-center h-6 px-1.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex-shrink-0 whitespace-nowrap">
             {scene.index ?? scene.id.replace('Scene_', '')}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index ?? scene.id}`}</span>
+          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index ?? String(scene.id).replace(/^seg_/, '')}`}</span>
           <AssetEvaluationBadge evaluation={scene.evaluation} />
           {isPending && (
             <span className="text-[10px] bg-gray-50 text-gray-500 px-1.5 py-0.5 rounded">等待中</span>
