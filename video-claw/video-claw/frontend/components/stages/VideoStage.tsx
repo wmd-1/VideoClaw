@@ -80,6 +80,8 @@ function promptSourceView(clip: ClipItem): { text: string; className: string; ti
   return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
 }
 
+const PROMPT_FOLD_CHARS = 240;
+
 function PromptSourceBadge({ clip }: { clip: ClipItem }) {
   const view = promptSourceView(clip);
   // 来源只看 prompt_source；submitted_prompt 仅作“本次已提交”的提示
@@ -155,9 +157,9 @@ function PromptDetails({
     : generated
       ? '旧版本未记录提交正文（功能上线前生成）'
       : '本片段尚无生成记录';
-  const submittedCollapsed = Boolean(clip.submitted_prompt) && (clip.submitted_prompt || '').length > 240 && !showSubmitted;
+  const submittedCollapsed = Boolean(clip.submitted_prompt) && (clip.submitted_prompt || '').length > PROMPT_FOLD_CHARS && !showSubmitted;
   const submittedDisplay = submittedCollapsed
-    ? `${(clip.submitted_prompt || '').slice(0, 240)}…`
+    ? `${(clip.submitted_prompt || '').slice(0, PROMPT_FOLD_CHARS)}…`
     : submittedText;
 
   const generationText = !generated ? '未生成' : (regenerationText(clip) || '已生成');
@@ -174,7 +176,7 @@ function PromptDetails({
         : '待改写';
 
   const body = effectivePrompt || clip.description || '';
-  const bodyCollapsed = body.length > 240 && !showFull;
+  const bodyCollapsed = body.length > PROMPT_FOLD_CHARS && !showFull;
 
   return (
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2 text-[11px] text-gray-600">
@@ -182,7 +184,7 @@ function PromptDetails({
         <div className="flex items-center gap-2 mb-1">
           <span className="font-medium text-gray-700">当前有效正文</span>
           <PromptSourceBadge clip={clip} />
-          {body.length > 240 ? (
+          {body.length > PROMPT_FOLD_CHARS ? (
             <button
               onClick={() => setShowFull(v => !v)}
               className="ml-auto text-[10px] text-blue-600 hover:underline"
@@ -192,7 +194,7 @@ function PromptDetails({
           ) : null}
         </div>
         <p className="whitespace-pre-wrap break-words">
-          {bodyCollapsed ? `${body.slice(0, 240)}…` : body || '（暂无正文）'}
+          {bodyCollapsed ? `${body.slice(0, PROMPT_FOLD_CHARS)}…` : body || '（暂无正文）'}
         </p>
       </div>
 
@@ -205,9 +207,10 @@ function PromptDetails({
       <div>
         <div className="flex items-center gap-2 mb-1">
           <span className="font-medium text-gray-700">本次已提交：</span>
-          {Boolean(clip.submitted_prompt) && (clip.submitted_prompt || '').length > 240 ? (
+          {Boolean(clip.submitted_prompt) && (clip.submitted_prompt || '').length > PROMPT_FOLD_CHARS ? (
             <button
               onClick={() => setShowSubmitted(v => !v)}
+              title={clip.submitted_prompt_truncated ? '原文超过 1000 字，仅记录前 1000 字' : undefined}
               className="ml-auto text-[10px] text-blue-600 hover:underline"
             >
               {showSubmitted ? '收起全文' : '展开全文'}
