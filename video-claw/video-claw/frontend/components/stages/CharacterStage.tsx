@@ -10,6 +10,7 @@ import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 import ImageLightbox from './ImageLightbox';
 import RewriteResultBadge, { type RewriteResult } from './RewriteResultBadge';
+import AssetEvaluationBadge, { type AssetEvaluation } from './AssetEvaluationBadge';
 
 /* ─── 类型 ─── */
 interface AssetVersion {
@@ -20,6 +21,8 @@ interface AssetVersion {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';  // 生成状态
   rewrite_result?: RewriteResult;
+  /** Q9 评估状态白名单（旧产物可能缺失） */
+  evaluation?: AssetEvaluation;
 }
 
 /** 本阶段 artifact 的本地结构（后端动态 JSON，按消费字段声明） */
@@ -187,6 +190,7 @@ function AssetRow({
             : <MapPin className="w-3.5 h-3.5 text-emerald-500" />
           }
           <span className="text-sm font-semibold text-gray-800 truncate">{asset.name}</span>
+          <AssetEvaluationBadge evaluation={asset.evaluation} />
           {(isPending || isRunning) && (
             <span className="inline-flex items-center gap-1 text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded">
               {isRunning && <Loader className="w-2.5 h-2.5 animate-spin" />}

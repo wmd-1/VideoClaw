@@ -10,6 +10,7 @@ import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 import ImageLightbox from './ImageLightbox';
 import RewriteResultBadge, { type RewriteResult } from './RewriteResultBadge';
+import AssetEvaluationBadge, { type AssetEvaluation } from './AssetEvaluationBadge';
 
 import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
@@ -22,6 +23,8 @@ interface SceneItem {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';
   rewrite_result?: RewriteResult;
+  /** Q9 评估状态白名单（旧产物可能缺失） */
+  evaluation?: AssetEvaluation;
   /** 后端动态 JSON 附加字段（按消费处声明） */
   title?: string;
   episode?: number;
@@ -203,7 +206,8 @@ function SceneRow({
           <span className="flex items-center justify-center h-6 px-1.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex-shrink-0 whitespace-nowrap">
             {scene.index ?? scene.id.replace('Scene_', '')}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index}`}</span>
+          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index ?? scene.id}`}</span>
+          <AssetEvaluationBadge evaluation={scene.evaluation} />
           {isPending && (
             <span className="text-[10px] bg-gray-50 text-gray-500 px-1.5 py-0.5 rounded">等待中</span>
           )}
