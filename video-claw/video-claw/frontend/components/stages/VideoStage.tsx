@@ -35,6 +35,9 @@ interface ClipItem {
   /** 本次视频生成实际提交的正文（限长快照，仅供展示） */
   submitted_prompt?: string;
   submitted_prompt_truncated?: boolean;
+  /** WF-04 读时派生：视频是否仍使用当前正文（不落库） */
+  needs_regeneration?: boolean;
+  regeneration_reasons?: string[];
   /** 失败原因与类别（由后端逐条失败分类写入；未尝试的占位片段不带这两个字段） */
   error?: string;
   error_type?: string;
@@ -95,6 +98,124 @@ function PromptSourceBadge({ clip }: { clip: ClipItem }) {
     >
       {view.text}
     </span>
+  );
+}
+
+interface H3ItemView {
+  status?: string;
+  rewritten_prompt?: string;
+  needs_regeneration?: boolean;
+  regeneration_reasons?: string[];
+}
+
+/** 需重生成文案：旧数据（无生成时输入记录）单独说明，不暴露哈希术语。 */
+function regenerationText(clip: ClipItem): string | null {
+  if (!clip.needs_regeneration) return null;
+  const reasons = clip.regeneration_reasons || [];
+  if (reasons.length === 1 && reasons[0] === 'fingerprint_missing') {
+    return '需重生成（该片段生成于旧版本，无法定位具体变化）';
+  }
+  const { short } = formatStaleReasons(reasons);
+  return short ? `需重生成（${short}）` : '需重生成';
+}
+
+/** 只读解析链：当前正文 / 来源新鲜度 / 本次提交 / 生成状态 / H3 条目。 */
+function PromptDetails({
+  clip, effectivePrompt, h3Item, onNavigateH3,
+}: {
+  clip: ClipItem;
+  effectivePrompt: string;
+  h3Item?: H3ItemView;
+  onNavigateH3?: () => void;
+}) {
+  const [showFull, setShowFull] = useState(false);
+  const meta = clip.prompt_source;
+  const reasons = formatStaleReasons(meta?.stale_reasons);
+  const generated = (clip.versions?.length || 0) > 0;
+
+  const sourceSentence = (() => {
+    if (!meta) return '缺少输入记录，无法判断内容是否仍匹配当前分镜';
+    if (meta.source === 'manual') {
+      return meta.freshness === 'fresh'
+        ? '内容仍匹配当前分镜'
+        : `当前分镜已变化${reasons.short ? `：${reasons.short}` : ''}`;
+    }
+    if (meta.source === 'h3') return '内容仍匹配当前改写输入';
+    if (meta.source === 'description') {
+      return reasons.short ? `相比生成时：${reasons.short}` : '使用分镜描述作为正文';
+    }
+    return '缺少输入记录，无法判断';
+  })();
+
+  const generationText = !generated ? '未生成' : (regenerationText(clip) || '已生成');
+  const manualExplain =
+    generated && clip.needs_regeneration && meta?.source === 'manual'
+      ? '当前使用人工正文；本条视频由旧正文生成，建议重新生成'
+      : null;
+  const h3Text = !h3Item
+    ? '未执行改写'
+    : h3Item.needs_regeneration
+      ? '需重跑'
+      : h3Item.status === 'done'
+        ? '已改写且内容匹配'
+        : '待改写';
+
+  const body = effectivePrompt || clip.description || '';
+  const bodyCollapsed = body.length > 240 && !showFull;
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2 text-[11px] text-gray-600">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="font-medium text-gray-700">当前有效正文</span>
+          <PromptSourceBadge clip={clip} />
+          {body.length > 240 ? (
+            <button
+              onClick={() => setShowFull(v => !v)}
+              className="ml-auto text-[10px] text-blue-600 hover:underline"
+            >
+              {showFull ? '收起全文' : '展开全文'}
+            </button>
+          ) : null}
+        </div>
+        <p className="whitespace-pre-wrap break-words">
+          {bodyCollapsed ? `${body.slice(0, 240)}…` : body || '（暂无正文）'}
+        </p>
+      </div>
+
+      <div>
+        <span className="font-medium text-gray-700">来源与新鲜度：</span>
+        {meta ? `${promptSourceView(clip).text}——${sourceSentence}` : sourceSentence}
+        {reasons.full ? <div className="mt-0.5">相比生成时：{reasons.full}</div> : null}
+      </div>
+
+      <div>
+        <span className="font-medium text-gray-700">本次已提交：</span>
+        {clip.submitted_prompt ? (
+          <span className="whitespace-pre-wrap break-words">
+            {clip.submitted_prompt}
+            {clip.submitted_prompt_truncated ? '（仅显示前 1000 字）' : ''}
+          </span>
+        ) : '本片段尚无生成记录'}
+      </div>
+
+      <div>
+        <span className="font-medium text-gray-700">生成状态：</span>
+        {generated ? '已生成' : '未生成'}
+        {generated && clip.needs_regeneration ? `——${generationText}` : ''}
+        {manualExplain ? <div className="mt-0.5 text-amber-700">{manualExplain}</div> : null}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="font-medium text-gray-700">H3 阶段：</span>
+        {h3Text}
+        {onNavigateH3 ? (
+          <button onClick={onNavigateH3} className="text-[10px] text-blue-600 hover:underline">
+            前往改写阶段
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -220,6 +341,8 @@ function ClipRow({
   clip,
   editDesc,
   initialPrompt,
+  h3Item,
+  onNavigateH3,
   onDescChange,
   onSavePrompt,
   onClearManual,
@@ -239,6 +362,9 @@ function ClipRow({
   editDesc?: string;
   /** 当前有效正文（按 prompt_source 选源），仅用于预填 */
   initialPrompt?: string;
+  /** 对应 H3 条目（含 needs_regeneration），用于只读解析链 */
+  h3Item?: H3ItemView;
+  onNavigateH3?: () => void;
   onDescChange?: (val: string) => void;
   onSavePrompt?: () => void;
   onClearManual?: () => void;
@@ -260,6 +386,7 @@ function ClipRow({
   const hasChanges = editDesc !== undefined && editDesc !== (initialPrompt ?? clip.description);
   const hasVideo = Boolean(clip.selected) || clip.versions.length > 0;
   const isUnselectedCandidate = !clip.selected && clip.versions.length > 0;
+  const [showDetails, setShowDetails] = React.useState(false);
   const canGenerateMissing = Boolean(allowMissingGenerate) && !hasVideo && !isRunning && !isRegenerating;
 
   return (
@@ -331,13 +458,21 @@ function ClipRow({
                 </button>
               </div>
             ) : (
-              <button
-                onClick={onToggleEdit}
-                className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
-              >
-                <Edit2 className="w-3 h-3" />
-                编辑
-              </button>
+              <div className="ml-auto flex gap-1 shrink-0 whitespace-nowrap">
+                <button
+                  onClick={() => setShowDetails(v => !v)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 shrink-0 whitespace-nowrap"
+                >
+                  {showDetails ? '收起详情' : '详情'}
+                </button>
+                <button
+                  onClick={onToggleEdit}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors shrink-0 whitespace-nowrap"
+                >
+                  <Edit2 className="w-3 h-3" />
+                  编辑
+                </button>
+              </div>
             )
           )}
         </div>
@@ -390,6 +525,16 @@ function ClipRow({
             </div>
           )}
         </div>
+        {showDetails ? (
+          <div className="mt-3">
+            <PromptDetails
+              clip={clip}
+              effectivePrompt={initialPrompt ?? clip.description}
+              h3Item={h3Item}
+              onNavigateH3={onNavigateH3}
+            />
+          </div>
+        ) : null}
       </div>
 
       {/* 右侧: 视频画廊 / 占位 */}
@@ -500,6 +645,17 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
     const map: Record<string, string> = {};
     items.forEach(item => {
       if (item?.id && item.rewritten_prompt) map[item.id] = item.rewritten_prompt;
+    });
+    return map;
+  }, [artifacts]);
+
+  const h3ItemById = React.useMemo(() => {
+    const items =
+      (artifacts?.prompt_rewrite as { items?: Array<Record<string, unknown>> } | undefined)?.items || [];
+    const map: Record<string, H3ItemView> = {};
+    items.forEach(item => {
+      const id = typeof item?.id === 'string' ? item.id : '';
+      if (id) map[id] = item as H3ItemView;
     });
     return map;
   }, [artifacts]);
@@ -800,6 +956,8 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
                               clip={{ ...clip, selected: getSelected(clip) }}
                               editDesc={editDescs[clip.id]}
                               initialPrompt={prefillPrompt(clip)}
+                              h3Item={h3ItemById[clip.id]}
+                              onNavigateH3={() => onNavigateStage?.('prompt_rewrite')}
                               onDescChange={canEdit ? (val => setEditDescs(prev => ({ ...prev, [clip.id]: val }))) : undefined}
                               onSavePrompt={() => handleSavePrompt(clip.id)}
                               onClearManual={() => handleClearManual(clip.id)}
