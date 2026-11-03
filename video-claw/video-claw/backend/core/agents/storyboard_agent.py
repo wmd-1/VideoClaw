@@ -178,13 +178,27 @@ class StoryboardAgent(AgentInterface):
         header_patterns = [
             r"^第\d+集\s*[-—]\s*第\d+场\s+(日|夜|晨|傍晚|深夜)\s+(内|外)\s+(.+)$",
             r"^\d+\s*[-—_]\s*\d+\s+(日|夜|晨|傍晚|深夜)\s+(内|外)\s+(.+)$",
+            # 英文场志：Episode 1 - Scene 1 Day INT Office / Episode 1, Scene 1 … / Scene 1 …
+            r"^(?:Episode\s+\d+\s*[-—,]\s*)?Scene\s+\d+\s+(day|night|morning|evening|dawn|dusk)\s+(INT\.?|EXT\.?|INT\.?/EXT\.?)\s+(.+)$",
+            # 简写：1-1 Day INT Office
+            r"^\d+\s*[-—]\s*\d+\s+(day|night|morning|evening|dawn|dusk)\s+(INT\.?|EXT\.?)\s+(.+)$",
         ]
+        english_time = {
+            "day": "日", "night": "夜", "morning": "晨",
+            "evening": "傍晚", "dawn": "晨", "dusk": "傍晚",
+        }
+        english_space = {
+            "int": "内", "ext": "外", "int/ext": "内/外",
+        }
         for pattern in header_patterns:
             match = re.match(pattern, clean, flags=re.I)
             if not match:
                 continue
             time_of_day = match.group(1).strip()
             scene_space = match.group(2).strip()
+            time_of_day = english_time.get(time_of_day.lower(), time_of_day)
+            scene_space_key = scene_space.lower().replace(".", "")
+            scene_space = english_space.get(scene_space_key, scene_space)
             candidate = match.group(3).strip()
             for name in setting_names:
                 if cls._setting_matches_text(name, candidate):
@@ -211,7 +225,10 @@ class StoryboardAgent(AgentInterface):
 
     @staticmethod
     def _is_metadata_line(line: str) -> bool:
-        return bool(re.match(r"^(?:剧本名称|时长|风格|类型|标题)[:：]", line))
+        return bool(re.match(
+            r"^(?:剧本名称|时长|风格|类型|标题|Title|Duration|Genre|Style)\s*[:：]",
+            line, flags=re.I,
+        ))
 
     @staticmethod
     def _is_end_marker(line: str) -> bool:
@@ -366,6 +383,7 @@ class StoryboardAgent(AgentInterface):
                         "text": line,
                         "duration": duration,
                         "is_dialogue": False,
+                        "is_narration": False,
                         "speaker": "",
                         "tone": "",
                         "characters": cls._match_characters(line, character_names),
@@ -400,12 +418,15 @@ class StoryboardAgent(AgentInterface):
                 annotated_lines.append(cls._strip_markup(stripped))
                 continue
 
-            if re.match(r"^人物[:：]", line):
+            if re.match(r"^(?:人物|Characters)\s*[:：]", line, flags=re.I):
                 scene_characters = cls._match_characters(line, character_names)
                 annotated_lines.append(line)
                 continue
 
             dialogue = cls._dialogue_parts(line)
+            is_narration = bool(annotation and annotation.get("type") == "narration") or bool(
+                re.match(r"^(?:旁白|Narration|VO|V\.O\.)\s*[:：]", stripped, flags=re.I)
+            )
             is_action = bool(re.match(r"^<action>", stripped, flags=re.I)) or bool(re.search(r"</action>$", stripped, flags=re.I))
             if annotation and annotation.get("type") == "dialogue":
                 speaker_hint = str(annotation.get("speaker") or "").strip()
@@ -415,14 +436,18 @@ class StoryboardAgent(AgentInterface):
             elif annotation and annotation.get("type") == "action":
                 # 保真导入把普通动作正文标为 action，不能要求原文自带 <action> 标签
                 is_action = True
-            if not dialogue and not is_action:
+            if is_narration:
+                # 旁白不是对白：即使带冒号也不能进入 dialogue 分支
+                dialogue = None
+            if not dialogue and not is_action and not is_narration:
                 annotated_lines.append(line)
                 continue
 
             unit_id = f"U{len(units) + 1:03d}"
             is_dialogue = dialogue is not None
             duration = cls._duration_for_script_unit(line, is_dialogue)
-            matched_chars = cls._match_characters(line, character_names)
+            # 旁白不自动创建可见人物（即使正文出现了人名）
+            matched_chars = [] if is_narration else cls._match_characters(line, character_names)
             unit_chars = matched_chars[:]
             speaker = ""
             tone = ""
@@ -438,6 +463,7 @@ class StoryboardAgent(AgentInterface):
                 "text": line,
                 "duration": duration,
                 "is_dialogue": is_dialogue,
+                "is_narration": is_narration,
                 "speaker": speaker,
                 "tone": tone,
                 "characters": unit_chars,
@@ -1234,7 +1260,7 @@ class StoryboardAgent(AgentInterface):
                     scene_characters = matched
                 continue
 
-            if re.match(r"^人物[:：]", line):
+            if re.match(r"^(?:人物|Characters)\s*[:：]", line, flags=re.I):
                 scene_characters = cls._match_characters(line, character_names)
                 continue
 

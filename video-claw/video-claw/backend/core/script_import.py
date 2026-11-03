@@ -294,16 +294,23 @@ def validate_slices(lines: List[str], episodes: List[dict]) -> None:
 _DURATION_RE = re.compile(r"^\s*(?:视频)?时长\s*[:：]\s*(.+)$")
 _TONE_RE = re.compile(r"^\s*(?:视频)?基调\s*[:：]\s*(.+)$")
 _META_LINE_RE = re.compile(
-    r"^\s*(?:(?:剧本名称|版本|版权|页眉|页码|第\s*\d+\s*页(?:\s*共\s*\d+\s*页)?)\s*[:：]?|(?:标题|作者)\s*[:：])"
+    r"^\s*(?:(?:剧本名称|版本|版权|页眉|页码|第\s*\d+\s*页(?:\s*共\s*\d+\s*页)?)\s*[:：]?|(?:标题|作者)\s*[:：]|(?:Title|Duration|Genre|Style)\s*[:：])",
+    re.I,
 )
 _SUBTITLE_RE = re.compile(r"^\s*【\s*字幕叠加\s*】\s*(.*)$")
 _END_CARD_RE = re.compile(r"^\s*【\s*定帧\s*】\s*(.*)$")
 _PLACEHOLDER_RE = re.compile(r"^\s*[\[【（(]\s*[^\]】）)]{0,12}预留位\s*[\]】）)]")
 _SCENE_DESC_RE = re.compile(r"^\s*【\s*画面描述\s*】")
-_NARRATION_RE = re.compile(r"^\s*【\s*旁白\s*[（(]?([^）)】]*)[）)]?\s*】")
-_CAST_HEAD_RE = re.compile(
-    r"^\s*(?:(?:角色设定|人物表|角色表)\s*[:：]?\s*(.*)|(?:人物|角色)\s*[:：]\s*)$"
+_NARRATION_RE = re.compile(
+    r"^\s*(?:【\s*旁白\s*[（(]?([^）)】]*)[）)]?\s*】|(?:旁白|Narration|VO|V\.O\.)\s*[:：])",
+    re.I,
 )
+_CAST_HEAD_RE = re.compile(
+    r"^\s*(?:(?:角色设定|人物表|角色表)\s*[:：]?\s*(.*)|(?:人物|角色)\s*[:：]\s*"
+    r"|(?:Characters?|Cast)\s*[:：]\s*(.*))$",
+    re.I,
+)
+_CAST_META_HEAD_RE = re.compile(r"^\s*(?:角色设定|人物表|角色表)", re.I)
 _CAST_ITEM_RE = re.compile(r"^\s*([^\s:：]{1,24})\s*[:：]\s*(.+)$")
 _DIALOGUE_RE = re.compile(
     r"^([^:：]{1,24}?)(?:[（(]([^）)]{0,40})[）)])?[:：]\s*(.+)$"
@@ -388,31 +395,66 @@ def _cast_section(lines: List[str]) -> Tuple[Optional[int], Optional[int]]:
             break
     if start is None:
         return None, None
+    head_match = _CAST_HEAD_RE.match(_strip_markup(lines[start]))
+    inline = ((head_match.group(1) if head_match else "") or
+              (head_match.group(2) if head_match else "") or "").strip()
+    inline_item = _CAST_ITEM_RE.match(inline) if inline else None
+    if inline and not inline_item:
+        # 行内名单（如 `Characters: Alice, Bob` / `Characters: Alice`）：单行角色段
+        return start, start
     end = start
-    saw_item = False
+    saw_item = bool(inline_item)
+    is_meta_section = bool(_CAST_META_HEAD_RE.match(_strip_markup(lines[start])))
+    seen_names: set[str] = set()
+    if inline_item:
+        for single in [part.strip() for part in inline_item.group(1).split("/") if part.strip()]:
+            seen_names.add(single)
     for index in range(start + 1, len(lines)):
         stripped = lines[index].strip()
         if not stripped:
-            # 空行：段内允许一个空行，连续第二个空行视为结束
-            if saw_item and index + 1 < len(lines) and not lines[index + 1].strip():
-                break
-            continue
-        if _CAST_ITEM_RE.match(stripped) and not re.match(r"^【", stripped):
-            saw_item = True
-            end = index
-            continue
-        break
+            # 首个条目之前允许空行；出现条目后：人物清单遇空行结束，
+            # 角色设定/人物表允许空行分隔条目（后一行仍是新条目时继续）。
+            if not saw_item:
+                continue
+            if is_meta_section:
+                look = index + 1
+                while look < len(lines) and not lines[look].strip():
+                    look += 1
+                if look < len(lines):
+                    nxt = lines[look].strip()
+                    nxt_item = _CAST_ITEM_RE.match(nxt)
+                    if (nxt_item and not re.match(r"^【", nxt)
+                            and nxt_item.group(1).strip() not in seen_names):
+                        continue
+            break
+        if (_NARRATION_RE.match(stripped) or _SCENE_DESC_RE.match(stripped)
+                or _SUBTITLE_RE.match(stripped) or _END_CARD_RE.match(stripped)
+                or stripped.lower().startswith("<action>")):
+            break
+        item = _CAST_ITEM_RE.match(stripped)
+        if not item or re.match(r"^【", stripped):
+            break
+        name = item.group(1).strip()
+        if name in seen_names:
+            # 重复名字基本可判定为对白，而非角色条目
+            break
+        seen_names.add(name)
+        saw_item = True
+        end = index
     return start, end
 
 
 def extract_cast(lines: List[str]) -> List[dict]:
     """从显式角色设定段解析 name/description，原文优先。"""
     start, end = _cast_section(lines)
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
         return []
     characters: List[dict] = []
     head_match = _CAST_HEAD_RE.match(_strip_markup(lines[start]))
-    inline = (head_match.group(1) or "").strip() if head_match else ""
+    inline = ((head_match.group(1) if head_match else "") or
+              (head_match.group(2) if head_match else "") or "").strip()
+    if not inline and end <= start:
+        return []
     if inline:
         # 「角色设定：小陈：…」形式，补一行虚拟解析
         item = _CAST_ITEM_RE.match(inline)
@@ -426,6 +468,17 @@ def extract_cast(lines: List[str]) -> List[dict]:
                         "description_source": "uploaded",
                     }
                 )
+        elif "," in inline or "、" in inline:
+            # 英文/中文名单：`Characters: Alice, Bob` / `角色设定：小明、小红`（无描述）
+            for single in [part.strip() for part in re.split(r"[,，、]", inline) if part.strip()]:
+                characters.append(
+                    {"name": single, "description": "", "description_source": "uploaded"}
+                )
+        else:
+            # 单个英文名：`Characters: Alice`
+            characters.append(
+                {"name": inline, "description": "", "description_source": "uploaded"}
+            )
     seen = {item["name"] for item in characters}
     for line in lines[start + 1:end + 1]:
         stripped = line.strip()
