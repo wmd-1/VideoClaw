@@ -6,6 +6,7 @@ import clsx from 'clsx';
 import type { StageViewProps } from './types';
 import StageProgress from './StageProgress';
 import { pruneDraftsByContent } from '@/lib/assetMerge';
+import { formatStaleReasons } from '@/lib/promptSources';
 
 import { apiFetch } from "@/lib/identityGuard";
 interface RewriteItem {
@@ -18,6 +19,9 @@ interface RewriteItem {
   input_mode?: string;
   duration?: number;
   status?: 'done' | 'failed' | 'pending' | 'running';
+  /** WF-04：读时派生（不落库）——当前输入已变化，建议重跑 */
+  needs_regeneration?: boolean;
+  regeneration_reasons?: string[];
   error?: string;
   /** 执行期增量事件正文是否被截断（完整正文以阶段产物为权威） */
   truncated?: boolean;
@@ -289,6 +293,14 @@ export default function PromptRewriteStage({
               {item.input_mode && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-600">{item.input_mode}</span>
               )}
+              {item.needs_regeneration ? (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700"
+                  title={formatStaleReasons(item.regeneration_reasons).full || '原因未知'}
+                >
+                  需重跑（{formatStaleReasons(item.regeneration_reasons).short || '原因未知'}）
+                </span>
+              ) : null}
               <span className={clsx(
                 'ml-auto text-[10px] px-1.5 py-0.5 rounded font-medium',
                 item.status === 'done' ? 'bg-green-50 text-green-600'

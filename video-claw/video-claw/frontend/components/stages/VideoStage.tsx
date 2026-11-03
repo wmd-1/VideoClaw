@@ -8,6 +8,7 @@ import { assetUrl } from './utils';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 import RewriteResultBadge, { type RewriteResult } from './RewriteResultBadge';
+import { formatStaleReasons } from '@/lib/promptSources';
 
 import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
@@ -42,29 +43,10 @@ interface ClipItem {
   episode_title?: string;
 }
 
-const PROMPT_STALE_LABELS: Record<string, string> = {
-  shot_changed: '镜头内容变化',
-  duration_changed: '时长变化',
-  mode_changed: '模式变化',
-  references_changed: '参考图变化',
-  style_changed: '风格变化',
-  facts_changed: '角色/场景设定变化',
-  grounding_model_changed: '识别模型变化',
-  fingerprint_missing: '缺少输入记录',
-  fingerprint_changed: '输入已变化',
-  h3_not_ready: '上次改写未完成',
-  h3_absent: '未执行改写',
-};
-
 function promptSourceView(clip: ClipItem): { text: string; className: string; title?: string } {
   const meta = clip.prompt_source;
   if (!meta) return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
-  const joinReasons = () => {
-    const labels = (meta.stale_reasons || []).map(reason => PROMPT_STALE_LABELS[reason] || reason);
-    // 徽标只展示前 2 条，避免多原因把整行撑开；完整列表放 title
-    const short = labels.length > 2 ? `${labels.slice(0, 2).join('、')}等` : labels.join('、');
-    return { short, full: labels.join('、') };
-  };
+  const joinReasons = () => formatStaleReasons(meta.stale_reasons);
   if (meta.source === 'manual') {
     if (meta.freshness === 'fresh') {
       return { text: '人工正文', className: 'bg-blue-100 text-blue-700' };
