@@ -41,7 +41,8 @@ def test_patch_stamps_fingerprint_and_dimensions():
     )
     assert merged["manual_prompt_fingerprint"] == fingerprint
     assert merged["manual_prompt_dimensions"] == dimensions
-    assert merged["resolved_fingerprint"] == fingerprint
+    # WF-04 语义：resolved_fingerprint 只代表“上次生成所用指纹”，PATCH 不改写
+    assert "resolved_fingerprint" not in merged
     assert dimensions, "必须有逐维度哈希，否则人工 stale 只能报“变了”"
     assert merged["prompt_source"]["source"] == "manual"
     assert merged["prompt_source"]["freshness"] == "fresh"
@@ -81,6 +82,7 @@ def _state():
             "video_generation": {"clips": [{
                 "id": "seg_01_01", "selected": "v1.mp4", "versions": ["v1.mp4"],
                 "description": "旧描述", "status": "done",
+                "resolved_fingerprint": "old-generation-fp",
             }]},
         },
         meta={"video_first_frame_model": "m1"},
@@ -102,6 +104,7 @@ def test_apply_artifact_update_saves_manual_prompt_without_touching_others():
     assert clip["versions"] == ["v1.mp4"]
     assert clip["status"] == "done"
     assert clip["description"] == "旧描述"
+    assert clip["resolved_fingerprint"] == "old-generation-fp", "PATCH 不得改写生成指纹"
 
 
 def test_apply_artifact_update_clears_manual_prompt_and_refreshes_source():

@@ -716,7 +716,7 @@ class WorkflowEngine:
                 new_item[key] = copy.deepcopy(asset_update[key])
         items.append(new_item)
 
-    def _view_dict(self, state: WorkflowState) -> Dict[str, Any]:
+    def _view_dict(self, state: WorkflowState, annotate: bool = True) -> Dict[str, Any]:
         data = state.to_dict()
         with self._state_lock:
             overlays = copy.deepcopy(self._overlays.get(state.session_id) or {})
@@ -736,12 +736,13 @@ class WorkflowEngine:
         if error and not data.get("error"):
             data["error"] = error
         # WF-04：读时派生“需重生成”（不落库；配置/素材变化自动覆盖）
-        try:
-            from core.prompt_freshness import annotate_regeneration
+        if annotate:
+            try:
+                from core.prompt_freshness import annotate_regeneration
 
-            annotate_regeneration(data.get("artifacts") or {}, getattr(state, "meta", None))
-        except Exception as exc:  # noqa: BLE001 - 派生失败不影响快照
-            logger.warning("needs_regeneration 派生失败：%s", exc)
+                annotate_regeneration(data.get("artifacts") or {}, getattr(state, "meta", None))
+            except Exception as exc:  # noqa: BLE001 - 派生失败不影响快照
+                logger.warning("needs_regeneration 派生失败：%s", exc)
         return data
 
     # ──────────── 会话读取 ────────────
@@ -1088,7 +1089,7 @@ class WorkflowEngine:
         state = self.get_state(session_id)
         if not state:
             raise KeyError(f"Session not found: {session_id}")
-        return copy.deepcopy(self._view_dict(state)["status"])
+        return copy.deepcopy(self._view_dict(state, annotate=False)["status"])
 
     def stop_session(self, session_id: str):
         self.get_stop_event(session_id).set()
@@ -2382,8 +2383,8 @@ class WorkflowEngine:
             # 清空人工正文：同时清掉孤儿指纹/维度，避免 UI 误显“已保存”
             merged.pop("manual_prompt_fingerprint", None)
             merged.pop("manual_prompt_dimensions", None)
-        # WF-04：记录本次解析使用的指纹（读时派生据此判断是否需重跑）
-        merged["resolved_fingerprint"] = fingerprint
+        # WF-04：resolved_fingerprint 只代表“上次生成所用指纹”，PATCH 不改写；
+        # 保存/清空人工正文只刷新 manual_* 与 prompt_source。
 
         # 刷新解析链：保存后前端立即读到 source=manual；清空后回到 H3/description
         h3_segment = next(

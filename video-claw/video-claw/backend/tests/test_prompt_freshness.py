@@ -120,6 +120,18 @@ def test_clip_without_resolved_fingerprint_is_not_fresh():
     assert clip["regeneration_reasons"] == ["fingerprint_missing"]
 
 
+def test_clip_without_resolved_reuses_prompt_source_reasons():
+    """旧产物：缺 resolved_fingerprint 但 prompt_source 已给出原因，不得退回 fingerprint_missing。"""
+    artifacts = _artifacts(clips=[_clip(prompt_source={
+        "source": "description", "freshness": "stale",
+        "stale_reasons": ["shot_changed", "duration_changed"],
+    })])
+    annotate_regeneration(artifacts, META)
+    clip = artifacts["video_generation"]["clips"][0]
+    assert clip["needs_regeneration"] is True
+    assert clip["regeneration_reasons"] == ["shot_changed", "duration_changed"]
+
+
 def test_clip_with_matching_resolved_fingerprint_is_fresh():
     fingerprint, _ = _current()
     artifacts = _artifacts(clips=[_clip(resolved_fingerprint=fingerprint)])

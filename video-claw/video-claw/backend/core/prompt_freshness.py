@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from core.h3_modes import (
@@ -22,6 +23,8 @@ from core.h3_modes import (
 )
 from core.prompt_source import changed_reasons
 
+logger = logging.getLogger(__name__)
+
 
 def _baseline(artifacts: Dict[str, Any], meta: Dict[str, Any]):
     """返回 (h3_segments, scene_map, style, grounding_model)；缺模型配置时返回 None。"""
@@ -29,7 +32,8 @@ def _baseline(artifacts: Dict[str, Any], meta: Dict[str, Any]):
 
     try:
         _mode, video_model = VideoDirectorAgent._select_video_model({}, meta)
-    except Exception:  # noqa: BLE001 - 无法确定模型时不派生，避免误报
+    except Exception as exc:  # noqa: BLE001 - 无法确定模型时不派生，避免误报
+        logger.debug("needs_regeneration 跳过：会话缺少视频模型配置（%s）", exc)
         return None
     segments = collect_segments(
         artifacts.get("storyboard", {}), model=video_model,
@@ -108,8 +112,15 @@ def annotate_regeneration(artifacts: Dict[str, Any], meta: Optional[Dict[str, An
             _annotate_item(clip, str(clip.get("manual_prompt_fingerprint") or ""),
                            clip.get("manual_prompt_dimensions"), fingerprint, dimensions)
         else:
-            _annotate_item(clip, str(clip.get("resolved_fingerprint") or ""), None,
-                           fingerprint, dimensions)
+            stored = str(clip.get("resolved_fingerprint") or "")
+            source_meta = clip.get("prompt_source") if isinstance(clip.get("prompt_source"), dict) else {}
+            if not stored and str(source_meta.get("freshness") or "") in ("stale", "unknown") \
+                    and source_meta.get("stale_reasons"):
+                # 旧产物无 resolved_fingerprint：沿用已算出的解析链原因，避免与徽标矛盾
+                clip["needs_regeneration"] = True
+                clip["regeneration_reasons"] = list(source_meta.get("stale_reasons") or [])
+                continue
+            _annotate_item(clip, stored, None, fingerprint, dimensions)
 
 
 __all__ = ["annotate_regeneration"]
