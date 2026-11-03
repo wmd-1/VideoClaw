@@ -41,6 +41,7 @@ def test_patch_stamps_fingerprint_and_dimensions():
     )
     assert merged["manual_prompt_fingerprint"] == fingerprint
     assert merged["manual_prompt_dimensions"] == dimensions
+    assert merged["resolved_fingerprint"] == fingerprint
     assert dimensions, "必须有逐维度哈希，否则人工 stale 只能报“变了”"
     assert merged["prompt_source"]["source"] == "manual"
     assert merged["prompt_source"]["freshness"] == "fresh"

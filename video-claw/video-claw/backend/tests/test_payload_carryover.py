@@ -44,6 +44,7 @@ def test_skipped_segment_keeps_prompt_fields(monkeypatch):
         "manual_prompt": "人工正文",
         "manual_prompt_fingerprint": "fp",
         "manual_prompt_dimensions": {"duration": "x"},
+        "resolved_fingerprint": "fp-resolved",
     }
     clip = _clip(agent._build_payload("sid", SEGMENTS, [prev]))
     assert clip["prompt_source"]["source"] == "h3"
@@ -52,6 +53,7 @@ def test_skipped_segment_keeps_prompt_fields(monkeypatch):
     assert clip["manual_prompt"] == "人工正文"
     assert clip["manual_prompt_fingerprint"] == "fp"
     assert clip["manual_prompt_dimensions"] == {"duration": "x"}
+    assert clip["resolved_fingerprint"] == "fp-resolved"
 
 
 def test_new_resolution_overrides_previous(monkeypatch):
@@ -59,6 +61,7 @@ def test_new_resolution_overrides_previous(monkeypatch):
     agent._prompt_sources = {"s1": {
         "source": "description", "freshness": "stale",
         "stale_reasons": ["duration_changed"], "submitted_prompt": "new prompt",
+        "fingerprint": "fp-new",
     }}
     prev = {"id": "s1", "selected": "v1.mp4",
             "prompt_source": {"source": "h3", "freshness": "fresh", "stale_reasons": []},
@@ -66,6 +69,7 @@ def test_new_resolution_overrides_previous(monkeypatch):
     clip = _clip(agent._build_payload("sid", SEGMENTS, [prev]))
     assert clip["prompt_source"]["source"] == "description"
     assert clip["submitted_prompt"] == "new prompt"
+    assert clip["resolved_fingerprint"] == "fp-new"
 
 
 def test_submitted_prompt_is_truncated_at_1000(monkeypatch):

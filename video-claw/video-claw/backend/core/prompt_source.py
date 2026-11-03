@@ -110,6 +110,11 @@ def resolve_effective_prompt(
             "stale_reasons": ["h3_absent"]}
 
 
+def changed_reasons(stored: Optional[Dict[str, str]], current: Dict[str, str]) -> List[str]:
+    """逐维度原因（读时派生与解析共用）。"""
+    return _changed_reasons(stored, current)
+
+
 __all__ = [
     "FRESHNESS_FRESH",
     "FRESHNESS_STALE",
@@ -118,5 +123,6 @@ __all__ = [
     "SOURCE_H3",
     "SOURCE_MANUAL",
     "STALE_REASONS",
+    "changed_reasons",
     "resolve_effective_prompt",
 ]

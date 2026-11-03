@@ -735,6 +735,13 @@ class WorkflowEngine:
                 data["artifacts"][stage] = artifact
         if error and not data.get("error"):
             data["error"] = error
+        # WF-04：读时派生“需重生成”（不落库；配置/素材变化自动覆盖）
+        try:
+            from core.prompt_freshness import annotate_regeneration
+
+            annotate_regeneration(data.get("artifacts") or {}, getattr(state, "meta", None))
+        except Exception as exc:  # noqa: BLE001 - 派生失败不影响快照
+            logger.warning("needs_regeneration 派生失败：%s", exc)
         return data
 
     # ──────────── 会话读取 ────────────
@@ -2375,6 +2382,8 @@ class WorkflowEngine:
             # 清空人工正文：同时清掉孤儿指纹/维度，避免 UI 误显“已保存”
             merged.pop("manual_prompt_fingerprint", None)
             merged.pop("manual_prompt_dimensions", None)
+        # WF-04：记录本次解析使用的指纹（读时派生据此判断是否需重跑）
+        merged["resolved_fingerprint"] = fingerprint
 
         # 刷新解析链：保存后前端立即读到 source=manual；清空后回到 H3/description
         h3_segment = next(

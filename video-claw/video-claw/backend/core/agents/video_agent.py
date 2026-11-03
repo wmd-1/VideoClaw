@@ -353,10 +353,13 @@ class VideoDirectorAgent(AgentInterface):
             (item for item in items or [] if isinstance(item, dict) and item.get("id") == seg_id),
             None,
         )
-        return resolve_effective_prompt(
+        resolution = resolve_effective_prompt(
             h3_segment, h3_item, clip or {},
             current_fingerprint=fingerprint, current_dimensions=dimensions,
         )
+        # WF-04：读时派生需要事后重判，必须落本次实际使用的指纹
+        resolution["fingerprint"] = fingerprint
+        return resolution
 
     def _get_style_keywords(self, session_data: dict) -> str:
         """从会话数据获取风格关键词"""
@@ -513,7 +516,7 @@ class VideoDirectorAgent(AgentInterface):
         item["selected"] = VideoDirectorAgent._carry_over_selected(prev, versions)
         for field in (
             "prompt_source", "submitted_prompt", "submitted_prompt_truncated",
-            "duration_adjustment",
+            "duration_adjustment", "resolved_fingerprint",
             "manual_prompt", "manual_prompt_fingerprint", "manual_prompt_dimensions",
         ):
             if field not in item and field in prev:
@@ -587,12 +590,13 @@ class VideoDirectorAgent(AgentInterface):
                     "stale_reasons": list(resolution.get("stale_reasons") or []),
                 }
                 submitted = str(resolution.get("submitted_prompt") or "")
-                # 本轮有解析结果就以本轮为准（为空则清掉旧值，避免显示上次提交正文）
+                # 本轮有解析结果就以本轮为准（为空则清旧值，避免显示上次提交正文）
                 item["submitted_prompt"] = submitted[:1000]
                 if len(submitted) > 1000:
                     item["submitted_prompt_truncated"] = True
                 else:
                     item.pop("submitted_prompt_truncated", None)
+                item["resolved_fingerprint"] = str(resolution.get("fingerprint") or "")
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":
