@@ -1089,6 +1089,7 @@ class WorkflowEngine:
         state = self.get_state(session_id)
         if not state:
             raise KeyError(f"Session not found: {session_id}")
+        # 仅取 status：跳过 needs_regeneration 派生；需要 artifacts 的调用方须显式 annotate=True
         return copy.deepcopy(self._view_dict(state, annotate=False)["status"])
 
     def stop_session(self, session_id: str):
@@ -2383,8 +2384,6 @@ class WorkflowEngine:
             # 清空人工正文：同时清掉孤儿指纹/维度，避免 UI 误显“已保存”
             merged.pop("manual_prompt_fingerprint", None)
             merged.pop("manual_prompt_dimensions", None)
-        # WF-04：resolved_fingerprint 只代表“上次生成所用指纹”，PATCH 不改写；
-        # 保存/清空人工正文只刷新 manual_* 与 prompt_source。
 
         # 刷新解析链：保存后前端立即读到 source=manual；清空后回到 H3/description
         h3_segment = next(

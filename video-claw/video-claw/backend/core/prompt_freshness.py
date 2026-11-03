@@ -108,19 +108,17 @@ def annotate_regeneration(artifacts: Dict[str, Any], meta: Optional[Dict[str, An
         if not isinstance(clip, dict) or not clip.get("id"):
             continue
         _segment, fingerprint, dimensions = current_for(clip["id"])
-        if str(clip.get("manual_prompt") or "").strip():
-            _annotate_item(clip, str(clip.get("manual_prompt_fingerprint") or ""),
-                           clip.get("manual_prompt_dimensions"), fingerprint, dimensions)
-        else:
-            stored = str(clip.get("resolved_fingerprint") or "")
-            source_meta = clip.get("prompt_source") if isinstance(clip.get("prompt_source"), dict) else {}
-            if not stored and str(source_meta.get("freshness") or "") in ("stale", "unknown") \
-                    and source_meta.get("stale_reasons"):
-                # 旧产物无 resolved_fingerprint：沿用已算出的解析链原因，避免与徽标矛盾
-                clip["needs_regeneration"] = True
-                clip["regeneration_reasons"] = list(source_meta.get("stale_reasons") or [])
-                continue
-            _annotate_item(clip, stored, None, fingerprint, dimensions)
+        # 语义（WF-04-A）：clip 的 needs_regeneration = “视频是否用了当前正文”；
+        # 只看生成时指纹。人工正文的新鲜度由 prompt_source 单独表达（徽标）。
+        stored = str(clip.get("resolved_fingerprint") or "")
+        source_meta = clip.get("prompt_source") if isinstance(clip.get("prompt_source"), dict) else {}
+        if not stored and str(source_meta.get("freshness") or "") in ("stale", "unknown") \
+                and source_meta.get("stale_reasons"):
+            # 旧产物无 resolved_fingerprint：沿用已算出的解析链原因，避免与徽标矛盾
+            clip["needs_regeneration"] = True
+            clip["regeneration_reasons"] = list(source_meta.get("stale_reasons") or [])
+            continue
+        _annotate_item(clip, stored, None, fingerprint, dimensions)
 
 
 __all__ = ["annotate_regeneration"]

@@ -97,19 +97,35 @@ def test_not_done_h3_reports_not_ready():
     assert artifacts["prompt_rewrite"]["items"][0]["regeneration_reasons"] == ["h3_not_ready"]
 
 
-def test_manual_clip_uses_manual_fingerprint():
+def test_manual_fresh_but_old_generation_needs_regeneration():
+    """人工正文新鲜但视频用旧正文生成：clip 仍需重生成（语义只看生成指纹）。"""
     fingerprint, dimensions = _current()
-    stale_fp, stale_dims = _current(duration=10)
-    artifacts = _artifacts(clips=[
-        _clip(manual_prompt="人工", manual_prompt_fingerprint=stale_fp,
-              manual_prompt_dimensions=stale_dims),
-        _clip(id="seg_01_01", manual_prompt="人工", manual_prompt_fingerprint=fingerprint,
-              manual_prompt_dimensions=dimensions),
-    ])
+    old_fp, _ = _current(duration=10)
+    artifacts = _artifacts(clips=[_clip(
+        manual_prompt="人工正文", manual_prompt_fingerprint=fingerprint,
+        manual_prompt_dimensions=dimensions, resolved_fingerprint=old_fp,
+        prompt_source={"source": "manual", "freshness": "fresh", "stale_reasons": []},
+    )])
     annotate_regeneration(artifacts, META)
-    first, second = artifacts["video_generation"]["clips"]
-    assert first["regeneration_reasons"] == ["duration_changed"]
-    assert second["needs_regeneration"] is False
+    clip = artifacts["video_generation"]["clips"][0]
+    assert clip["needs_regeneration"] is True
+    assert clip["regeneration_reasons"] == ["fingerprint_changed"]
+
+
+def test_manual_stale_but_video_matches_current_is_fresh_for_video():
+    """人工正文 stale 只影响徽标；视频已经用了当前正文时，不应要求重生成。"""
+    fingerprint, _ = _current()
+    stale_fp, stale_dims = _current(duration=10)
+    artifacts = _artifacts(clips=[_clip(
+        manual_prompt="人工正文", manual_prompt_fingerprint=stale_fp,
+        manual_prompt_dimensions=stale_dims, resolved_fingerprint=fingerprint,
+        prompt_source={"source": "manual", "freshness": "stale",
+                       "stale_reasons": ["duration_changed"]},
+    )])
+    annotate_regeneration(artifacts, META)
+    clip = artifacts["video_generation"]["clips"][0]
+    assert clip["needs_regeneration"] is False
+    assert clip["regeneration_reasons"] == []
 
 
 def test_clip_without_resolved_fingerprint_is_not_fresh():
