@@ -123,6 +123,29 @@ def test_apply_artifact_update_clears_manual_prompt_and_refreshes_source():
     assert clip["prompt_source"]["source"] != "manual"
 
 
+def test_keyed_patch_with_manual_prompt_is_discarded():
+    """键控形状不消费 manual_prompt：不得写进条目，也不得落到 artifact 顶层。"""
+    state = _state()
+    engine = object.__new__(WorkflowEngine)
+    engine._apply_artifact_update(
+        state, "video_generation", {"seg_01_01": {"manual_prompt": "新正文"}}
+    )
+    artifact = state.artifacts["video_generation"]
+    assert "seg_01_01" not in artifact
+    assert "manual_prompt" not in artifact["clips"][0]
+
+
+def test_keyed_patch_description_still_supported():
+    state = _state()
+    engine = object.__new__(WorkflowEngine)
+    engine._apply_artifact_update(
+        state, "video_generation", {"seg_01_01": {"description": "新描述"}}
+    )
+    artifact = state.artifacts["video_generation"]
+    assert "seg_01_01" not in artifact
+    assert artifact["clips"][0]["description"] == "新描述"
+
+
 def test_clearing_manual_prompt_removes_fingerprint_and_refreshes_source():
     state = SimpleNamespace(artifacts=ARTIFACTS, meta={"video_first_frame_model": "m1"})
     merged = {"id": "seg_01_01", "manual_prompt": "",

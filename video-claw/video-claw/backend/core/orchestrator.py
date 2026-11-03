@@ -2624,6 +2624,28 @@ class WorkflowEngine:
                         if clip_id in clip_id_to_description:
                             clip['description'] = clip_id_to_description[clip_id]
 
+            # 键控形状仅兼容 duration/description；命中片段 ID 的其余字段（含
+            # manual_prompt）不得写进 artifact 顶层——消费后丢弃并记日志；
+            # 非片段 ID 的字典键（如 selected_images）保持旧行为。
+            consumed_ids = set(clip_id_to_duration) | set(clip_id_to_description)
+            existing_clip_ids = {
+                item.get("id")
+                for item in (state.artifacts.get("video_generation", {}) or {}).get("clips", [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            for key, value in list(body.items()):
+                if key in ("clips", "video_clips") or not isinstance(value, dict):
+                    continue
+                if key in consumed_ids:
+                    body.pop(key, None)
+                    continue
+                if key in existing_clip_ids or "manual_prompt" in value:
+                    logger.warning(
+                        "video_generation 键控 PATCH 丢弃未支持字段：%s=%s（请改用 clips 数组）",
+                        key, sorted(value),
+                    )
+                    body.pop(key, None)
+
             vid_art = state.artifacts.get('video_generation', {})
             if isinstance(vid_art, dict):
                 clips = vid_art.get('clips', [])

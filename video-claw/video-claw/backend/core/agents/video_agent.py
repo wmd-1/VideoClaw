@@ -357,8 +357,9 @@ class VideoDirectorAgent(AgentInterface):
             h3_segment, h3_item, clip or {},
             current_fingerprint=fingerprint, current_dimensions=dimensions,
         )
-        # WF-04：读时派生需要事后重判，必须落本次实际使用的指纹
+        # WF-04：读时派生需要事后重判，必须落本次实际使用的指纹与维度
         resolution["fingerprint"] = fingerprint
+        resolution["dimensions"] = dimensions
         return resolution
 
     def _get_style_keywords(self, session_data: dict) -> str:
@@ -516,7 +517,7 @@ class VideoDirectorAgent(AgentInterface):
         item["selected"] = VideoDirectorAgent._carry_over_selected(prev, versions)
         for field in (
             "prompt_source", "submitted_prompt", "submitted_prompt_truncated",
-            "duration_adjustment", "resolved_fingerprint",
+            "duration_adjustment", "resolved_fingerprint", "resolved_dimensions",
             "manual_prompt", "manual_prompt_fingerprint", "manual_prompt_dimensions",
         ):
             if field not in item and field in prev:
@@ -597,6 +598,7 @@ class VideoDirectorAgent(AgentInterface):
                 else:
                     item.pop("submitted_prompt_truncated", None)
                 item["resolved_fingerprint"] = str(resolution.get("fingerprint") or "")
+                item["resolved_dimensions"] = dict(resolution.get("dimensions") or {})
             # 拷回失败原因：优先用本次执行的 marker，其次沿用已存 clip 上的字段（如“改选版本”重建路径）。
             # 仅在该片段仍为失败态时拷贝，避免已成功片段带着陈旧原因。
             if item["status"] == "failed":

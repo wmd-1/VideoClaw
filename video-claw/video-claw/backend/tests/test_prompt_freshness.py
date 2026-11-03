@@ -153,3 +153,14 @@ def test_clip_with_matching_resolved_fingerprint_is_fresh():
     artifacts = _artifacts(clips=[_clip(resolved_fingerprint=fingerprint)])
     annotate_regeneration(artifacts, META)
     assert artifacts["video_generation"]["clips"][0]["needs_regeneration"] is False
+
+
+def test_clip_reports_specific_reason_from_resolved_dimensions():
+    """生成时落了 resolved_dimensions，就能像 H3 一样给出具体原因。"""
+    old_fp, old_dims = _current(duration=10)
+    artifacts = _artifacts(clips=[_clip(resolved_fingerprint=old_fp,
+                                        resolved_dimensions=old_dims)])
+    annotate_regeneration(artifacts, META)
+    clip = artifacts["video_generation"]["clips"][0]
+    assert clip["needs_regeneration"] is True
+    assert clip["regeneration_reasons"] == ["duration_changed"]

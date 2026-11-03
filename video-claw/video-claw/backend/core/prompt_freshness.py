@@ -118,7 +118,7 @@ def annotate_regeneration(artifacts: Dict[str, Any], meta: Optional[Dict[str, An
             clip["needs_regeneration"] = True
             clip["regeneration_reasons"] = list(source_meta.get("stale_reasons") or [])
             continue
-        _annotate_item(clip, stored, None, fingerprint, dimensions)
+        _annotate_item(clip, stored, clip.get("resolved_dimensions"), fingerprint, dimensions)
 
 
 __all__ = ["annotate_regeneration"]
