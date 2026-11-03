@@ -56,12 +56,15 @@ const PROMPT_STALE_LABELS: Record<string, string> = {
   h3_absent: '未执行改写',
 };
 
-function promptSourceView(clip: ClipItem): { text: string; className: string } {
+function promptSourceView(clip: ClipItem): { text: string; className: string; title?: string } {
   const meta = clip.prompt_source;
   if (!meta) return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
-  const joinReasons = () => (meta.stale_reasons || [])
-    .map(reason => PROMPT_STALE_LABELS[reason] || reason)
-    .join('、');
+  const joinReasons = () => {
+    const labels = (meta.stale_reasons || []).map(reason => PROMPT_STALE_LABELS[reason] || reason);
+    // 徽标只展示前 2 条，避免多原因把整行撑开；完整列表放 title
+    const short = labels.length > 2 ? `${labels.slice(0, 2).join('、')}等` : labels.join('、');
+    return { short, full: labels.join('、') };
+  };
   if (meta.source === 'manual') {
     if (meta.freshness === 'fresh') {
       return { text: '人工正文', className: 'bg-blue-100 text-blue-700' };
@@ -71,8 +74,9 @@ function promptSourceView(clip: ClipItem): { text: string; className: string } {
     }
     const reasons = joinReasons();
     return {
-      text: `人工正文（已过期${reasons ? `：${reasons}` : ''}）`,
+      text: `人工正文（已过期${reasons.short ? `：${reasons.short}` : ''}）`,
       className: 'bg-amber-100 text-amber-700',
+      title: reasons.full,
     };
   }
   if (meta.source === 'h3') {
@@ -83,8 +87,9 @@ function promptSourceView(clip: ClipItem): { text: string; className: string } {
   if (meta.source === 'description') {
     const reasons = joinReasons();
     return {
-      text: reasons ? `回退分镜描述（${reasons}）` : '回退分镜描述',
+      text: reasons.short ? `回退分镜描述（${reasons.short}）` : '回退分镜描述',
       className: 'bg-amber-100 text-amber-700',
+      title: reasons.full,
     };
   }
   return { text: '来源未知', className: 'bg-gray-100 text-gray-500' };
@@ -93,9 +98,14 @@ function promptSourceView(clip: ClipItem): { text: string; className: string } {
 function PromptSourceBadge({ clip }: { clip: ClipItem }) {
   const view = promptSourceView(clip);
   // 来源只看 prompt_source；submitted_prompt 仅作“本次已提交”的提示
-  const title = clip.submitted_prompt
-    ? `本次已提交：${clip.submitted_prompt}${clip.submitted_prompt_truncated ? '（已截断）' : ''}`
-    : undefined;
+  const titleParts: string[] = [];
+  if (view.title) titleParts.push(`变化：${view.title}`);
+  if (clip.submitted_prompt) {
+    titleParts.push(
+      `本次已提交：${clip.submitted_prompt}${clip.submitted_prompt_truncated ? '（已截断）' : ''}`
+    );
+  }
+  const title = titleParts.length ? titleParts.join('\n') : undefined;
   return (
     <span
       className={`h-6 px-1.5 rounded-full text-[10px] font-bold whitespace-nowrap ${view.className}`}
@@ -309,26 +319,26 @@ function ClipRow({
           {/* 编辑/保存按钮 */}
           {canEdit && !isStageRunning && (
             isEditing ? (
-              <div className="ml-auto flex gap-1">
+              <div className="ml-auto flex gap-1 shrink-0 whitespace-nowrap">
                 {clip.manual_prompt ? (
                   <button
                     onClick={onClearManual}
                     disabled={isSaving}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-amber-600 bg-amber-50 hover:bg-amber-100"
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-amber-600 bg-amber-50 hover:bg-amber-100 shrink-0 whitespace-nowrap"
                   >
                     <RotateCcw className="w-3 h-3" />恢复自动
                   </button>
                 ) : null}
                 <button
                   onClick={onCancelEdit}
-                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100"
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 shrink-0 whitespace-nowrap"
                 >
                   <X className="w-3 h-3" />取消
                 </button>
                 <button
                   onClick={onSavePrompt}
                   disabled={!hasChanges || isSaving}
-                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors shrink-0 whitespace-nowrap ${
                     hasChanges && !isSaving
                       ? 'text-white bg-emerald-500 hover:bg-emerald-600'
                       : 'text-gray-400 bg-gray-100 cursor-not-allowed'
@@ -625,7 +635,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
     const newPrompt = (editDescs[clipId] ?? '').trim();
     const hadManual = Boolean(clip?.manual_prompt);
     if (!newPrompt && !hadManual) return;
-    if (!newPrompt && hadManual && !window.confirm('清空人工正文并恢复自动来源？')) return;
+    if (!newPrompt && hadManual && !window.confirm('清空人工正文并恢复自动来源？当前未保存的修改将丢失。')) return;
 
     setSavingIds(prev => new Set(prev).add(clipId));
     try {
@@ -654,7 +664,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
 
   // 恢复自动来源：清空人工正文（后端会重算 prompt_source）
   const handleClearManual = async (clipId: string) => {
-    if (!window.confirm('清空人工正文并恢复自动来源？')) return;
+    if (!window.confirm('清空人工正文并恢复自动来源？当前未保存的修改将丢失。')) return;
     const clip = clips.find(item => item.id === clipId);
     setSavingIds(prev => new Set(prev).add(clipId));
     try {
