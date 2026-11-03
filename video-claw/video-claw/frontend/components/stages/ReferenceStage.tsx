@@ -14,6 +14,11 @@ import AssetEvaluationBadge, { type AssetEvaluation } from './AssetEvaluationBad
 
 import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
+/** 场景/片段 ID 的短标签：兼容 seg_ / Scene_ 两种历史前缀。 */
+function shortSceneLabel(id: string): string {
+  return id.replace(/^(?:seg_|Scene_)/, '');
+}
+
 interface SceneItem {
   id: string;             // shot_001_01, shot_001_02, ...
   name: string;           // 场景1-镜头1
@@ -204,9 +209,9 @@ function SceneRow({
         <div className="flex items-center gap-2 mb-2">
           <RewriteResultBadge rewriteResult={scene.rewrite_result} />
           <span className="flex items-center justify-center h-6 px-1.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex-shrink-0 whitespace-nowrap">
-            {scene.index ?? scene.id.replace('Scene_', '')}
+            {scene.index ?? shortSceneLabel(scene.id)}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index ?? String(scene.id).replace(/^seg_/, '')}`}</span>
+          <span className="text-sm font-semibold text-gray-800 truncate">{scene.name || scene.title || `片段 ${scene.index ?? shortSceneLabel(scene.id)}`}</span>
           <AssetEvaluationBadge evaluation={scene.evaluation} />
           {isPending && (
             <span className="text-[10px] bg-gray-50 text-gray-500 px-1.5 py-0.5 rounded">等待中</span>
