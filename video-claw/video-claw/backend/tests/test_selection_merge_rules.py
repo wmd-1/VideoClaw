@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from core.orchestrator import WorkflowEngine
+from core.orchestrator import _BACKGROUND_PROTECTED_FIELDS, WorkflowEngine
 
 
 def _artifact():
@@ -58,6 +58,71 @@ def test_selected_after_asset_update_prefers_new():
     assert WorkflowEngine._selected_after_asset_update("v1.png", "") == "v1.png"
     assert WorkflowEngine._selected_after_asset_update("", "v3.png") == "v3.png"
     assert WorkflowEngine._selected_after_asset_update(None, None) == ""
+
+
+def test_background_protection_declares_description_and_rewritten_prompt_only():
+    assert _BACKGROUND_PROTECTED_FIELDS == {
+        "character_design": ("description",),
+        "prompt_rewrite": ("rewritten_prompt",),
+    }
+
+
+def test_background_prompt_rewrite_keeps_user_text_but_uses_new_inputs():
+    existing = {"items": [{
+        "id": "i1", "status": "done", "rewritten_prompt": "用户改后的正文",
+        "input_fingerprint": "old", "input_dimensions": {"duration": "d1"},
+    }]}
+    payload = {"items": [{
+        "id": "i1", "status": "done", "rewritten_prompt": "模型新正文",
+        "input_fingerprint": "new", "input_dimensions": {"duration": "d2"},
+    }]}
+    merged = WorkflowEngine._merge_item_regeneration_payload(
+        existing, payload, ["items"], {"items": {"i1"}},
+        baseline_fields={"items": {"i1": {"rewritten_prompt": "旧正文"}}},
+        protected_fields=_BACKGROUND_PROTECTED_FIELDS["prompt_rewrite"],
+    )
+    item = merged["items"][0]
+    assert item["rewritten_prompt"] == "用户改后的正文", "用户正文被后台覆盖"
+    assert item["input_fingerprint"] == "new", "新输入的指纹必须生效"
+    assert item["input_dimensions"] == {"duration": "d2"}
+
+
+def test_background_prompt_rewrite_updates_when_not_edited():
+    existing = {"items": [{
+        "id": "i1", "status": "done", "rewritten_prompt": "旧正文",
+        "input_fingerprint": "old",
+    }]}
+    payload = {"items": [{
+        "id": "i1", "status": "done", "rewritten_prompt": "模型新正文",
+        "input_fingerprint": "new",
+    }]}
+    merged = WorkflowEngine._merge_item_regeneration_payload(
+        existing, payload, ["items"], {"items": {"i1"}},
+        baseline_fields={"items": {"i1": {"rewritten_prompt": "旧正文"}}},
+        protected_fields=_BACKGROUND_PROTECTED_FIELDS["prompt_rewrite"],
+    )
+    assert merged["items"][0]["rewritten_prompt"] == "模型新正文"
+
+
+def test_background_character_protects_description_but_not_name():
+    existing = {"characters": [{
+        "id": "c1", "name": "用户改名", "description": "用户改描述",
+        "selected": "v1.png", "versions": ["v1.png"], "status": "done",
+    }]}
+    payload = {"characters": [{
+        "id": "c1", "name": "模型新名", "description": "模型新描述",
+        "selected": "v1.png", "versions": ["v1.png"], "status": "done",
+    }]}
+    merged = WorkflowEngine._merge_item_regeneration_payload(
+        existing, payload, ["characters"], {"characters": {"c1"}},
+        baseline_fields={"characters": {"c1": {
+            "name": "旧名", "description": "旧描述", "selected": "v1.png",
+        }}},
+        protected_fields=_BACKGROUND_PROTECTED_FIELDS["character_design"],
+    )
+    item = merged["characters"][0]
+    assert item["description"] == "用户改描述", "description 应保护"
+    assert item["name"] == "模型新名", "name 是下游匹配键，不应保护"
 
 
 # ─────────────── Q8 安全阀：执行期间手选不被晚到结果覆盖 ───────────────

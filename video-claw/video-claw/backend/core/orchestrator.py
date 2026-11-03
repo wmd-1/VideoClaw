@@ -350,10 +350,15 @@ _NO_COMMIT = object()
 # 执行期间用户可编辑、结束合并时优先保留的条目字段（全量路径）
 _USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt", "manual_prompt")
 
-# 后台单条重生成时按阶段保护的用户手改字段（A1b）。
-# 只纳入“保留用户值不会让下游语义失真”的字段：name 是下游匹配键、species 决定
-# 生成/评估路由、rewritten_prompt 属 B2 语义，均暂不纳入。
-_BACKGROUND_PROTECTED_FIELDS: Dict[str, tuple] = {"character_design": ("description",)}
+# 后台单条重生成时按阶段保护的用户手改字段（A1b/B2）。
+# 只纳入“存在用户编辑入口且保留用户值不使下游语义失真”的字段：
+# - description（角色/场景）与 rewritten_prompt（H3）都有真实编辑入口；
+# - name 是下游匹配键（consumption/segment.characters/参考图引用），不保护；
+# - species 在脚本阶段编辑、属跨阶段传播，不保护。
+_BACKGROUND_PROTECTED_FIELDS: Dict[str, tuple] = {
+    "character_design": ("description",),
+    "prompt_rewrite": ("rewritten_prompt",),
+}
 
 # 区分“无基线信息”与“基线里字段值本就为空”：前者无法判定执行期间是否手改
 _NO_BASELINE = object()
