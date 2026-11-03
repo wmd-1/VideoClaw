@@ -115,6 +115,9 @@ function regenerationText(clip: ClipItem): string | null {
   if (reasons.length === 1 && reasons[0] === 'fingerprint_missing') {
     return '需重生成（该片段生成于旧版本，无法定位具体变化）';
   }
+  if (reasons.length === 1 && reasons[0] === 'fingerprint_changed') {
+    return '需重生成（无法定位具体变化）';
+  }
   const { short } = formatStaleReasons(reasons);
   return short ? `需重生成（${short}）` : '需重生成';
 }
@@ -129,6 +132,7 @@ function PromptDetails({
   onNavigateH3?: () => void;
 }) {
   const [showFull, setShowFull] = useState(false);
+  const [showSubmitted, setShowSubmitted] = useState(false);
   const meta = clip.prompt_source;
   const reasons = formatStaleReasons(meta?.stale_reasons);
   const generated = (clip.versions?.length || 0) > 0;
@@ -151,6 +155,10 @@ function PromptDetails({
     : generated
       ? '旧版本未记录提交正文（功能上线前生成）'
       : '本片段尚无生成记录';
+  const submittedCollapsed = Boolean(clip.submitted_prompt) && (clip.submitted_prompt || '').length > 240 && !showSubmitted;
+  const submittedDisplay = submittedCollapsed
+    ? `${(clip.submitted_prompt || '').slice(0, 240)}…`
+    : submittedText;
 
   const generationText = !generated ? '未生成' : (regenerationText(clip) || '已生成');
   const manualExplain =
@@ -195,8 +203,18 @@ function PromptDetails({
       </div>
 
       <div>
-        <span className="font-medium text-gray-700">本次已提交：</span>
-        <span className="whitespace-pre-wrap break-words">{submittedText}</span>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="font-medium text-gray-700">本次已提交：</span>
+          {Boolean(clip.submitted_prompt) && (clip.submitted_prompt || '').length > 240 ? (
+            <button
+              onClick={() => setShowSubmitted(v => !v)}
+              className="ml-auto text-[10px] text-blue-600 hover:underline"
+            >
+              {showSubmitted ? '收起全文' : '展开全文'}
+            </button>
+          ) : null}
+        </div>
+        <span className="whitespace-pre-wrap break-words">{submittedDisplay}</span>
       </div>
 
       <div>
