@@ -389,7 +389,7 @@ class PromptRewriteAgent(AgentInterface):
             )
         if grounding_desc:
             sections["grounding_section"] = (
-                "【参考图/首帧实际内容（客观画面描述）】\n"
+                "【参考图/首帧实际内容（客观事实；关键帧任务中被固定的首帧/尾帧必须严格一致）】\n"
                 f"{grounding_desc}\n"
             )
         return sections

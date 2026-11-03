@@ -28,6 +28,9 @@ Do not depict the action itself, and do not depict the starting instant of an ac
 - Do not include text, watermark, subtitles, labels, signs, UI elements, or explanations.
 - No Markdown.
 
+[Original Script]
+{original_text}
+
 [Segment Plot]
 {plot}
 

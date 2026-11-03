@@ -3,8 +3,9 @@
 - 输入模式：{input_mode}
 - 目标视频时长：{duration} 秒
 - 镜头编号：{segment_id}
-{authoritative_section}{current_section}{user_section}{continuity_section}{grounding_section}
+{authoritative_section}{current_section}{grounding_section}{user_section}{continuity_section}
 改写要求：
 1. 按上述输入模式遵循随附指南的结构与字段规范。
 2. 描述总时长与目标时长一致；关键帧任务写明与首帧/尾帧的对齐关系。
 3. 只输出：一行模式判定说明 + 纯文本代码块内的完整提示词，不要其他解释。
+4. 用户修改与参考图实际内容冲突时：关键帧任务中，被固定的首帧/尾帧必须与对应实际内容严格一致，用户修改只作用于未被固定帧之间的时间轴；参考图任务以用户修改为目标，但必须描述为“从实际内容变为目标”的转变，不得把参考图事实改写成目标状态。
