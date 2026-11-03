@@ -16,7 +16,7 @@ import { apiFetch } from "@/lib/identityGuard";
 /* ─── 类型 ─── */
 /** 场景/片段 ID 的短标签：兼容 seg_ / Scene_ 两种历史前缀。 */
 function shortSceneLabel(id: string): string {
-  return id.replace(/^(?:seg_|Scene_)/, '');
+  return String(id ?? '').replace(/^(?:seg_|Scene_)/, '');
 }
 
 interface SceneItem {
