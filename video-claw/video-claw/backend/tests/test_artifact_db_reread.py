@@ -39,6 +39,8 @@ def _media(path: str, sid: str) -> str:
 
 def _reload(stage: str, payload: dict, sid: str):
     workflow_engine.update_artifact(sid, stage, payload)
+    # 绕过内存缓存：只有真正从 DB 重装载的字段才算“回读证据”
+    workflow_engine.sessions.pop(sid, None)
     return workflow_engine.get_state(sid).artifacts[stage]
 
 
@@ -76,8 +78,8 @@ def test_character_payload_roundtrips_through_db(monkeypatch, result_file):
     assert setting["evaluation"] == {"evaluated": False, "eval_status": "unavailable"}
 
 
-def test_character_empty_run_inherits_evaluation_in_db(monkeypatch, result_file):
-    """空跑：本轮没有新评估，已存 evaluation / selected 不得被抹掉。"""
+def test_character_empty_run_derives_and_inherits_evaluation_in_db(monkeypatch, result_file):
+    """空跑：从已存产物推导评估底稿，合入后写库再回读仍保留。"""
     sid = _sid("a1_empty")
     _create(sid)
     media = _media(result_file, sid)
@@ -91,11 +93,15 @@ def test_character_empty_run_inherits_evaluation_in_db(monkeypatch, result_file)
 
     agent = CharacterDesignerAgent()
     monkeypatch.setattr(agent, "_list_versions", lambda s, atype, aid: [result_file])
+    seeded_stored = workflow_engine.get_state(sid).artifacts["character_design"]
+    existing = {
+        "characters": CharacterDesignerAgent._existing_evaluations(seeded_stored, "characters"),
+        "settings": CharacterDesignerAgent._existing_evaluations(seeded_stored, "settings"),
+    }
     payload = agent._build_payload(
         "sid", {"c1": {"name": "小陈", "description": "银行职员"}}, {},
         selected_chars={"c1": result_file},
-        existing_evaluations={"characters": {"c1": seeded["characters"][0]["evaluation"]},
-                              "settings": {}},
+        existing_evaluations=existing,
     )["payload"]
 
     stored = _reload("character_design", payload, sid)
