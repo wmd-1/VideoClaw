@@ -12,6 +12,13 @@ from typing import Any, Dict, Optional
 EVALUATION_KEYS = ("evaluated", "eval_status", "selection", "score")
 
 
+def asset_status(versions: Any, selected: str = "", *, stage_completed: bool = False) -> str:
+    """资产条目状态唯一口径：有选中/版本为 done；阶段已跑完但无图为 failed，否则 pending。"""
+    if selected or (versions or []):
+        return "done"
+    return "failed" if stage_completed else "pending"
+
+
 def evaluation_payload(evaluation: Any) -> Optional[Dict[str, Any]]:
     """把评估结果收敛为可落库的最小集；非字典/空集返回 None。"""
     if not isinstance(evaluation, dict):
@@ -47,4 +54,4 @@ def evaluation_for(current: Dict[str, Any], existing: Dict[str, Any], asset_id: 
     return evaluation_payload((existing or {}).get(asset_id))
 
 
-__all__ = ["EVALUATION_KEYS", "evaluation_payload", "existing_evaluations", "evaluation_for"]
+__all__ = ["EVALUATION_KEYS", "evaluation_payload", "existing_evaluations", "evaluation_for", "asset_status"]

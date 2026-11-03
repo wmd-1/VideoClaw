@@ -79,3 +79,18 @@ def test_shared_whitelist_is_single_source():
     view = evaluation_payload({"evaluated": True, "eval_status": "ok", "issues": ["x"]})
     assert view == {"evaluated": True, "eval_status": "ok"}
     assert evaluation_payload({"issues": ["x"]}) is None
+
+
+def test_reference_preview_and_payload_share_status_rule(monkeypatch):
+    agent = _agent(monkeypatch)
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, segment_id: [])
+    preview = agent._build_preview("sid", SEGMENTS, {"artifacts": {}})[0]
+    payload = agent._build_payload("sid", SEGMENTS, {"artifacts": {}}, {})["payload"]["scenes"][0]
+    assert preview["status"] == "pending"
+    assert payload["status"] == "failed"
+
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, segment_id: ["v1.png"])
+    preview = agent._build_preview("sid", SEGMENTS, {"artifacts": {}})[0]
+    payload = agent._build_payload("sid", SEGMENTS, {"artifacts": {}}, {})["payload"]["scenes"][0]
+    assert preview["status"] == "done"
+    assert payload["status"] == "done"

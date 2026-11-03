@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
-from core.agents.character_agent import CharacterDesignerAgent
+import asyncio
 
+from core.agents.character_agent import CharacterDesignerAgent
+from core.asset_quality import asset_status
 
 # ─────────────── WF-03：payload 底稿与选优结果 ───────────────
 
@@ -297,6 +299,62 @@ def test_build_payload_prefers_this_run_evaluation(monkeypatch):
     assert payload["payload"]["characters"][0]["evaluation"] == {
         "evaluated": True, "eval_status": "ok", "score": 8,
     }
+
+
+def test_process_empty_run_carries_existing_evaluation(monkeypatch):
+    """真实 process 空跑：已存 evaluation 必须由 Agent 自动继承（保护接线）。"""
+    import models.config_model as config_model
+
+    monkeypatch.setattr(config_model, "get_max_concurrency", lambda model, enabled: 1)
+    agent = CharacterDesignerAgent()
+    existing = {
+        "characters": [{
+            "id": "c1", "name": "小陈", "description": "银行职员",
+            "selected": "v1.png", "versions": ["v1.png"], "status": "done",
+            "evaluation": {"evaluated": True, "eval_status": "ok", "score": 7,
+                           "issues": ["原文不入库"]},
+        }],
+        "settings": [],
+    }
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    monkeypatch.setattr(agent, "_report_progress", lambda *a, **k: None)
+    result = asyncio.run(agent.process({
+        "session_id": "s",
+        "characters": {"c1": {"name": "小陈", "description": "银行职员"}},
+        "settings": {},
+        "image_t2i_model": "m", "vlm_model": "m", "llm_model": "m",
+        "_session_artifacts": {"character_design": existing},
+    }))
+    char = result["payload"]["characters"][0]
+    assert char["evaluation"] == {"evaluated": True, "eval_status": "ok", "score": 7}
+    assert "issues" not in char["evaluation"]
+    assert char["status"] == "done"
+    assert char["selected"] == "v1.png"
+
+
+def test_asset_status_single_source():
+    assert asset_status(["v1.png"]) == "done"
+    assert asset_status([], "v1.png") == "done"
+    assert asset_status([]) == "pending"
+    assert asset_status([], stage_completed=True) == "failed"
+
+
+def test_preview_and_payload_share_status_rule(monkeypatch):
+    """预览用 pending，阶段完成后的 payload 用 failed；有图两者都是 done。"""
+    agent = CharacterDesignerAgent()
+    chars = {"c1": {"name": "小陈", "description": "d"}}
+
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: [])
+    preview = agent._build_preview("sid", chars, {})["characters"][0]
+    payload = agent._build_payload("sid", chars, {})["payload"]["characters"][0]
+    assert preview["status"] == "pending"
+    assert payload["status"] == "failed"
+
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    preview = agent._build_preview("sid", chars, {})["characters"][0]
+    payload = agent._build_payload("sid", chars, {})["payload"]["characters"][0]
+    assert preview["status"] == "done"
+    assert payload["status"] == "done"
 
 
 def test_build_payload_falls_back_to_existing_when_this_run_unevaluable(monkeypatch):

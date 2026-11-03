@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from core.asset_quality import (
     EVALUATION_KEYS,
+    asset_status,
     evaluation_payload,
 )
 from core.asset_quality import (
@@ -151,7 +152,7 @@ class CharacterDesignerAgent(AgentInterface):
         versions = self._list_versions(sid, asset_type, asset_id)
         if not selected_path and versions:
             selected_path = versions[-1]
-        status = "done" if selected_path or versions else "failed"
+        status = asset_status(versions, selected_path, stage_completed=True)
         return {
             "id": asset_id,
             "name": name,
@@ -222,7 +223,7 @@ class CharacterDesignerAgent(AgentInterface):
                 "selected": (selected_map.get("characters") or {}).get(asset_id)
                             or (existing[-1] if existing else ""),
                 "versions": existing,
-                "status": "done" if existing else "pending",
+                "status": asset_status(existing),
             })
         for asset_id, info in sets_desc.items():
             existing = self._list_versions(sid, 'settings', asset_id)
@@ -235,7 +236,7 @@ class CharacterDesignerAgent(AgentInterface):
                 "selected": (selected_map.get("settings") or {}).get(asset_id)
                             or (existing[-1] if existing else ""),
                 "versions": existing,
-                "status": "done" if existing else "pending",
+                "status": asset_status(existing),
             })
         return preview
 

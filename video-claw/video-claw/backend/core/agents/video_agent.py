@@ -14,6 +14,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core.asset_quality import asset_status
 from core.h3_modes import (
     collect_segments,
     current_fingerprint,
@@ -543,7 +544,7 @@ class VideoDirectorAgent(AgentInterface):
                 "duration": seg.get('total_duration', 10),
                 "selected": self._carry_over_selected(clip_map.get(segment_id), versions),
                 "versions": versions,
-                "status": "done" if versions else "pending",
+                "status": asset_status(versions),
             }
             if existing_rewrite_results.get(segment_id):
                 item["rewrite_result"] = existing_rewrite_results[segment_id]
@@ -572,7 +573,7 @@ class VideoDirectorAgent(AgentInterface):
                 "duration": seg.get('total_duration', 10),
                 "selected": versions[-1] if versions else "",
                 "versions": versions,
-                "status": "done" if versions else "failed",
+                "status": asset_status(versions, stage_completed=True),
             }
             item = self._carry_over_item(item, clip_map.get(segment_id), versions)
             rewrite_result = rewrite_results.get(segment_id) or existing_rewrite_results.get(segment_id)
