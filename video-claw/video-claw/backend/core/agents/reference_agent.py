@@ -750,7 +750,10 @@ class ReferenceGeneratorAgent(AgentInterface):
         character_json = artifacts.get('character_design', {})
 
         # 判断中英文
-        is_zh = any('\u4e00' <= c <= '\u9fff' for c in script_json.get("title", ""))
+        is_zh = self._session_language(
+            input_data, title=script_json.get("title", ""),
+            body=(script_json.get("meta") or {}).get("original_text", "") if isinstance(script_json.get("meta"), dict) else "",
+        ) == "zh"
 
         # 构建 name → id 映射（用于素材匹配）
         char_id_map = {}

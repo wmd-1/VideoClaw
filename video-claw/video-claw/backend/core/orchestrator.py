@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from config import settings
 from core import media_refs, script_revision, workflow_store
 from core.artifact_publisher import build_file_rows, new_execution_id
+from core.language import language_from_meta, resolve_language
 from core.persistence_service import PersistenceService
 from db.repositories.commits import (
     CommitConflict,
@@ -869,6 +870,29 @@ class WorkflowEngine:
 
         self._mutate(session_id, seed)
 
+    def _ensure_session_language(self, session_id: str) -> None:
+        """首次阶段执行前回填会话语言（写路径，不在 GET/status 推断）。"""
+        state = self.get_state(session_id)
+        if not state:
+            return
+        meta = state.meta or {}
+        if language_from_meta(meta):
+            return
+        script = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {}
+        script_meta = script.get("meta") if isinstance(script.get("meta"), dict) else {}
+        body = (script_meta.get("original_text") or script.get("original_text")
+                or meta.get("idea") or "")
+        title = script.get("title") or ""
+        instruction = meta.get("user_textbox_input") or ""
+        resolved = resolve_language(
+            instruction=instruction, body=body, title=title, current=meta.get("language"),
+        )
+        self.update_session_meta(
+            session_id,
+            {"language": resolved["language"], "language_source": resolved["source"]},
+            ("language", "language_source"),
+        )
+
     def prepare_stage_execution(self, session_id: str, stage: str, body: Dict[str, Any]) -> tuple[WorkflowState, Dict[str, Any]]:
         """Build stage input from the committed meta without exposing mutable state to routers.
 
@@ -876,6 +900,7 @@ class WorkflowEngine:
         """
         validate_upload_identifier(str(session_id), "session_id")
         self._ensure_stage_seeded(session_id, stage)
+        self._ensure_session_language(session_id)
         state = self.get_or_create_state(session_id)
         input_data = copy.deepcopy(body) if isinstance(body, dict) else {}
         input_data["session_id"] = session_id
@@ -895,6 +920,7 @@ class WorkflowEngine:
         if not state:
             raise KeyError(f"Session not found: {session_id}")
         self._ensure_stage_seeded(session_id, stage)
+        self._ensure_session_language(session_id)
         state = self._require(session_id)
         current_artifact = copy.deepcopy(state.artifacts.get(stage, {}))
         input_data = current_artifact if isinstance(current_artifact, dict) else {}

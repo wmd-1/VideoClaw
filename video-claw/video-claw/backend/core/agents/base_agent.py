@@ -9,6 +9,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
+from core.language import language_from_meta, resolve_language
+
 logger = logging.getLogger(__name__)
 
 SESSION_PARAM_KEYS = [
@@ -18,6 +20,7 @@ SESSION_PARAM_KEYS = [
     "image_t2i_model", "image_it2i_model", "video_model",
     "video_first_frame_model", "video_start_end_model", "video_reference_model",
     "video_generation_mode",
+    "language", "language_source",
     "video_style", "expand_idea", "enable_concurrency", "web_search", "episodes"
 ]
 
@@ -50,6 +53,19 @@ class AgentInterface(ABC):
     def _session_meta(self, input_data: Dict) -> Dict:
         meta = input_data.get("_session_meta") if isinstance(input_data, dict) else {}
         return meta if isinstance(meta, dict) else {}
+
+    def _session_language(self, input_data: Dict, *, body: str = "", title: str = "",
+                          instruction: str = "") -> str:
+        """会话语言：已有字段优先；缺失时用同一解析器但不写库（回填由编排层负责）。"""
+        meta = self._session_meta(input_data)
+        stored = language_from_meta(meta)
+        if stored:
+            return stored
+        resolved = resolve_language(
+            instruction=instruction or meta.get("user_textbox_input") or "",
+            body=body, title=title,
+        )
+        return resolved["language"]
 
     def _session_artifacts(self, input_data: Dict) -> Dict:
         artifacts = input_data.get("_session_artifacts") if isinstance(input_data, dict) else {}

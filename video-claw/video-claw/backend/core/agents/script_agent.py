@@ -252,7 +252,7 @@ class ScriptWriterAgent(AgentInterface):
         meta = current.get("meta") if isinstance(current.get("meta"), dict) else {}
         film_type = self._normalize_film_type(meta.get("film_type")) or DEFAULT_FILM_TYPE
         subject_mode = self._normalize_subject_mode(meta.get("subject_mode")) or DEFAULT_SUBJECT_MODE
-        is_zh = any("\u4e00" <= char <= "\u9fff" for char in instruction)
+        is_zh = self._session_language(input_data, instruction=instruction) == "zh"
         llm_model = self._require_input(input_data, "llm_model")
         web_search = input_data.get("web_search", False)
 
@@ -535,8 +535,8 @@ class ScriptWriterAgent(AgentInterface):
 
         lines = script_import.split_lines(raw_text)
         candidates = script_import.detect_candidates(lines)
-        is_zh = any("\u4e00" <= char <= "\u9fff" for char in raw_text[:2000])
-        lang = "zh" if is_zh else "en"
+        lang = self._session_language(input_data, body=raw_text)
+        is_zh = lang == "zh"
         llm_model = self._require_input(input_data, "llm_model")
         web_search = input_data.get("web_search", False)
         llm = LLM()
@@ -989,7 +989,7 @@ class ScriptWriterAgent(AgentInterface):
             except (TypeError, ValueError):
                 logger.warning("[ScriptWriter] invalid episodes=%r; falling back to 4. session=%s", episodes, sid)
                 episodes = 4
-            is_zh = any('\u4e00' <= c <= '\u9fff' for c in idea)
+            is_zh = self._session_language(input_data, body=idea) == "zh"
 
             from config import settings as app_settings
             from models.llm_client import LLM

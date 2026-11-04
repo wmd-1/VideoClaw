@@ -1,6 +1,8 @@
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from core.language import normalize_language
 
 
 class ProjectStartRequest(BaseModel):
@@ -8,6 +10,8 @@ class ProjectStartRequest(BaseModel):
     file_path: Optional[str] = None
     # 剧本来源：idea=按灵感生成（默认）；upload=保真导入上传剧本
     script_source: Optional[str] = "idea"
+    # 显式语言（zh/en）；缺省时由会话在首次阶段执行前统一推断并落库
+    language: Optional[str] = None
     style: Optional[str] = None
     video_ratio: Optional[str] = "9:16"
     video_resolution: Optional[str] = "720P"
@@ -30,6 +34,16 @@ class ProjectStartRequest(BaseModel):
     enable_concurrency: Optional[bool] = True
     web_search: Optional[bool] = False
     episodes: Optional[int] = None
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not str(value).strip():
+            return None
+        normalized = normalize_language(value)
+        if not normalized:
+            raise ValueError("language 必须是 zh 或 en")
+        return normalized
 
 
 class InterventionRequest(BaseModel):

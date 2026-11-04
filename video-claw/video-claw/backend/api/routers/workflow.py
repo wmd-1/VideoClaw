@@ -204,6 +204,17 @@ async def start_project(req: ProjectStartRequest, user: CurrentUser = Depends(ge
     }
     if script_source == "upload":
         meta["file_path"] = req.file_path
+    from core.language import resolve_language
+
+    if req.language:
+        resolved = resolve_language(explicit=req.language)
+    elif script_source == "idea":
+        resolved = resolve_language(instruction=req.idea or "", body=final_idea)
+    else:
+        resolved = None
+    if resolved:
+        meta["language"] = resolved["language"]
+        meta["language_source"] = resolved["source"]
     if meta.get("audio_reference_url"):
         try:
             meta["audio_reference_url"] = str(
