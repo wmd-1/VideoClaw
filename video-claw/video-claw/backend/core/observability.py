@@ -65,9 +65,10 @@ def content_version(text: Any) -> str:
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _SECRET_RE = re.compile(r"(?i)(api[_-]?key|token|authorization|signature|secret)=([^\s&]+)")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+")
-_AUTH_HEADER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*[^\s,;]+")
+_AUTH_HEADER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*[^\r\n]+")
 _PROMPT_KV_RE = re.compile(r"(?i)\b(prompt|messages|content|body)\s*[:=]\s*\S+")
-_LONG_QUOTE_RE = re.compile(r'["“][^"”]{20,}["”]')
+_JSON_KV_RE = re.compile(r'(?i)"(prompt|messages|content|body)"\s*:\s*"[^"]*"')
+_LONG_QUOTE_RE = re.compile(r"""["“'][^"”']{20,}["”']""")
 
 
 def _sanitize_error(text: Any) -> str:
@@ -76,6 +77,7 @@ def _sanitize_error(text: Any) -> str:
     cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
     cleaned = _AUTH_HEADER_RE.sub("Authorization: <redacted>", cleaned)
     cleaned = _SECRET_RE.sub(r"\1=<redacted>", cleaned)
+    cleaned = _JSON_KV_RE.sub(lambda m: f'"{m.group(1)}": "<redacted>"', cleaned)
     cleaned = _PROMPT_KV_RE.sub(r"\1=<redacted>", cleaned)
     cleaned = _LONG_QUOTE_RE.sub("<redacted>", cleaned)
     cleaned = _URL_RE.sub("<url>", cleaned)

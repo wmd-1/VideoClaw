@@ -5,6 +5,7 @@ import asyncio
 import contextvars
 import glob
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from core import observability as obs
@@ -83,6 +84,17 @@ def test_bearer_and_prompt_body_are_redacted(monkeypatch, tmp_path):
     for secret in ("abc.def.ghi", "用户正文片段", "这里是一段很长的用户正文"):
         assert secret not in record["error"]
     assert "<redacted>" in record["error"]
+
+
+def test_basic_and_json_body_are_redacted(monkeypatch, tmp_path):
+    monkeypatch.setenv("VC_OBSERVABILITY_DIR", str(tmp_path))
+    obs.record_call(
+        call_kind="text", model="m", status="failed",
+        error='Authorization: Basic dXNlcjpwYXNz {"prompt": "short body"}',
+    )
+    record = _read(str(tmp_path))[0]
+    assert "dXNlcjpwYXNz" not in record["error"]
+    assert "short body" not in record["error"]
 
 
 def test_truncated_record_keeps_core_fields(monkeypatch, tmp_path):
@@ -204,6 +216,6 @@ def test_project_has_no_run_in_executor_context_loss():
         if not root.is_dir():
             continue
         for path in root.rglob("*.py"):
-            if "run_in_executor" in path.read_text(encoding="utf-8", errors="ignore"):
+            if re.search(r"\.run_in_executor\s*\(", path.read_text(encoding="utf-8", errors="ignore")):
                 offending.append(str(path))
     assert offending == []
