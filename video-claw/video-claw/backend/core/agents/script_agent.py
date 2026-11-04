@@ -197,6 +197,11 @@ class ScriptWriterAgent(AgentInterface):
         effective_title = title or str(self._session_meta(input_data).get("title") or "")
         return "zh" if self._session_language(input_data, body=body, title=effective_title) == "zh" else "en"
 
+    @staticmethod
+    def _evaluation_concurrency(input_data: dict) -> bool:
+        """评估并行开关：复用会话 enable_concurrency，默认开启。"""
+        return bool(input_data.get("enable_concurrency", True))
+
     async def _evaluate_pair(
         self, llm, dialogue_prompt: str, plot_prompt: str, llm_model: str,
         sid: str, web_search: bool, enable_concurrency: bool,
@@ -208,7 +213,14 @@ class ScriptWriterAgent(AgentInterface):
             )
 
         if enable_concurrency:
-            dialogue, plot = await asyncio.gather(_call(dialogue_prompt), _call(plot_prompt))
+            # 并行时两条都已提交；失败会等另一条结束再抛出，可能多一次调用
+            results = await asyncio.gather(
+                _call(dialogue_prompt), _call(plot_prompt), return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            dialogue, plot = results
         else:
             dialogue = await _call(dialogue_prompt)
             plot = await _call(plot_prompt)
@@ -903,12 +915,12 @@ class ScriptWriterAgent(AgentInterface):
             _log_progress(45, "正在生成续写初稿...")
             sequel_script_text = await asyncio.to_thread(self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
 
-            _log_progress(50, "正在并行评估台词与情节...")
+            _log_progress(50, "正在评估台词与情节...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
             eval_plot_prompt = _get_script_prompt("eval_plot", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
             dialogue_critique, plot_critique = await self._evaluate_pair(
                 llm, eval_dialogue_prompt, eval_plot_prompt, llm_model, sid, web_search,
-                bool(input_data.get("enable_concurrency", True)),
+                self._evaluation_concurrency(input_data),
             )
             
             _log_progress(58, "正在根据评估意见优化续写内容...")
@@ -1115,12 +1127,12 @@ class ScriptWriterAgent(AgentInterface):
             full_script_text = await _trim_script_if_needed(full_script_text, "初稿")
             full_script_text = await _repair_episode_count_if_needed(full_script_text, "初稿")
             
-            _log_progress(20, "正在并行评估台词与情节...")
+            _log_progress(20, "正在评估台词与情节...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
             eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
             dialogue_critique, plot_critique = await self._evaluate_pair(
                 llm, eval_dialogue_prompt, eval_plot_prompt, llm_model, sid, web_search,
-                bool(input_data.get("enable_concurrency", True)),
+                self._evaluation_concurrency(input_data),
             )
             
             _log_progress(40, "正在根据评估意见优化剧本...")

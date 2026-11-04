@@ -98,14 +98,14 @@ class VLM:
         except Exception as exc:
             record_call(
                 call_kind="vlm", model=model, session_id=str(session_id or ""),
-                prompt_hash=prompt_hash(prompt), image_count=len(image_paths or []),
+                prompt_hash=prompt_hash(prompt), input_chars=len(str(prompt or "")), image_count=len(image_paths or []),
                 status="failed", latency_ms=int((time.perf_counter() - started) * 1000),
                 error_type=type(exc).__name__, error=str(exc),
             )
             raise
         record_call(
             call_kind="vlm", model=model, session_id=str(session_id or ""),
-            prompt_hash=prompt_hash(prompt), image_count=len(image_paths or []),
+            prompt_hash=prompt_hash(prompt), input_chars=len(str(prompt or "")), image_count=len(image_paths or []),
             status="ok", latency_ms=int((time.perf_counter() - started) * 1000),
         )
         return result

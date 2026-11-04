@@ -151,6 +151,7 @@ def test_llm_and_vlm_clients_record(monkeypatch, tmp_path):
     records = _read(str(tmp_path))
     assert {record["call_kind"] for record in records} == {"text", "vlm"}
     assert all(record["session_id"] == "s1" for record in records)
+    assert all(record["input_chars"] is not None for record in records)
 
 
 def test_image_and_video_clients_record(monkeypatch, tmp_path):

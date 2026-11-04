@@ -52,3 +52,28 @@ def test_evaluate_pair_parallel_and_sequential_order():
     ))
     assert set(started) == {"D", "P"}
     assert (dialogue, plot) == ("d", "p")
+
+
+def test_concurrency_flag_and_parallel_failure():
+    assert ScriptWriterAgent._evaluation_concurrency({}) is True
+    assert ScriptWriterAgent._evaluation_concurrency({"enable_concurrency": False}) is False
+
+    agent = ScriptWriterAgent()
+    calls = []
+
+    def failing_query(llm, prompt, images, model, safe, sid, web_search):
+        calls.append(prompt)
+        if prompt == "D":
+            raise RuntimeError("dialogue failed")
+        return "plot-ok"
+
+    agent._cancellable_query = failing_query
+    try:
+        asyncio.run(agent._evaluate_pair(
+            object(), "D", "P", "model", "sid", False, True,
+        ))
+    except RuntimeError as exc:
+        assert "dialogue failed" in str(exc)
+    else:
+        raise AssertionError("parallel evaluation must surface the exception")
+    assert set(calls) == {"D", "P"}, "并行失败时另一条已提交的调用会完成"

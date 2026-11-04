@@ -101,14 +101,14 @@ class VideoClient:
         except Exception as exc:
             record_call(
                 call_kind="video", model=model, prompt_hash=prompt_hash(prompt),
-                status="failed", video_duration=duration,
+                input_chars=len(str(prompt or "")), status="failed", video_duration=duration,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 error_type=type(exc).__name__, error=str(exc),
             )
             raise
         record_call(
             call_kind="video", model=model, prompt_hash=prompt_hash(prompt),
-            status="ok", video_duration=duration,
+            input_chars=len(str(prompt or "")), status="ok", video_duration=duration,
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
         return result
