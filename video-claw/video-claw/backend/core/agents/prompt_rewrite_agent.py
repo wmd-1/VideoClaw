@@ -136,8 +136,9 @@ def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
         violations.append("字段顺序与指南规定不一致：" + " → ".join(f for f, _ in positions))
 
     # 时长声明：目标秒数需在文本中以时间/时长形式出现（如 "8 seconds" / "8.00s" / "0.00s-8.00s"）
-    # 接受 "5 seconds" / "5.00s" / "5.00-second" / "0.00s-5.00s" 等显式写法
-    if not re.search(rf"\b{duration}(\.\d+)?\s*(?:-?\s*)?(s\b|sec\b|second)", text, re.IGNORECASE):
+    # 接受 "5 seconds" / "5.00s" / "5.00-second" / "0.00s-5.00s"；
+    # 只允许整数或全零小数，5.5/4.9 等与目标时长不一致的写法仍判违规
+    if not re.search(rf"(?<![\d.]){duration}(?:\.0+)?\s*(?:-\s*)?(s\b|sec\b|second)", text, re.IGNORECASE):
         violations.append(f"未声明与目标一致的总时长（{duration} 秒）")
 
     # Ref2VA 标签一致性：全文出现的参考标签必须在 subject_definitions 段有定义

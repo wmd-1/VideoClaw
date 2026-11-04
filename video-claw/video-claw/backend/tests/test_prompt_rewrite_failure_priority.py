@@ -85,7 +85,8 @@ def test_fact_grounding_user_revision_order_and_conflict_rule():
     assert request.count("把时间改为夜晚") == 1
 
 
-def test_guides_do_not_teach_forbidden_abstract_words():
+def test_h3_guides_do_not_teach_forbidden_abstract_words():
+    """仅锁 H3 改写指南（base-en/ref-en）；style/reference/video 模板不在该调用链。"""
     from pathlib import Path
 
     backend = Path(__file__).resolve().parents[1]
@@ -97,13 +98,18 @@ def test_guides_do_not_teach_forbidden_abstract_words():
         assert "beautiful" not in text
 
 
-def test_duration_validator_accepts_hyphenated_seconds():
+def test_duration_validator_accepts_only_matching_seconds():
     from core.agents.prompt_rewrite_agent import _validate_h3_prompt
 
-    violations = _validate_h3_prompt(
-        "integrated_multimodal_description: [Shot 1] ...\n"
-        "overall_soundscape: ...\n"
-        "non_diegetic_music: ... By the 5.00-second mark the scene ends.",
-        "I2VA", 5,
-    )
-    assert not any("总时长" in item for item in violations)
+    def _violations(time_text: str) -> list:
+        return _validate_h3_prompt(
+            "integrated_multimodal_description: [Shot 1] ...\n"
+            "overall_soundscape: ...\n"
+            f"non_diegetic_music: ... {time_text} the scene ends.",
+            "I2VA", 5,
+        )
+
+    for accepted in ("5 seconds", "5.00s", "By the 5.00-second mark"):
+        assert not any("总时长" in item for item in _violations(accepted)), accepted
+    for rejected in ("5.5 seconds", "5.9s", "4.9s"):
+        assert any("总时长" in item for item in _violations(rejected)), rejected
