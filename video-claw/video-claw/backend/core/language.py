@@ -20,9 +20,9 @@ SOURCE_AMBIGUOUS = "ambiguous"
 
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 _LATIN = re.compile(r"[A-Za-z]")
-_ZH_WORDS = re.compile(r"用中文|使用中文|中文输出|中文撰写|中文剧本")
+_ZH_WORDS = re.compile(r"用中文|使用中文|中文输出|中文撰写")
 _EN_WORDS = re.compile(
-    r"用英文|用英语|使用英文|英文输出|英文撰写|英文剧本|in english|english\s+(?:script|output|version)",
+    r"用英文|用英语|使用英文|英文输出|英文撰写|in english|english\s+(?:script|output|version)",
     re.I,
 )
 _MIN_SAMPLE = 10

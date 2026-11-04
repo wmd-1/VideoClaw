@@ -37,6 +37,7 @@ def test_narrative_words_do_not_trigger_language_switch():
         instruction="小陈：你英语真好。", body="小陈：你英语真好。" * 10,
     )["language"] == "zh"
     assert resolve_language(instruction="加一行 English 字幕")["language"] == "zh"
+    assert resolve_language(instruction="改编自英文剧本的故事")["language"] == "zh"
 
 
 def test_body_threshold_and_title_fallback():
