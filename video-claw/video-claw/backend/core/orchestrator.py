@@ -21,6 +21,7 @@ from config import settings
 from core import media_refs, script_revision, workflow_store
 from core.artifact_publisher import build_file_rows, new_execution_id
 from core.asset_kind import asset_kind_for
+from core.grounding_cache import grounding_cache
 from core.observability import call_context
 from core.language import language_from_meta, resolve_language
 from core.persistence_service import PersistenceService
@@ -2835,6 +2836,8 @@ class WorkflowEngine:
                 self._stop_events.pop(session_id, None)
                 self._overlays.pop(session_id, None)
                 self._errors.pop(session_id, None)
+        if deleted:
+            grounding_cache.clear_session(session_id)
         logger.info("Session deleted (object cleanup queued): %s", session_id)
         return deleted
 

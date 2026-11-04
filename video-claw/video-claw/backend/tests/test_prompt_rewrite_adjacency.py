@@ -62,7 +62,7 @@ def _patch_agent(monkeypatch, agent, seen, images_calls):
         seen[segment["id"]] = mode
         return "改写结果", [], ""
 
-    def fake_grounding(images, vlm_model):
+    def fake_grounding(images, vlm_model, session_id=""):
         images_calls.append(list(images))
         return "", []
 

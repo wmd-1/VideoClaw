@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import Config
 from core.agents.base_agent import AgentInterface
 from core.agents.video_agent import VideoDirectorAgent
+from core.grounding_cache import content_sha256, grounding_cache
 from core.h3_modes import authority_facts as _shared_authority_facts
 from core.h3_modes import collect_segments as _shared_collect_segments
 from core.h3_modes import fingerprint_parts as _shared_fingerprint_parts
@@ -80,6 +81,8 @@ _GROUNDING_PROMPT = (
     "请客观描述这张图片的实际画面内容（主体外观、环境、构图、色调与风格），"
     "只描述画面中真实可见的内容，不要写视频生成指令，不要给创作建议。输出一段简洁的中文描述。"
 )
+# D2：grounding 策略版本（含语言）；提示词变化时缓存自动失效
+_GROUNDING_POLICY_VERSION = content_version(_GROUNDING_PROMPT + "|zh")
 
 
 def _event_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -205,8 +208,8 @@ class PromptRewriteAgent(AgentInterface):
 
     def __init__(self):
         super().__init__(name="prompt_rewrite")
-        # grounding 缓存：(abspath, content_hash) → VLM 客观描述（会话级，不落盘）
-        self._grounding_cache: Dict[Tuple[str, str], str] = {}
+        # D2：负结果仅当前执行复用；成功描述走进程内会话缓存
+        self._grounding_negative: set = set()
         self._llm = None
         self._vlm = None
 
@@ -261,12 +264,12 @@ class PromptRewriteAgent(AgentInterface):
 
     # ─── VLM grounding（C：独立开关 + hash 缓存 + 正交回退） ───
 
-    def _grounding_describe(self, image_paths: List[str], vlm_model: str) -> Tuple[str, List[str]]:
+    def _grounding_describe(self, image_paths: List[str], vlm_model: str,
+                            session_id: str = "") -> Tuple[str, List[str]]:
         """对参考图生成客观画面描述。返回 (带编号的描述文本, 命中hash列表)。
 
-        输出按**视频入参顺序**编号（1 基）：`<Picture i>：描述`；某图失败/不可读时
-        写占位 `<Picture i>：（本图无可读描述）`，保证编号不位移，`<Picture N>`
-        始终指向同一张图。全失败时返回空文本（不发送无意义的占位块）。
+        成功描述进入会话级 grounding 缓存；空/失败仅当前执行负缓存。
+        输出按视频入参顺序编号；某图不可读时写占位，编号不位移。
         """
         if not Config.H3_REWRITE_GROUNDING_ENABLED or not image_paths:
             return "", []
@@ -279,33 +282,46 @@ class PromptRewriteAgent(AgentInterface):
                 continue
             try:
                 abspath = os.path.abspath(path)
-                content_hash = _file_quick_hash(abspath)
-                cached = self._grounding_cache.get((abspath, content_hash))
-                if cached is not None:
-                    # 缓存命中（含历史失败缓存的空描述）：同图不重复调 VLM
-                    if cached:
-                        descriptions.append(f"<Picture {index}>：{cached}")
-                        hashes.append(content_hash)
-                    else:
-                        descriptions.append(placeholder)
+                content_hash = content_sha256(abspath)
+                negative_key = (session_id, content_hash, vlm_model, _GROUNDING_POLICY_VERSION)
+                if negative_key in self._grounding_negative:
+                    descriptions.append(placeholder)
                     continue
-                if self._vlm is None:
-                    from models.vlm_client import VLM
-                    self._vlm = VLM()
-                result = self._vlm.query(_GROUNDING_PROMPT, image_paths=[abspath], model=vlm_model)
-                description = str(result or "").strip()
-                # 失败/空描述同样缓存，避免同图反复重试 VLM；不记 hash（无有效描述）
-                self._grounding_cache[(abspath, content_hash)] = description
+                cached = grounding_cache.get(
+                    session_id, content_hash, vlm_model, _GROUNDING_POLICY_VERSION,
+                )
+                if cached:
+                    record_call(
+                        call_kind="vlm", model=vlm_model, session_id=session_id,
+                        prompt_hash=content_version(_GROUNDING_PROMPT),
+                        image_count=1, cache_hit=True, cache_key_kind="grounding",
+                    )
+                    descriptions.append(f"<Picture {index}>：{cached}")
+                    hashes.append(content_hash)
+                    continue
+
+                def _compute() -> str:
+                    if self._vlm is None:
+                        from models.vlm_client import VLM
+                        self._vlm = VLM()
+                    result = self._vlm.query(
+                        _GROUNDING_PROMPT, image_paths=[abspath], model=vlm_model,
+                    )
+                    return str(result or "").strip()
+
+                description = grounding_cache.get_or_compute(
+                    session_id, content_hash, vlm_model, _GROUNDING_POLICY_VERSION, _compute,
+                )
                 if description:
                     descriptions.append(f"<Picture {index}>：{description}")
                     hashes.append(content_hash)
                 else:
+                    self._grounding_negative.add(negative_key)
                     descriptions.append(placeholder)
             except Exception as exc:  # noqa: BLE001 - grounding 失败回退文本输入，不阻塞
                 logger.warning("prompt_rewrite: 参考图 %s grounding 失败（回退纯文本）：%s", path, exc)
                 descriptions.append(placeholder)
         if not hashes:
-            # 全部不可读：不发送整块占位，交由既有 text_only 降级处理
             return "", []
         return "\n".join(descriptions), hashes
 
@@ -592,6 +608,7 @@ class PromptRewriteAgent(AgentInterface):
                     self._grounding_describe,
                     self._grounding_images(segment, ordered, scene_map, mode, artifacts=artifacts),
                     vlm_model,
+                    str(input_data.get("session_id") or session_meta.get("session_id") or ""),
                 )
             else:
                 grounding_desc, grounding_hashes = "", []
