@@ -149,7 +149,7 @@ class VideoEditorAgent(AgentInterface):
             return final_videos
 
         loop = asyncio.get_running_loop()
-        final_results = await loop.run_in_executor(None, run)
+        final_results = await asyncio.to_thread(run)
 
         if regenerate_episodes and isinstance(post_art, dict):
             existing_videos = post_art.get("final_videos", [])

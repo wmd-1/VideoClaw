@@ -670,8 +670,7 @@ class StoryboardAgent(AgentInterface):
         for attempt in range(max_retries):
             try:
                 llm = LLM()
-                raw = await loop.run_in_executor(
-                    None,
+                raw = await asyncio.to_thread(
                     self._cancellable_query,
                     llm,
                     prompt,
@@ -708,8 +707,7 @@ class StoryboardAgent(AgentInterface):
         for attempt in range(max_retries):
             try:
                 llm = LLM()
-                raw = await loop.run_in_executor(
-                    None,
+                raw = await asyncio.to_thread(
                     self._cancellable_query,
                     llm,
                     prompt,
