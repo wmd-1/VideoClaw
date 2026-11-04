@@ -109,7 +109,7 @@ def test_duration_validator_accepts_only_matching_seconds():
             "I2VA", 5,
         )
 
-    for accepted in ("5 seconds", "5.00s", "By the 5.00-second mark"):
+    for accepted in ("5 seconds", "5 secs", "5.00s", "By the 5.00-second mark"):
         assert not any("总时长" in item for item in _violations(accepted)), accepted
-    for rejected in ("5.5 seconds", "5.9s", "4.9s"):
+    for rejected in ("5.5 seconds", "5.9s", "5.50 secs", "4.9s"):
         assert any("总时长" in item for item in _violations(rejected)), rejected
