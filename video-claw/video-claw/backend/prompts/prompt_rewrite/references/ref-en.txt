@@ -234,7 +234,7 @@ For complete rules and examples covering camera vocabulary, group speech, voice-
 Opening example:
 
 ```text
-The target video is in a cinematic, literary music-video style with soft lighting and a slightly desaturated color palette.
+The target video uses soft diffused light, a slightly desaturated color palette, and a restrained editing rhythm.
 [Shot 1] The scene opens in a crowded urban street...
 [Shot 2] At 00:09.000, the shot cuts to an extreme close-up...
 ```

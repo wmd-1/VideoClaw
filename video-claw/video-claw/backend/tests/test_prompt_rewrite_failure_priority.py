@@ -43,8 +43,10 @@ def test_rewrite_segment_failure_marks_item_failed_without_version(monkeypatch):
     monkeypatch.setattr(agent, "_load_guide", lambda mode: "")
     monkeypatch.setattr(agent, "_grounding_describe", lambda *a, **k: ("", []))
 
+    long_rejected = "x" * 5000
+
     async def failed_rewrite(segment, mode, system_prompt, guide, llm_model, sections):
-        return "", ["缺少必填字段：镜头运动"], "<bad output>"
+        return "", ["缺少必填字段：镜头运动"], long_rejected
 
     monkeypatch.setattr(agent, "_rewrite_one", failed_rewrite)
     result = asyncio.run(agent._rewrite_segments(
@@ -53,7 +55,8 @@ def test_rewrite_segment_failure_marks_item_failed_without_version(monkeypatch):
     item = result["seg_01_01"]
     assert item["status"] == "failed"
     assert item["rewritten_prompt"] == ""
-    assert item["rejected_output"] == "<bad output>"
+    assert item["rejected_output"] == long_rejected[:2000]
+    assert item["rejected_output_truncated"] is True
     assert item["versions"] == []
     assert "结构校验未通过" in item["error"]
 
@@ -80,3 +83,27 @@ def test_fact_grounding_user_revision_order_and_conflict_rule():
     assert "被固定的首帧/尾帧必须严格一致" in request
     assert "用户修改只作用于未被固定帧之间的时间轴" in request
     assert request.count("把时间改为夜晚") == 1
+
+
+def test_guides_do_not_teach_forbidden_abstract_words():
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    if not (backend / "prompts").is_dir():
+        backend = Path("/app")
+    for name in ("base-en.txt", "ref-en.txt"):
+        text = (backend / "prompts/prompt_rewrite/references" / name).read_text(encoding="utf-8").lower()
+        assert "cinematic" not in text
+        assert "beautiful" not in text
+
+
+def test_duration_validator_accepts_hyphenated_seconds():
+    from core.agents.prompt_rewrite_agent import _validate_h3_prompt
+
+    violations = _validate_h3_prompt(
+        "integrated_multimodal_description: [Shot 1] ...\n"
+        "overall_soundscape: ...\n"
+        "non_diegetic_music: ... By the 5.00-second mark the scene ends.",
+        "I2VA", 5,
+    )
+    assert not any("总时长" in item for item in violations)

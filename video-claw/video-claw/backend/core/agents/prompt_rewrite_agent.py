@@ -48,6 +48,8 @@ MAX_VALIDATE_RETRIES = 2
 # 这是集中定义的工程默认值：本仓库尚无真实推理输出的长度分布样本（历史会话中 prompt_rewrite 条目为 0），
 # 未经真实分布验证，不得当成长期契约；超限部分由 truncated 显式标记，完整正文以阶段产物为权威。
 EVENT_BODY_LIMIT = 8000
+# 失败条目的被拒输出仅用于诊断；限长后随产物返回，避免轮询/产物被超长输出放大。
+REJECTED_OUTPUT_LIMIT = 2000
 
 # 指南与模板文件（相对 backend 运行目录）
 _REFERENCES_DIR = os.path.join("prompts", "prompt_rewrite", "references")
@@ -134,7 +136,8 @@ def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
         violations.append("字段顺序与指南规定不一致：" + " → ".join(f for f, _ in positions))
 
     # 时长声明：目标秒数需在文本中以时间/时长形式出现（如 "8 seconds" / "8.00s" / "0.00s-8.00s"）
-    if not re.search(rf"\b{duration}(\.\d+)?\s*(s\b|sec\b|second)", text, re.IGNORECASE):
+    # 接受 "5 seconds" / "5.00s" / "5.00-second" / "0.00s-5.00s" 等显式写法
+    if not re.search(rf"\b{duration}(\.\d+)?\s*(?:-?\s*)?(s\b|sec\b|second)", text, re.IGNORECASE):
         violations.append(f"未声明与目标一致的总时长（{duration} 秒）")
 
     # Ref2VA 标签一致性：全文出现的参考标签必须在 subject_definitions 段有定义
@@ -641,7 +644,9 @@ class PromptRewriteAgent(AgentInterface):
                     item["status"] = "failed"
                     item["error"] = "结构校验未通过：" + "；".join(violations)
                     if rejected:
-                        item["rejected_output"] = rejected  # 保留最后被拒输出供诊断/人工采用
+                        # 保留最后被拒输出供诊断/人工采用；超长时截断并显式标记
+                        item["rejected_output"] = rejected[:REJECTED_OUTPUT_LIMIT]
+                        item["rejected_output_truncated"] = len(rejected) > REJECTED_OUTPUT_LIMIT
             except Exception as exc:  # noqa: BLE001 - 单条目失败不阻塞其他条目
                 logger.warning("prompt_rewrite: 分镜 %s 改写失败: %s", segment["id"], exc)
                 item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
