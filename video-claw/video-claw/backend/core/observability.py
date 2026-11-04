@@ -62,6 +62,13 @@ def content_version(text: Any) -> str:
     return prompt_hash(text)
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _SECRET_RE = re.compile(r"(?i)(api[_-]?key|token|authorization|signature|secret)=([^\s&]+)")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+")
@@ -243,13 +250,13 @@ def summarize_records(
 ) -> Dict[str, Any]:
     """按 stage/model/template/kind/execution 汇总；供工具与测试共用。"""
     if input_warn_chars is None:
-        input_warn_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_WARN_CHARS", "80000"))
+        input_warn_chars = _env_int("VC_OBSERVABILITY_INPUT_WARN_CHARS", 80000)
     if input_hard_chars is None:
-        input_hard_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_HARD_CHARS", "0"))
+        input_hard_chars = _env_int("VC_OBSERVABILITY_INPUT_HARD_CHARS", 0)
     if execution_warn_chars is None:
-        execution_warn_chars = int(os.getenv("VC_OBSERVABILITY_EXECUTION_WARN_CHARS", "300000"))
+        execution_warn_chars = _env_int("VC_OBSERVABILITY_EXECUTION_WARN_CHARS", 300000)
     if execution_hard_chars is None:
-        execution_hard_chars = int(os.getenv("VC_OBSERVABILITY_EXECUTION_HARD_CHARS", "0"))
+        execution_hard_chars = _env_int("VC_OBSERVABILITY_EXECUTION_HARD_CHARS", 0)
     hard_enabled = bool(input_hard_chars and input_hard_chars > 0)
     execution_hard_enabled = bool(execution_hard_chars and execution_hard_chars > 0)
 

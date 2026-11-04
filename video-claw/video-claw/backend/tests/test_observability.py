@@ -247,3 +247,39 @@ def test_summary_input_chars_and_execution():
         "total_over_warn": True, "total_over_hard": False,
     }
     assert summary["input_hard_enabled"] is True
+
+
+def test_invalid_threshold_env_falls_back(monkeypatch):
+    monkeypatch.setenv("VC_OBSERVABILITY_INPUT_WARN_CHARS", "80k")
+    monkeypatch.setenv("VC_OBSERVABILITY_INPUT_HARD_CHARS", "bad")
+    monkeypatch.setenv("VC_OBSERVABILITY_EXECUTION_WARN_CHARS", "x")
+    monkeypatch.setenv("VC_OBSERVABILITY_EXECUTION_HARD_CHARS", "-")
+    summary = obs.summarize_records([])
+    assert summary["input_warn_chars"] == 80000
+    assert summary["input_hard_chars"] == 0
+    assert summary["execution_warn_chars"] == 300000
+    assert summary["execution_hard_chars"] == 0
+    assert summary["input_hard_enabled"] is False
+    assert summary["execution_hard_enabled"] is False
+
+
+def test_twenty_segment_execution_aggregation():
+    records = []
+    for index in range(1, 21):
+        records.append({
+            "event_type": "model_call", "call_kind": "text",
+            "stage": "prompt_rewrite", "template": "rewrite_zh",
+            "execution_id": "exec-20", "input_chars": index * 100,
+        })
+    summary = obs.summarize_records(
+        records, input_warn_chars=1000, input_hard_chars=0,
+        execution_warn_chars=15000,
+    )
+    execution = summary["by_execution"]["exec-20"]
+    assert execution["calls"] == 20
+    assert execution["input_chars_sum"] == 21000
+    assert execution["input_chars_max"] == 2000
+    assert execution["over_warn"] == 10
+    assert execution["over_hard"] == 0
+    assert execution["total_over_warn"] is True
+    assert summary["by_stage"]["prompt_rewrite"]["input_chars_max"] == 2000
