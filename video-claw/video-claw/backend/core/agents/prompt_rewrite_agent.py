@@ -37,6 +37,7 @@ from core.h3_modes import next_in_order as _shared_next_in_order
 from core.h3_modes import resolve_grounding_model, resolve_h3_mode, resolve_style_key
 from core.h3_modes import setting_description as _shared_setting_description
 from core.h3_modes import setting_entry as _shared_setting_entry
+from core.observability import call_context, content_version, record_call
 from prompts.loader import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -449,7 +450,7 @@ class PromptRewriteAgent(AgentInterface):
         base_request = self._build_request_text(segment, mode, sections)
         violations: List[str] = []
         last_output = ""
-        for _ in range(1 + MAX_VALIDATE_RETRIES):
+        for attempt in range(1 + MAX_VALIDATE_RETRIES):
             self._check_cancel()
             request_text = base_request
             if violations:
@@ -475,6 +476,12 @@ class PromptRewriteAgent(AgentInterface):
             rewritten = _extract_prompt(assistant_text)
             last_output = rewritten or last_output
             violations = _validate_h3_prompt(rewritten, mode, segment["duration"])
+            if violations:
+                record_call(
+                    event_type="validation_retry", call_kind="text", model=llm_model,
+                    attempt=attempt + 1, retry_reason="validation",
+                    validation_retries=attempt + 1, status="ok",
+                )
             if rewritten and not violations:
                 return rewritten, [], ""
         return "", violations or ["改写结果为空"], last_output
@@ -553,6 +560,7 @@ class PromptRewriteAgent(AgentInterface):
         }
 
         system_prompt = load_prompt("prompt_rewrite", "system", "zh")
+        template_version = content_version(load_prompt("prompt_rewrite", "rewrite", "zh"))
         ordered = ordered_segments if ordered_segments is not None else segments
 
         # continuity 链：串行累积各分镜的主体/风格摘要
@@ -636,9 +644,13 @@ class PromptRewriteAgent(AgentInterface):
                 },
             )
             try:
-                rewritten, violations, rejected = await self._rewrite_one(
-                    segment, mode, system_prompt, guide, llm_model, sections
-                )
+                with call_context(
+                    operation="prompt_rewrite", template_name="rewrite_zh",
+                    template_version=template_version,
+                ):
+                    rewritten, violations, rejected = await self._rewrite_one(
+                        segment, mode, system_prompt, guide, llm_model, sections
+                    )
                 if rewritten:
                     item = self._make_item(segment, rewritten, mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
                     self._append_version(item, rewritten, source="agent")

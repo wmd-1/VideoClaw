@@ -21,6 +21,7 @@ from config import settings
 from core import media_refs, script_revision, workflow_store
 from core.artifact_publisher import build_file_rows, new_execution_id
 from core.asset_kind import asset_kind_for
+from core.observability import call_context
 from core.language import language_from_meta, resolve_language
 from core.persistence_service import PersistenceService
 from db.repositories.commits import (
@@ -1778,7 +1779,8 @@ class WorkflowEngine:
 
             agent.set_progress_callback(wrapped_progress_callback)
 
-            result = await agent.process(input_data, intervention=intervention)
+            with call_context(stage=stage.value, session_id=sid, execution_id=run.execution_id):
+                result = await agent.process(input_data, intervention=intervention)
             if not isinstance(result, dict):
                 logger.error(f"[execute_stage] Agent {stage.value} returned non-dict result: {type(result)}")
                 result = {"payload": result}

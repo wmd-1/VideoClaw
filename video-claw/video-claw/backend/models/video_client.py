@@ -86,7 +86,34 @@ class VideoClient:
             )
         return self._seedance_client
 
-    def generate_video(
+    def generate_video(self, *args, **kwargs):
+        """统一入口：记录一次视频生成调用（观测失败不影响生成）。"""
+        import time
+
+        from core.observability import prompt_hash, record_call
+
+        prompt = kwargs.get("prompt") or (args[0] if args else "")
+        model = kwargs.get("model") or (args[3] if len(args) > 3 else "")
+        duration = kwargs.get("duration") or (args[4] if len(args) > 4 else None)
+        started = time.perf_counter()
+        try:
+            result = self._generate_video_impl(*args, **kwargs)
+        except Exception as exc:
+            record_call(
+                call_kind="video", model=model, prompt_hash=prompt_hash(prompt),
+                status="failed", video_duration=duration,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error_type=type(exc).__name__, error=str(exc),
+            )
+            raise
+        record_call(
+            call_kind="video", model=model, prompt_hash=prompt_hash(prompt),
+            status="ok", video_duration=duration,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return result
+
+    def _generate_video_impl(
         self,
         prompt: str,
         image_path: Optional[str],

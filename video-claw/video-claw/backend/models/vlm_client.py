@@ -81,10 +81,40 @@ class VLM:
         return self._gpt_client
 
     def query(self,
-             prompt: str,
-             image_paths: Optional[List[str]] = None,
-             model: str = "qwen3.6-plus",
-             session_id: Optional[str] = None) -> str:
+              prompt: str,
+              image_paths: Optional[List[str]] = None,
+              model: str = "qwen3.6-plus",
+              session_id: Optional[str] = None) -> str:
+        """统一入口：记录一次 VLM 调用（观测失败不影响调用）。"""
+        import time
+
+        from core.observability import prompt_hash, record_call
+
+        started = time.perf_counter()
+        try:
+            result = self._query_impl(
+                prompt, image_paths=image_paths, model=model, session_id=session_id,
+            )
+        except Exception as exc:
+            record_call(
+                call_kind="vlm", model=model, session_id=str(session_id or ""),
+                prompt_hash=prompt_hash(prompt), image_count=len(image_paths or []),
+                status="failed", latency_ms=int((time.perf_counter() - started) * 1000),
+                error_type=type(exc).__name__, error=str(exc),
+            )
+            raise
+        record_call(
+            call_kind="vlm", model=model, session_id=str(session_id or ""),
+            prompt_hash=prompt_hash(prompt), image_count=len(image_paths or []),
+            status="ok", latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return result
+
+    def _query_impl(self,
+                    prompt: str,
+                    image_paths: Optional[List[str]] = None,
+                    model: str = "qwen3.6-plus",
+                    session_id: Optional[str] = None) -> str:
         if Config.PRINT_MODEL_INPUT:
             lines = [
                 "---- VLM REQUEST ----",

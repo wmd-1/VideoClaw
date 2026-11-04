@@ -94,6 +94,33 @@ class LLM:
         return text.translate(translation_table)
 
     def query(self, prompt, image_urls=[], model="qwen3.6-max-preview", safe_content=True, task_id=None, web_search=False):
+        """统一入口：记录一次文本模型调用（观测失败不影响调用）。"""
+        import time
+
+        from core.observability import prompt_hash, record_call
+
+        started = time.perf_counter()
+        try:
+            result = self._query_impl(
+                prompt, image_urls=image_urls, model=model,
+                safe_content=safe_content, task_id=task_id, web_search=web_search,
+            )
+        except Exception as exc:
+            record_call(
+                call_kind="text", model=model, session_id=str(task_id or ""),
+                prompt_hash=prompt_hash(prompt), image_count=len(image_urls or []),
+                status="failed", latency_ms=int((time.perf_counter() - started) * 1000),
+                error_type=type(exc).__name__, error=str(exc),
+            )
+            raise
+        record_call(
+            call_kind="text", model=model, session_id=str(task_id or ""),
+            prompt_hash=prompt_hash(prompt), image_count=len(image_urls or []),
+            status="ok", latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return result
+
+    def _query_impl(self, prompt, image_urls=[], model="qwen3.6-max-preview", safe_content=True, task_id=None, web_search=False):
         """
         Query the LLM with a prompt and optional image URLs.
         Selects the backend (GPT or Gemini) based on the model name.

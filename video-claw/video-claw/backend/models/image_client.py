@@ -88,7 +88,35 @@ class ImageClient:
             )
         return self._gpt_client
 
-    def generate_image(self,
+    def generate_image(self, *args, **kwargs):
+        """统一入口：记录一次生图调用（观测失败不影响生成）。"""
+        import time
+
+        from core.observability import prompt_hash, record_call
+
+        prompt = kwargs.get("prompt") or (args[0] if args else "")
+        model = kwargs.get("model") or (args[2] if len(args) > 2 else "")
+        session_id = kwargs.get("session_id") or (args[4] if len(args) > 4 else "")
+        started = time.perf_counter()
+        try:
+            result = self._generate_image_impl(*args, **kwargs)
+        except Exception as exc:
+            record_call(
+                call_kind="image", model=model, session_id=str(session_id or ""),
+                prompt_hash=prompt_hash(prompt), status="failed",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error_type=type(exc).__name__, error=str(exc),
+            )
+            raise
+        record_call(
+            call_kind="image", model=model, session_id=str(session_id or ""),
+            prompt_hash=prompt_hash(prompt), status="ok",
+            output_count=len(result) if isinstance(result, (list, tuple)) else 1,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return result
+
+    def _generate_image_impl(self,
                        prompt: str,
                        image_paths: Optional[List[str]] = None,
                        model: str = "wan2.7-image",
