@@ -63,6 +63,10 @@ def main() -> int:
     parser.add_argument("--backend", default="video-claw/video-claw/backend")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--max-total-bytes", type=int, default=1_073_741_824)
+    parser.add_argument("--input-warn-chars", type=int, default=None)
+    parser.add_argument("--input-hard-chars", type=int, default=None)
+    parser.add_argument("--execution-warn-chars", type=int, default=None)
+    parser.add_argument("--execution-hard-chars", type=int, default=None)
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -75,7 +79,13 @@ def main() -> int:
     directory = Path(args.dir)
     directory.mkdir(parents=True, exist_ok=True)
     records = _load_records(directory)
-    summary = summarize_records(records)
+    summary = summarize_records(
+        records,
+        input_warn_chars=args.input_warn_chars,
+        input_hard_chars=args.input_hard_chars,
+        execution_warn_chars=args.execution_warn_chars,
+        execution_hard_chars=args.execution_hard_chars,
+    )
     if args.cleanup:
         summary["cleanup"] = _cleanup(directory, args.days, args.max_total_bytes)
 
@@ -89,7 +99,21 @@ def main() -> int:
             print(
                 f"stage={name} calls={item['calls']} ok={item['ok']} failed={item['failed']} "
                 f"retries={item['retries']} cache_hits={item['cache_hits']} "
-                f"p50={item['p50_ms']} p95={item['p95_ms']}"
+                f"p50={item['p50_ms']} p95={item['p95_ms']} "
+                f"input_p50={item['input_chars_p50']} input_p95={item['input_chars_p95']} "
+                f"input_max={item['input_chars_max']} over_warn={item['input_over_warn']} "
+                f"over_hard={item['input_over_hard']}"
+            )
+        executions = sorted(
+            summary["by_execution"].items(),
+            key=lambda pair: pair[1]["input_chars_sum"], reverse=True,
+        )[:5]
+        for execution_id, item in executions:
+            print(
+                f"execution={execution_id} calls={item['calls']} "
+                f"input_sum={item['input_chars_sum']} input_max={item['input_chars_max']} "
+                f"over_warn={item['over_warn']} over_hard={item['over_hard']} "
+                f"total_over_warn={item['total_over_warn']} total_over_hard={item['total_over_hard']}"
             )
         if "cleanup" in summary:
             print(f"cleanup_deleted={summary['cleanup']['deleted_count']}")

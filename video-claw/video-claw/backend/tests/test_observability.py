@@ -220,3 +220,30 @@ def test_project_has_no_run_in_executor_context_loss():
             if re.search(r"\.run_in_executor\s*\(", path.read_text(encoding="utf-8", errors="ignore")):
                 offending.append(str(path))
     assert offending == []
+
+
+def test_summary_input_chars_and_execution():
+    records = [
+        {"event_type": "model_call", "call_kind": "text", "stage": "s", "template": "t",
+         "execution_id": "e1", "input_chars": 100, "status": "ok"},
+        {"event_type": "model_call", "call_kind": "text", "stage": "s", "template": "t",
+         "execution_id": "e1", "input_chars": 200, "status": "ok"},
+        {"event_type": "model_call", "call_kind": "vlm", "stage": "s", "template": "t",
+         "execution_id": "e2", "input_chars": 50, "status": "ok"},
+    ]
+    summary = obs.summarize_records(
+        records, input_warn_chars=150, input_hard_chars=250,
+        execution_warn_chars=250,
+    )
+    stage = summary["by_stage"]["s"]
+    assert stage["input_chars_p50"] == 100
+    assert stage["input_chars_p95"] == 200
+    assert stage["input_chars_max"] == 200
+    assert stage["input_over_warn"] == 1
+    assert stage["input_over_hard"] == 0
+    assert summary["by_execution"]["e1"] == {
+        "calls": 2, "input_chars_sum": 300, "input_chars_max": 200,
+        "over_warn": 1, "over_hard": 0,
+        "total_over_warn": True, "total_over_hard": False,
+    }
+    assert summary["input_hard_enabled"] is True

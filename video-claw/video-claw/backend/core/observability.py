@@ -233,19 +233,47 @@ def dropped_events() -> int:
     return _DROPPED
 
 
-def summarize_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """按 stage/model/template/cache_hit 汇总；供工具与测试共用。"""
+def summarize_records(
+    records: List[Dict[str, Any]],
+    *,
+    input_warn_chars: Optional[int] = None,
+    input_hard_chars: Optional[int] = None,
+    execution_warn_chars: Optional[int] = None,
+    execution_hard_chars: Optional[int] = None,
+) -> Dict[str, Any]:
+    """按 stage/model/template/kind/execution 汇总；供工具与测试共用。"""
+    if input_warn_chars is None:
+        input_warn_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_WARN_CHARS", "20000"))
+    if input_hard_chars is None:
+        input_hard_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_HARD_CHARS", "0"))
+    if execution_warn_chars is None:
+        execution_warn_chars = int(os.getenv("VC_OBSERVABILITY_EXECUTION_WARN_CHARS", "300000"))
+    if execution_hard_chars is None:
+        execution_hard_chars = int(os.getenv("VC_OBSERVABILITY_EXECUTION_HARD_CHARS", "0"))
+    hard_enabled = bool(input_hard_chars and input_hard_chars > 0)
+    execution_hard_enabled = bool(execution_hard_chars and execution_hard_chars > 0)
+
     def _bucket() -> Dict[str, Any]:
         return {
             "calls": 0, "ok": 0, "failed": 0, "cache_hits": 0,
             "retries": 0, "latencies": [], "tokens": 0, "tokens_unknown": 0,
+            "input_chars": [], "input_over_warn": 0, "input_over_hard": 0,
         }
 
     by_stage: Dict[str, Dict[str, Any]] = {}
     by_model: Dict[str, Dict[str, Any]] = {}
     by_template: Dict[str, Dict[str, Any]] = {}
     by_kind: Dict[str, Dict[str, Any]] = {}
+    by_execution: Dict[str, Dict[str, Any]] = {}
     dropped = 0
+
+    def _add_input(bucket: Dict[str, Any], chars: int) -> None:
+        bucket["input_chars"].append(chars)
+        if chars > input_warn_chars:
+            bucket["input_over_warn"] += 1
+        if hard_enabled and chars > input_hard_chars:
+            bucket["input_over_hard"] += 1
+
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -255,6 +283,9 @@ def summarize_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         is_model_call = record.get("event_type", "model_call") == "model_call"
         kind = str(record.get("call_kind") or "unknown")
         kind_bucket = by_kind.setdefault(kind, _bucket())
+        chars = record.get("input_chars")
+        chars = chars if isinstance(chars, int) else None
+
         if is_model_call:
             kind_bucket["calls"] += 1
             if record.get("status") == "ok":
@@ -270,6 +301,9 @@ def summarize_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                 kind_bucket["tokens"] += tokens
             else:
                 kind_bucket["tokens_unknown"] += 1
+            if chars is not None:
+                _add_input(kind_bucket, chars)
+
         for key, bucket in (
             ("stage", by_stage), ("model", by_model), ("template", by_template),
         ):
@@ -290,24 +324,62 @@ def summarize_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                     item["tokens"] += tokens
                 else:
                     item["tokens_unknown"] += 1
+                if chars is not None:
+                    _add_input(item, chars)
             if record.get("event_type") == "validation_retry":
                 item["retries"] += 1
 
+        execution_id = str(record.get("execution_id") or "")
+        if is_model_call and execution_id:
+            item = by_execution.setdefault(execution_id, {
+                "calls": 0, "input_chars_sum": 0, "input_chars_max": 0,
+                "over_warn": 0, "over_hard": 0,
+            })
+            item["calls"] += 1
+            if chars is not None:
+                item["input_chars_sum"] += chars
+                item["input_chars_max"] = max(item["input_chars_max"], chars)
+                if chars > input_warn_chars:
+                    item["over_warn"] += 1
+                if hard_enabled and chars > input_hard_chars:
+                    item["over_hard"] += 1
+
     def _finalize(bucket: Dict[str, Any]) -> Dict[str, Any]:
         latencies = sorted(bucket.pop("latencies", []))
-        def _pct(p: float) -> Optional[float]:
-            if not latencies:
+        chars_values = sorted(bucket.pop("input_chars", []))
+
+        def _pct(values: List[float], p: float) -> Optional[float]:
+            if not values:
                 return None
-            index = min(len(latencies) - 1, max(0, int(round((len(latencies) - 1) * p))))
-            return latencies[index]
-        bucket["p50_ms"] = _pct(0.5)
-        bucket["p95_ms"] = _pct(0.95)
+            index = min(len(values) - 1, max(0, int(round((len(values) - 1) * p))))
+            return values[index]
+
+        bucket["p50_ms"] = _pct(latencies, 0.5)
+        bucket["p95_ms"] = _pct(latencies, 0.95)
+        bucket["input_chars_p50"] = _pct(chars_values, 0.5)
+        bucket["input_chars_p95"] = _pct(chars_values, 0.95)
+        bucket["input_chars_max"] = chars_values[-1] if chars_values else None
         return bucket
 
+    for item in by_execution.values():
+        item["total_over_warn"] = bool(
+            execution_warn_chars and item["input_chars_sum"] > execution_warn_chars
+        )
+        item["total_over_hard"] = bool(
+            execution_hard_enabled and item["input_chars_sum"] > execution_hard_chars
+        )
+
     return {
+        "input_warn_chars": input_warn_chars,
+        "input_hard_chars": input_hard_chars,
+        "input_hard_enabled": hard_enabled,
+        "execution_warn_chars": execution_warn_chars,
+        "execution_hard_chars": execution_hard_chars,
+        "execution_hard_enabled": execution_hard_enabled,
         "by_stage": {key: _finalize(value) for key, value in by_stage.items()},
         "by_model": {key: _finalize(value) for key, value in by_model.items()},
         "by_template": {key: _finalize(value) for key, value in by_template.items()},
         "by_kind": {key: _finalize(value) for key, value in by_kind.items()},
+        "by_execution": by_execution,
         "dropped_events": dropped,
     }
