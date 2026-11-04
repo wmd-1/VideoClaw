@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
@@ -751,7 +752,7 @@ class VideoDirectorAgent(AgentInterface):
                                     "versions": existing_versions,
                                 }
                             })
-                            fut = executor.submit(
+                            fut = executor.submit(contextvars.copy_context().run, 
                                 self._generate_one, sid, seg_id, prompt,
                                 img_path, video_model, duration,
                                 video_sound, video_shot_type, video_ratio, video_resolution,
@@ -808,7 +809,7 @@ class VideoDirectorAgent(AgentInterface):
                                     "asset_complete": asset_complete
                                 })
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, regen_run)
+                await asyncio.to_thread(regen_run)
                 
                 # 同步到 session artifacts
                 self._update_session_video_data(sid, segments, style_prompt)
@@ -864,7 +865,7 @@ class VideoDirectorAgent(AgentInterface):
                             "status": "running"
                         }
                     })
-                    fut = executor.submit(
+                    fut = executor.submit(contextvars.copy_context().run, 
                         self._generate_one, sid, seg_id, prompt,
                         img_path, video_model, dur,
                         video_sound, video_shot_type, video_ratio, video_resolution,
@@ -925,7 +926,7 @@ class VideoDirectorAgent(AgentInterface):
                                 f.cancel()
                         break
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run)
+        await asyncio.to_thread(run)
         
         # 同步到 session artifacts
         self._update_session_video_data(sid, segments, style_prompt)

@@ -14,6 +14,7 @@ import contextvars
 import hashlib
 import json
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,17 @@ def content_version(text: Any) -> str:
     return prompt_hash(text)
 
 
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_SECRET_RE = re.compile(r"(?i)(api[_-]?key|token|authorization|signature|secret)=([^\s&]+)")
+
+
+def _sanitize_error(text: Any) -> str:
+    """错误摘要脱敏：去掉 URL/签名/常见凭据，保留可诊断的错误类型文本。"""
+    cleaned = _URL_RE.sub("<url>", str(text or ""))
+    cleaned = _SECRET_RE.sub(r"\1=<redacted>", cleaned)
+    return cleaned[:200]
+
+
 def _provider_for_model(model: str) -> str:
     name = str(model or "").lower()
     for provider in ("deepseek", "gemini", "gpt", "qwen", "dashscope", "seedream", "kling", "seedance", "custom"):
@@ -78,6 +90,12 @@ def _write_record(record: Dict[str, Any], *, dropped: bool = False) -> bool:
             "event_type": record.get("event_type", "model_call"),
             "timestamp": record.get("timestamp"),
             "pid": record.get("pid"),
+            "call_kind": record.get("call_kind"),
+            "model": str(record.get("model") or "")[:80],
+            "stage": str(record.get("stage") or "")[:80],
+            "session_id": str(record.get("session_id") or "")[:100],
+            "execution_id": str(record.get("execution_id") or "")[:100],
+            "status": record.get("status"),
             "truncated": True,
         }
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
@@ -188,7 +206,7 @@ def record_call(
         "usage_source": usage_source or ("provider" if tokens_known else "unknown"),
         "estimated_cost": estimated_cost if isinstance(estimated_cost, (int, float)) else None,
         "error_type": str(error_type or ""),
-        "error": str(error or "")[:200],
+        "error": _sanitize_error(error),
         "http_status": http_status,
         "prompt_hash": str(prompt_hash or ""),
         "image_count": image_count,
@@ -223,8 +241,22 @@ def summarize_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             continue
         is_model_call = record.get("event_type", "model_call") == "model_call"
         kind = str(record.get("call_kind") or "unknown")
+        kind_bucket = by_kind.setdefault(kind, _bucket())
         if is_model_call:
-            by_kind.setdefault(kind, _bucket())["calls"] += 1
+            kind_bucket["calls"] += 1
+            if record.get("status") == "ok":
+                kind_bucket["ok"] += 1
+            elif record.get("status") == "failed":
+                kind_bucket["failed"] += 1
+            if record.get("cache_hit"):
+                kind_bucket["cache_hits"] += 1
+            if isinstance(record.get("latency_ms"), (int, float)):
+                kind_bucket["latencies"].append(record["latency_ms"])
+            tokens = record.get("total_tokens")
+            if isinstance(tokens, int):
+                kind_bucket["tokens"] += tokens
+            else:
+                kind_bucket["tokens_unknown"] += 1
         for key, bucket in (
             ("stage", by_stage), ("model", by_model), ("template", by_template),
         ):

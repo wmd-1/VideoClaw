@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -861,7 +862,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                     with ThreadPoolExecutor(max_workers=concurrency) as executor:
                         futs = {}
                         for i, segment_id in enumerate(regen_scenes):
-                            fut = executor.submit(regen_segment_run, segment_id, i)
+                            fut = executor.submit(contextvars.copy_context().run, regen_segment_run, segment_id, i)
                             futs[fut] = segment_id
                         for fut in as_completed(futs):
                             segment_id_done = futs[fut]
@@ -929,7 +930,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                                 break
 
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, regen_run)
+                await asyncio.to_thread(regen_run)
 
                 self._report_progress("参考图", "完成", 100)
                 return self._build_payload(sid, fresh_segments, session_data, prompt_map, selected_images, rewrite_results_map, evaluations_map)
@@ -1042,7 +1043,7 @@ class ReferenceGeneratorAgent(AgentInterface):
 
                 for i, seg in enumerate(pending_segments):
                     segment_id = seg['segment_id']
-                    fut = executor.submit(segment_run, seg, i)
+                    fut = executor.submit(contextvars.copy_context().run, segment_run, seg, i)
                     futs[fut] = segment_id
 
                 # 4. 等待所有任务完成
@@ -1123,7 +1124,7 @@ class ReferenceGeneratorAgent(AgentInterface):
 
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, run)
+            await asyncio.to_thread(run)
         except Exception as e:
             if "cancel" in str(e).lower():
                 logger.info("ReferenceGeneratorAgent: 用户取消，返回已完成部分结果")

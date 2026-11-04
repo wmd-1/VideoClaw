@@ -270,8 +270,8 @@ class ScriptWriterAgent(AgentInterface):
             self._report_progress("AI 修改", message, percent)
 
         async def _call(prompt: str) -> str:
-            return await loop.run_in_executor(
-                None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
+            return await asyncio.to_thread(
+                self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
             )
 
         parsed: Optional[dict] = None
@@ -548,8 +548,8 @@ class ScriptWriterAgent(AgentInterface):
         loop = asyncio.get_running_loop()
 
         async def _call(prompt: str) -> str:
-            return await loop.run_in_executor(
-                None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
+            return await asyncio.to_thread(
+                self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
             )
 
         # L2：仅在候选歧义时让模型裁决集级分段点，不接触正文
@@ -867,7 +867,7 @@ class ScriptWriterAgent(AgentInterface):
                     )
                 else:
                     idea_prompt = f"根据以下已有的剧集内容，在100字内，提供一个后续{episodes_to_add}集的简短续写灵感(主线方向): {existing_episodes_text}"
-                sequel_idea = await loop.run_in_executor(None, self._cancellable_query, llm, idea_prompt, [], llm_model, True, sid, web_search)
+                sequel_idea = await asyncio.to_thread(self._cancellable_query, llm, idea_prompt, [], llm_model, True, sid, web_search)
                 sequel_idea = sequel_idea.strip()
 
             _log_progress(30, "正在生成续写剧本文本...")
@@ -884,15 +884,15 @@ class ScriptWriterAgent(AgentInterface):
             )
             
             _log_progress(45, "正在生成续写初稿...")
-            sequel_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
+            sequel_script_text = await asyncio.to_thread(self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
 
             _log_progress(50, "正在进行台词评估...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
-            dialogue_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
+            dialogue_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(55, "正在进行情节评估...")
             eval_plot_prompt = _get_script_prompt("eval_plot", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
-            plot_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
+            plot_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(58, "正在根据评估意见优化续写内容...")
             revise_prompt = _get_script_prompt("revise_script", lang).format(
@@ -902,7 +902,7 @@ class ScriptWriterAgent(AgentInterface):
                 film_type=film_type,
                 subject_mode=subject_mode
             )
-            sequel_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
+            sequel_script_text = await asyncio.to_thread(self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
 
             _log_progress(60, "提取新增人物/场景...")
             meta_prompt = _get_script_prompt("meta_extract_sequel", lang).format(
@@ -910,7 +910,7 @@ class ScriptWriterAgent(AgentInterface):
                 existing_settings=existing_settings_text,
                 sequel_script=sequel_script_text
             )
-            meta_raw = await loop.run_in_executor(None, self._cancellable_query, llm, meta_prompt, [], llm_model, True, sid, web_search)
+            meta_raw = await asyncio.to_thread(self._cancellable_query, llm, meta_prompt, [], llm_model, True, sid, web_search)
             meta_res = self._extract_json_from_text(meta_raw)
             meta_data = meta_res if isinstance(meta_res, dict) else {}
 
@@ -932,7 +932,7 @@ class ScriptWriterAgent(AgentInterface):
             max_retries = 3
             raw_acts = ""
             for attempt in range(max_retries):
-                raw_acts = await loop.run_in_executor(None, self._cancellable_query, llm, extract_prompt, [], llm_model, True, sid, web_search)
+                raw_acts = await asyncio.to_thread(self._cancellable_query, llm, extract_prompt, [], llm_model, True, sid, web_search)
                 parsed_acts = self._extract_json_from_text(raw_acts)
                 
                 new_episodes.clear()
@@ -1019,7 +1019,7 @@ class ScriptWriterAgent(AgentInterface):
             subject_mode = DEFAULT_SUBJECT_MODE
             try:
                 classify_prompt = _get_script_prompt("classify_film_type", "zh" if is_zh else "en").format(idea=idea)
-                classify_raw = await loop.run_in_executor(None, self._cancellable_query, llm, classify_prompt, [], llm_model, True, sid, web_search)
+                classify_raw = await asyncio.to_thread(self._cancellable_query, llm, classify_prompt, [], llm_model, True, sid, web_search)
                 parsed_type, parsed_mode = self._parse_classification(classify_raw)
                 film_type = parsed_type or DEFAULT_FILM_TYPE
                 subject_mode = parsed_mode or DEFAULT_SUBJECT_MODE
@@ -1059,7 +1059,7 @@ class ScriptWriterAgent(AgentInterface):
                         film_type=film_type,
                         subject_mode=subject_mode,
                     )
-                    trimmed = await loop.run_in_executor(None, self._cancellable_query, llm, trim_prompt, [], llm_model, True, sid, web_search)
+                    trimmed = await asyncio.to_thread(self._cancellable_query, llm, trim_prompt, [], llm_model, True, sid, web_search)
                     logger.info("[ScriptWriter] Trimmed %s script generated (%d chars)", phase, len(trimmed))
                 return trimmed
 
@@ -1085,7 +1085,7 @@ class ScriptWriterAgent(AgentInterface):
                         film_type=film_type,
                         subject_mode=subject_mode,
                     )
-                    repaired = await loop.run_in_executor(None, self._cancellable_query, llm, repair_prompt, [], llm_model, True, sid, web_search)
+                    repaired = await asyncio.to_thread(self._cancellable_query, llm, repair_prompt, [], llm_model, True, sid, web_search)
                     repaired = await _trim_script_if_needed(repaired, f"{phase}集数修复后")
                 return repaired
 
@@ -1093,18 +1093,18 @@ class ScriptWriterAgent(AgentInterface):
             _log_progress(10, "正在生成完整剧本文本初稿...")
             prompt = _get_script_prompt("generate_script", "zh" if is_zh else "en").format(idea=idea, style=style, episodes=episodes, film_type=film_type, subject_mode=subject_mode)
 
-            full_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
+            full_script_text = await asyncio.to_thread(self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
             logger.info(f"[ScriptWriter] Initial script generated ({len(full_script_text)} chars)")
             full_script_text = await _trim_script_if_needed(full_script_text, "初稿")
             full_script_text = await _repair_episode_count_if_needed(full_script_text, "初稿")
             
             _log_progress(20, "正在进行台词评估...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
-            dialogue_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
+            dialogue_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(30, "正在进行情节评估...")
             eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
-            plot_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
+            plot_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(40, "正在根据评估意见优化剧本...")
             revise_prompt = _get_script_prompt("revise_script", "zh" if is_zh else "en").format(
@@ -1114,7 +1114,7 @@ class ScriptWriterAgent(AgentInterface):
                 film_type=film_type,
                 subject_mode=subject_mode
             )
-            full_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
+            full_script_text = await asyncio.to_thread(self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
             logger.info(f"[ScriptWriter] Final script generated ({len(full_script_text)} chars)")
             full_script_text = await _trim_script_if_needed(full_script_text, "优化后")
             full_script_text = await _repair_episode_count_if_needed(full_script_text, "优化后")
@@ -1123,7 +1123,7 @@ class ScriptWriterAgent(AgentInterface):
 
             # 2. Extract meta data -> total_episodes, characters, settings
             meta_prompt = _get_script_prompt("meta_extract", "zh" if is_zh else "en").format(script_text=full_script_text, outline=full_script_text)
-            meta_raw = await loop.run_in_executor(None, self._cancellable_query, llm, meta_prompt, [], llm_model, True, sid, web_search)
+            meta_raw = await asyncio.to_thread(self._cancellable_query, llm, meta_prompt, [], llm_model, True, sid, web_search)
             meta_res = self._extract_json_from_text(meta_raw)
             meta_data = meta_res if isinstance(meta_res, dict) else {}
 
@@ -1158,7 +1158,7 @@ class ScriptWriterAgent(AgentInterface):
                 episodes=episodes,
             )
             
-            raw_acts = await loop.run_in_executor(None, self._cancellable_query, llm, extract_prompt, [], llm_model, True, sid, web_search)
+            raw_acts = await asyncio.to_thread(self._cancellable_query, llm, extract_prompt, [], llm_model, True, sid, web_search)
             parsed_acts = self._extract_json_from_text(raw_acts)
             
             all_episodes = []

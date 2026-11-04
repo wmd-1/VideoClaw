@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -743,7 +744,7 @@ class CharacterDesignerAgent(AgentInterface):
                                     "versions": existing_versions,
                                 }
                             })
-                            fut = executor.submit(
+                            fut = executor.submit(contextvars.copy_context().run, 
                                 self._generate_one, img_client,
                                 aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model
                             )
@@ -790,7 +791,7 @@ class CharacterDesignerAgent(AgentInterface):
                                 })
 
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, regen_run)
+                await asyncio.to_thread(regen_run)
 
             self._report_progress("角色设计", "完成", 100)
             return self._build_payload(
@@ -880,7 +881,7 @@ class CharacterDesignerAgent(AgentInterface):
                             "versions": existing_versions,
                         }
                     })
-                    fut = executor.submit(
+                    fut = executor.submit(contextvars.copy_context().run, 
                         self._generate_one, img_client,
                         aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model,
                     )
@@ -930,7 +931,7 @@ class CharacterDesignerAgent(AgentInterface):
             self._report_progress("角色设计", "完成", 100)
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run)
+        await asyncio.to_thread(run)
 
         return self._build_payload(
             sid, chars_desc, sets_desc,

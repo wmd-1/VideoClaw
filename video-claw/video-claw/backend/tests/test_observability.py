@@ -1,8 +1,11 @@
 """D1 观测：字段、隐私、聚合、写盘降级与客户端埋点。"""
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import glob
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from core import observability as obs
 
@@ -45,6 +48,7 @@ def test_summary_separates_kinds_and_retries(monkeypatch, tmp_path):
     )
     summary = obs.summarize_records(_read(str(tmp_path)))
     assert summary["by_kind"]["text"]["calls"] == 2
+    assert summary["by_kind"]["text"]["cache_hits"] == 1
     assert summary["by_kind"]["vlm"]["calls"] == 1
     assert summary["by_kind"]["image"]["calls"] == 1
     assert summary["by_kind"]["video"]["calls"] == 1
@@ -54,6 +58,33 @@ def test_summary_separates_kinds_and_retries(monkeypatch, tmp_path):
     assert stage["cache_hits"] == 1
     assert stage["failed"] == 1
     assert stage["p50_ms"] is not None and stage["p95_ms"] is not None
+
+
+def test_error_is_sanitized(monkeypatch, tmp_path):
+    monkeypatch.setenv("VC_OBSERVABILITY_DIR", str(tmp_path))
+    obs.record_call(
+        call_kind="text", model="m", status="failed",
+        error="GET https://example.com/a?signature=abc&token=secret failed",
+    )
+    record = _read(str(tmp_path))[0]
+    assert record["error_type"] == ""
+    assert "https://" not in record["error"]
+    assert "secret" not in record["error"]
+    assert "<url>" in record["error"]
+
+
+def test_truncated_record_keeps_core_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("VC_OBSERVABILITY_DIR", str(tmp_path))
+    monkeypatch.setenv("VC_OBSERVABILITY_MAX_BYTES", "1000000")
+    obs.record_call(
+        call_kind="text", model="m", stage="script_generation", session_id="sid",
+        execution_id="e1", template_version="x" * 5000,
+    )
+    record = _read(str(tmp_path))[0]
+    assert record["truncated"] is True
+    assert record["stage"] == "script_generation"
+    assert record["session_id"] == "sid"
+    assert record["call_kind"] == "text"
 
 
 def test_record_has_no_prompt_url_or_owner(monkeypatch, tmp_path):
@@ -131,3 +162,19 @@ def test_call_context_enriches_without_cross_leak(monkeypatch, tmp_path):
     assert first["template_name"] == "rewrite_zh"
     assert second["stage"] == ""
     assert second["session_id"] == ""
+
+
+def test_context_survives_to_thread_and_executor(monkeypatch, tmp_path):
+    monkeypatch.setenv("VC_OBSERVABILITY_DIR", str(tmp_path))
+    with obs.call_context(stage="prompt_rewrite", session_id="sid-ctx", execution_id="e-ctx"):
+        asyncio.run(asyncio.to_thread(obs.record_call, call_kind="text", model="m"))
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(
+                contextvars.copy_context().run, obs.record_call,
+                call_kind="vlm", model="m",
+            ).result()
+    records = _read(str(tmp_path))
+    assert [record["call_kind"] for record in records] == ["text", "vlm"]
+    assert all(record["stage"] == "prompt_rewrite" for record in records)
+    assert all(record["session_id"] == "sid-ctx" for record in records)
+    assert all(record["execution_id"] == "e-ctx" for record in records)
