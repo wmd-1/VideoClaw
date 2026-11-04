@@ -2,30 +2,37 @@
 
 > Run native MiniMax-H3 video-and-audio generation with SGLang Diffusion.
 
-> Saved locally from https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3 on 2026-09-29 (raw MDX source).
-> This page is interactive: the `<Tabs>` panels, the `<Deployment>` recipe builder and the
-> benchmark tables below are all in this file. The selectable options and the data behind
-> those tables are not written as prose anywhere else, so they are kept verbatim in
-> [Appendix A](#appendix-a-mdx-components-and-recipe-data) at the end.
-
-<DiffusionModelTags tags={["video + audio", "T2VA / FL2VA / Ref2VA", "multimodal references", "4–15 seconds", "768p"]} />
+> Saved locally from https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3 on 2026-11-04 (the page's own Markdown export,
+> fetched from `<page-url>.md`; previous capture 2026-09-29, raw MDX source).
+> The live page is interactive. Its Markdown export marks the components that carry no
+> plain-Markdown equivalent, and this copy keeps those markers verbatim:
+>
+> - `> [!NOTE]` / `> [!WARNING]` render as callouts;
+> - `> [tab] <name>` plus the `>`-quoted lines below it are one panel of a tab group;
+>   consecutive panels form the group;
+> - a fence info string such as `bash Command theme={null}` carries the panel caption
+>   (`Command`) and a component prop (`theme={null}`).
+>
+> The deployment-recipe builder is not part of the export: its hardware/precision/
+> parallelism options and benchmark data live only in
+> [Appendix A](#appendix-a-mdx-components-and-recipe-data), which is the previous
+> (2026-09-29) MDX snapshot and is flagged there as partly stale.
 
 ## 1. Quick start
 
-Install with `uv pip install "sglang[diffusion]" --prerelease=allow`, then choose
-a verified recipe below. Setup changes the deployment; Server and Request expose
+Follow the [SGLang Diffusion installation guide](https://docs.sglang.io/docs/sglang-diffusion/installation.md),
+then choose a verified recipe below. Docker is recommended where the picker offers it.
+Setup changes the deployment; Server and Request expose
 orthogonal startup and sampling choices.
 
-<Deployment config={config} />
+> [!NOTE]
+>
+> The generated Server command already includes the recommended encoder policy.
+> Change a Server option only for a deliberate trade-off; Request options do not
+> reload the model.
 
-<Note>
-  The generated Server command already includes the recommended encoder policy.
-  Change a Server option only for a deliberate trade-off; Request options do not
-  reload the model.
-</Note>
-
-The Docker form installs the platform-specific diffusion extra from the source
-bundled in the image. For conditioned requests, set **Host media directory**
+The Docker form uses the image's bundled diffusion dependencies without reinstalling
+them at startup. For conditioned requests, set **Host media directory**
 under **Variables**; the builder mounts it read-only at `/data/minimax-h3`.
 AMD and Grace Blackwell currently offer the Python form; the other NVIDIA
 recipes also offer Docker.
@@ -35,7 +42,7 @@ command with `SGLANG_USE_MODELSCOPE=true` and replace the model path with
 `MiniMax/MiniMax-H3`. Keep the selected variant and topology flags unchanged.
 
 For platform-specific installation details, see the
-[SGLang Diffusion installation guide](/docs/sglang-diffusion/installation).
+[SGLang Diffusion installation guide](https://docs.sglang.io/docs/sglang-diffusion/installation.md).
 
 ## 2. Model capabilities
 
@@ -63,9 +70,9 @@ mapping; do not point `--model-path` at a manually downloaded subdirectory.
 The same FL2VA / Ref2VA split applies in
 [ComfyUI integrated mode](#comfyui-integrated-mode).
 
-<Warning>
-  Review the license and usage terms in the MiniMax-H3 model card before production or commercial use. SGLang support does not grant additional model usage rights.
-</Warning>
+> [!WARNING]
+>
+> Review the license and usage terms in the MiniMax-H3 model card before production or commercial use. SGLang support does not grant additional model usage rights.
 
 ## 3. Deployment details
 
@@ -94,7 +101,7 @@ for the baseline; the B200/B300 quantization measurements and H200 Cache-DiT
 quality audit do not establish coverage on Grace Blackwell.
 
 GB300 end-to-end coverage currently includes single-host FL2VA text-to-video
-with audio, native precision, eager execution, and `quality="lossless"`.
+with audio, native precision, eager execution, and `quality="exact"`.
 Ref2VA and multi-host commands remain **Unverified**. See the
 [GB300 measurements](#gb300-single-host) for the tested workload.
 
@@ -114,13 +121,13 @@ may be either a normal style adapter or a timestep-distilled Turbo adapter.
 | DiT | [Full or AdaLN-pruned](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/diffusion_models), or [LoRA-merged/remixed](https://huggingface.co/FX-FeiHou/MiniMax-H3-Remix) BF16 safetensors | `--component-weights-paths.transformer OWNER/REPO/path/FILE.safetensors` | Weight-only override for a native full/pruned H3 layout. Match the FL2VA/Ref2VA partition; pruned, merged, or dtype-converted exports are approximate, and any author-specific sampler remains a separate requirement. |
 | DiT | FL/Ref hybrid fine-tunes, including [Singularity v1.3](https://huggingface.co/WarmBloodAban/Minimax-h3_Singularity) (full or pruned INT8) | Replace `--model-variant` with `hybrid`; add `--component-weights-paths.transformer OWNER/REPO/FILE.safetensors` | Explicit merged-weight deployment serving `t2va`, `fl2va`, and `ref2va` on one native pipeline. Quantization and pruning are detected from the file; INT8 requires `comfy-kitchen`. See [Singularity](#singularity-hybrid-weights). |
 | DiT | Comfy FP8 or self-describing MXFP8 safetensors | `--component-weights-paths.transformer OWNER/REPO/path/FILE.safetensors` | Per-layer metadata selects static/dynamic FP8 or MXFP8 automatically. |
-| DiT | ConvRot INT8, W4A8, W4A4, or mixed W4A4+INT8 safetensors ([INT8](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/diffusion_models), [W4A8](https://huggingface.co/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI), [W4A4](https://huggingface.co/Merserk/MiniMax-H3-INT4-ConvRot)) | `--component-weights-paths.transformer OWNER/REPO/path/FILE.safetensors` | Auto-detected; requires `comfy-kitchen`. TP must preserve each file's ConvRot group boundaries. |
+| DiT | ConvRot INT8, W4A8, W4A4, or mixed W4A4+INT8 safetensors ([INT8](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/diffusion_models), [W4A8](https://huggingface.co/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI), [W4A4](https://huggingface.co/Merserk/MiniMax-H3-INT4-ConvRot)) | `--component-weights-paths.transformer OWNER/REPO/path/FILE.safetensors` | Auto-detected. INT8 layers run on SGLang's JIT-compiled ConvRot ops on CC 9.0, 10.0, 12.0 and 12.1 and on `comfy-kitchen` elsewhere; W4A8 and W4A4 layers require `comfy-kitchen`. TP must preserve each file's ConvRot group boundaries. |
 | DiT | [NVFP4, optionally mixed with INT8 or FP8](https://huggingface.co/Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot) | `--component-weights-paths.transformer OWNER/REPO/path/FILE.safetensors` | Auto-detected; NVFP4 execution requires NVIDIA compute capability 10.0+. |
 | DiT | [AutoRound W4A16 component](https://huggingface.co/Ar4ikov/MiniMax-H3-transformer-W4A16-RTN) | `--component-paths.transformer Ar4ikov/MiniMax-H3-transformer-W4A16-RTN` | Self-describing Diffusers component; SGLang reuses the SRT GPTQ/Marlin backend. The linked export is FL2VA. |
 | DiT | GGUF, full or AdaLN-pruned ([full](https://huggingface.co/leejet/MiniMax-H3-GGUF), [pruned](https://huggingface.co/unsloth/MiniMax-H3-GGUF)) | `--component-weights-paths.transformer OWNER/REPO/FILE.gguf` | CUDA capacity path; aligned TP and layerwise offload are supported, FSDP and LoRA are not. |
 | Text encoder | Architecture-compatible Qwen3-VL BF16 finetune ([Heretic example](https://huggingface.co/llmfan46/Qwen3-VL-32B-Instruct-ultra-uncensored-heretic)) | `--component-paths.text_encoder OWNER/REPO` | Reuses the native H3 extractor, including its vision tower and layer-50 hidden-state selection. Finetuning changes conditioning, not the sampling schedule. |
 | Text encoder | [Serialized FP8 component](https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct-FP8) | `--component-paths.text_encoder Qwen/Qwen3-VL-32B-Instruct-FP8` | Only eligible language-model linears use FP8; embeddings, norms, and the vision tower keep their declared precision. |
-| Text encoder | ConvRot INT8, W4A8, or W4A4 safetensors ([INT8](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/text_encoders), [Heretic INT8](https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-H3-ComfyUI-INT8-ConvRot), [W4A8](https://huggingface.co/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI), [W4A4](https://huggingface.co/Merserk/MiniMax-H3-INT4-ConvRot)) | `--component-weights-paths.text_encoder OWNER/REPO/path/FILE.safetensors` | Auto-detected; requires `comfy-kitchen`. INT8/W4A8 files may include a scalar-scale INT8 embedding. Unmarked tensors retain their declared precision. |
+| Text encoder | ConvRot INT8, W4A8, or W4A4 safetensors ([INT8](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/text_encoders), [Heretic INT8](https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-H3-ComfyUI-INT8-ConvRot), [W4A8](https://huggingface.co/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI), [W4A4](https://huggingface.co/Merserk/MiniMax-H3-INT4-ConvRot)) | `--component-weights-paths.text_encoder OWNER/REPO/path/FILE.safetensors` | Auto-detected. INT8 layers run on SGLang's JIT-compiled ConvRot ops on CC 9.0, 10.0, 12.0 and 12.1 and on `comfy-kitchen` elsewhere; W4A8 and W4A4 layers require `comfy-kitchen`. INT8/W4A8 files may include a scalar-scale INT8 embedding, which requires `comfy-kitchen`. Unmarked tensors retain their declared precision. |
 | Text encoder | Comfy NVFP4 with dynamic activation quantization ([Heretic example](https://huggingface.co/sakamakismile/Qwen3-VL-32B-Heretic-MiniMax-H3-NVFP4)) | `--component-weights-paths.text_encoder OWNER/REPO/path/FILE.safetensors` | Requires `comfy-kitchen` and NVIDIA compute capability 10.0+. Per-layer metadata selects native NVFP4 matmul; scalar/row-wise INT8 embeddings remain packed. |
 | Text encoder | [NVFP4-AWQ](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/text_encoders) or [Quanto qint8](https://huggingface.co/DeepBeepMeep/MiniMax-H3/tree/main/Qwen3-VL-32B-Instruct) safetensors | `--component-weights-paths.text_encoder OWNER/REPO/path/FILE.safetensors` | Memory-oriented formats: compressed storage is restored, then each active matrix uses BF16/FP16 compute. |
 | Text encoder | [GGUF Qwen3-VL](https://huggingface.co/DeepBeepMeep/MiniMax-H3/tree/main/Qwen3-VL-32B-Instruct) | `--component-weights-paths.text_encoder OWNER/REPO/FILE.gguf` | CUDA capacity path with encoder TP/layerwise support; encoder FSDP is not supported. |
@@ -152,7 +159,7 @@ weight-only layout—belong to the consistency GT. Pruned, quantized,
 compact-encoder, and LoRA routes are outside that baseline and the audited
 `quality="high"` contract. Packed and per-layer mixed formats reject FSDP unless
 their row says otherwise; see
-[Quantization](/docs/sglang-diffusion/quantization) for backend-wide constraints.
+[Quantization](https://docs.sglang.io/docs/sglang-diffusion/quantization.md) for backend-wide constraints.
 
 LoRA tensors alone do not make an execution-coupled release portable. Sparse-
 attention/SLA adapters and causal-streaming adapters such as RAVEN also require
@@ -248,18 +255,20 @@ transfer overhead. This exact recipe was validated on
 latency and memory comparison is collected in the benchmark section below.
 
 For a single 24 GB consumer card (RTX 4090), stream the DiT and text encoder
-and quantize DiT linear layers online with `kitchen_int8`. Keep `vae` out of
+and quantize DiT linear layers online with `convrot_int8`. Keep `vae` out of
 `--layerwise-offload-components`: putting the VAE decoder in layerwise
 offload re-streams about 9 GiB on each of 167 decode tiles. Default
 attention stays `fa` (exact). Approximate backends are opt-in; see
-[Attention Backends](/docs/sglang-diffusion/attention_backends#sage-then-sol-hybrid).
-Install `comfy-kitchen` first (`pip install comfy-kitchen`).
+[Attention Backends](https://docs.sglang.io/docs/sglang-diffusion/attention_backends.md#sage-then-sol-hybrid).
+On the RTX 4090 (CC 8.9) `convrot_int8` runs on `comfy-kitchen`, so install it
+first (`pip install comfy-kitchen`); on CC 9.0, 10.0, 12.0 and 12.1 it uses
+SGLang's JIT-compiled ConvRot ops instead (built once per machine on first use).
 
 ```bash 1×RTX 4090 24GB theme={null}
 sglang generate \
   --model-path MiniMaxAI/MiniMax-H3 \
   --model-variant fl2va \
-  --quantization kitchen_int8 \
+  --quantization convrot_int8 \
   --attention-backend fa \
   --performance-mode memory \
   --layerwise-offload-components dit,text_encoder \
@@ -300,7 +309,7 @@ do not use it to generate consistency ground truth.
 
 ### ComfyUI integrated mode
 
-The [ComfyUI plugin](/docs/sglang-diffusion/comfyui) can run H3 as a per-step
+The [ComfyUI plugin](https://docs.sglang.io/docs/sglang-diffusion/comfyui.md) can run H3 as a per-step
 DiT backend. ComfyUI keeps CLIP, VAE, and the sampler loop. SGLang loads only
 the transformer under `--comfyui-mode`.
 
@@ -317,7 +326,7 @@ Copy `python/sglang/multimodal_gen/apps/ComfyUI_SGLDiffusion` into ComfyUI
 Pruned BF16 / FP8 files from [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/diffusion_models)
 are the usual loader inputs. GGUF goes in `SGLDOptions.transformer_weights_path`.
 On a 24 GB card put the 32B CLIP on CPU and enable DiT layerwise offload; use
-`kitchen_int8` or GGUF rather than the full unpruned BF16 DiT.
+`convrot_int8` or GGUF rather than the full unpruned BF16 DiT.
 
 ### Singularity hybrid weights
 
@@ -345,7 +354,7 @@ their [usual meanings](#4-generate-video-and-audio), including `conditions: []`
 for `t2va` and keyframes for `fl2va`.
 
 Start with `quality: "lossless"` and the standard 50-point schedule. Here
-`lossless` disables additional request-time approximations; it does not undo
+`exact` disables additional request-time approximations; it does not undo
 INT8 quantization, pruning, or fine-tuning. The author's recommended Ref2V
 Turbo LoRA is a separate optional adapter, not an automatically inferred
 4-step schedule. Reference fidelity can differ from the official model; see
@@ -359,11 +368,11 @@ The [model card](https://huggingface.co/MiniMaxAI/MiniMax-H3) notes that about
 inference. The public base checkpoint contains the original branches, not a
 ready-to-use cache. SGLang therefore keeps the standard path as the default.
 
-<Warning>
-  This is an experimental deployment path. It is intentionally disabled unless
-  you provide an explicitly generated cache; end-to-end numerical and peak-memory
-  validation remains required before using it in production.
-</Warning>
+> [!WARNING]
+>
+> This is an experimental deployment path. It is intentionally disabled unless
+> you provide an explicitly generated cache; end-to-end numerical and peak-memory
+> validation remains required before using it in production.
 
 When an inference-only deployment has a fixed sampling schedule, build a cache
 from the already materialized transformer directory on CUDA, then pass it to
@@ -429,7 +438,7 @@ rebuild the sidecar against the new weights and restart.
 ### Serve MiniMax-H3 on Ascend NPUs
 
 For Ascend NPU, follow the
-[NPU installation guide](/docs/hardware-platforms/ascend-npus/getting-started/installation)
+[NPU installation guide](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/getting-started/installation.md)
 before starting the server.
 
 The Ascend commands below explicitly enable the Cache-DiT configuration used
@@ -492,198 +501,220 @@ HCCL_BUFFSIZE=256 sglang serve \
 
 ## 4. Generate video and audio
 
+`num_inference_steps: N` executes **N denoising updates** over N+1 sigma
+points, including the terminal zero. Reference implementations that count
+sigma points need N+1 to reproduce this schedule. Older SGLang versions ran
+N-1 updates for the same request; use N-1 here to preserve their sampling
+trajectory. Changing the step count changes the trajectory, not just latency.
+
 MiniMax-H3 uses the asynchronous OpenAI-compatible video endpoint. Choose a
 generation mode below, submit a job, poll its status, and then download the
 completed MP4.
 
-<Tabs>
-  <Tab title="T2VA">
-    MiniMax-H3 supports output durations from 4 through 15 seconds, inclusive. The
-    following request keeps the verified 5-second profile at a 768-pixel short
-    edge. MiniMax-H3 resolves the aligned output canvas and frame count from
-    `target`.
+> [tab] T2VA
+>
+> MiniMax-H3 supports output durations from 4 through 15 seconds, inclusive. The
+> following request keeps the verified 5-second profile at a 768-pixel short
+> edge. MiniMax-H3 resolves the aligned output canvas and frame count from
+> `target`.
+>
+> ```bash Command theme={null}
+> video_id=$(
+>   curl -sS -X POST http://127.0.0.1:30010/v1/videos \
+>     -H "Content-Type: application/json" \
+>     -d '{
+>       "model": "MiniMaxAI/MiniMax-H3",
+>       "prompt": "At night, while their owner sleeps in a bedroom, three cats march in loudly playing tiny brass instruments, then abruptly file out.",
+>       "seconds": 5,
+>       "task": "t2va",
+>       "conditions": [],
+>       "target": {
+>         "short_edge": 768,
+>         "aspect_ratio": "16:9",
+>         "duration_seconds": 5.0
+>       },
+>       "num_outputs_per_prompt": 1,
+>       "num_inference_steps": 50,
+>       "flow_shift": 12.0,
+>       "audio_flow_shift": 3.0,
+>       "seed": 1101
+>     }' |
+>     jq -r '.id'
+> )
+>
+> while true; do
+>   status=$(curl -sS "http://127.0.0.1:30010/v1/videos/${video_id}" | jq -r '.status')
+>   [ "$status" = "completed" ] && break
+>   [ "$status" = "failed" ] && exit 1
+>   sleep 1
+> done
+>
+> curl -sS -L "http://127.0.0.1:30010/v1/videos/${video_id}/content" \
+>   -o minimax-h3-t2va.mp4
+> ```
+>
+> The output contract is an MP4 containing H.264 video at 24 fps and one AAC stereo audio stream at 32 kHz.
 
-    ```bash Command theme={null}
-    video_id=$(
-      curl -sS -X POST http://127.0.0.1:30010/v1/videos \
-        -H "Content-Type: application/json" \
-        -d '{
-          "model": "MiniMaxAI/MiniMax-H3",
-          "prompt": "At night, while their owner sleeps in a bedroom, three cats march in loudly playing tiny brass instruments, then abruptly file out.",
-          "seconds": 5,
-          "task": "t2va",
-          "conditions": [],
-          "target": {
-            "short_edge": 768,
-            "aspect_ratio": "16:9",
-            "duration_seconds": 5.0
-          },
-          "num_outputs_per_prompt": 1,
-          "num_inference_steps": 50,
-          "flow_shift": 12.0,
-          "audio_flow_shift": 3.0,
-          "seed": 1101
-        }' |
-        jq -r '.id'
-    )
+> [tab] FL2VA
+>
+> For `fl2va`, provide one or two image conditions with role `keyframe`. The supported frame-index sets are `[0]`, `[-1]`, and `[0, -1]`.
+>
+> The following request uses one server-local first frame. Use
+> `frame_index: -1` for a last frame, or include both entries for first-and-last
+> conditioning.
+>
+> Choose FL2VA when the supplied image should be the actual first or last frame
+> of the generated clip. Use image-based Ref2VA instead when the image should
+> guide identity, style, or composition without being preserved as an endpoint;
+> Ref2VA may recompose or crop the reference.
+>
+> ```bash Command theme={null}
+> curl -sS -X POST http://127.0.0.1:30010/v1/videos \
+>   -H "Content-Type: application/json" \
+>   -d '{
+>     "model": "MiniMaxAI/MiniMax-H3",
+>     "prompt": "The supplied frame continues with calm, natural motion and synchronized ambient sound.",
+>     "seconds": 5,
+>     "task": "fl2va",
+>     "conditions": [
+>       {
+>         "type": "image",
+>         "uri": "file:///data/minimax-h3/first-frame.png",
+>         "role": "keyframe",
+>         "frame_index": 0
+>       }
+>     ],
+>     "target": {
+>       "short_edge": 768,
+>       "aspect_ratio": "auto",
+>       "duration_seconds": 5.0
+>     },
+>     "num_outputs_per_prompt": 1,
+>     "num_inference_steps": 50,
+>     "flow_shift": 12.0,
+>     "audio_flow_shift": 3.0,
+>     "seed": 2101
+>   }'
+> ```
 
-    while true; do
-      status=$(curl -sS "http://127.0.0.1:30010/v1/videos/${video_id}" | jq -r '.status')
-      [ "$status" = "completed" ] && break
-      [ "$status" = "failed" ] && exit 1
-      sleep 1
-    done
+> [tab] V2V
+>
+> V2V uses the reference-conditioning weights. Launch the server with
+> `--model-variant ref2va`, keep the request `task` set to `ref2va`, and provide a video
+> reference in `conditions`. There is no separate `v2v` task value.
+>
+> Use `type: "video"` when the input may be silent. If the file has a soundtrack,
+> H3 also uses it as an audio reference. Use `type: "video_audio"` only when both
+> streams are required; that form rejects an input without audio. The prompt tag
+> for the visual stream is `<Video 1>`; an available soundtrack is exposed as
+> `<Audio 1>`.
+>
+> > [!NOTE]
+> >
+> > Ref2VA treats the input video as reference material, not as a pixel-aligned
+> > edit source. It can resynthesize or reorder motion and cuts, and it does not
+> > expose a denoising-strength control. Do not rely on it to preserve every source
+> > frame or exact timing.
+>
+> Set `conditions[].start_time_seconds` to select a segment from a longer source.
+> The default is `0`. SGLang seeks the visual stream and soundtrack to the same
+> offset, then decodes at most the requested target duration in one pass; the
+> source is not re-encoded into an intermediate clip.
+>
+> ```bash Command theme={null}
+> curl -sS -X POST http://127.0.0.1:30010/v1/videos \
+>   -H "Content-Type: application/json" \
+>   -d '{
+>     "model": "MiniMaxAI/MiniMax-H3",
+>     "prompt": "Follow the motion and appearance of <Video 1>, changing the setting to a moonlit bedroom while preserving coherent timing.",
+>     "seconds": 5,
+>     "task": "ref2va",
+>     "conditions": [
+>       {
+>         "type": "video",
+>         "uri": "file:///data/minimax-h3/input.mp4",
+>         "role": "reference",
+>         "start_time_seconds": 35.0
+>       }
+>     ],
+>     "target": {
+>       "short_edge": 768,
+>       "aspect_ratio": "16:9",
+>       "duration_seconds": 5.0
+>     },
+>     "num_outputs_per_prompt": 1,
+>     "num_inference_steps": 50,
+>     "flow_shift": 12.0,
+>     "audio_flow_shift": 3.0,
+>     "seed": 4101
+>   }'
+> ```
+>
+> Use `conditions[].uri` for H3 V2V. The generic top-level `video_path`,
+> `video_url`, and `video_reference` upload fields are not lowered into H3
+> reference conditions.
 
-    curl -sS -L "http://127.0.0.1:30010/v1/videos/${video_id}/content" \
-      -o minimax-h3-t2va.mp4
-    ```
-
-    The output contract is an MP4 containing H.264 video at 24 fps and one AAC stereo audio stream at 32 kHz.
-  </Tab>
-
-  <Tab title="FL2VA">
-    For `fl2va`, provide one or two image conditions with role `keyframe`. The supported frame-index sets are `[0]`, `[-1]`, and `[0, -1]`.
-
-    The following request uses one server-local first frame. Use
-    `frame_index: -1` for a last frame, or include both entries for first-and-last
-    conditioning.
-
-    Choose FL2VA when the supplied image should be the actual first or last frame
-    of the generated clip. Use image-based Ref2VA instead when the image should
-    guide identity, style, or composition without being preserved as an endpoint;
-    Ref2VA may recompose or crop the reference.
-
-    ```bash Command theme={null}
-    curl -sS -X POST http://127.0.0.1:30010/v1/videos \
-      -H "Content-Type: application/json" \
-      -d '{
-        "model": "MiniMaxAI/MiniMax-H3",
-        "prompt": "The supplied frame continues with calm, natural motion and synchronized ambient sound.",
-        "seconds": 5,
-        "task": "fl2va",
-        "conditions": [
-          {
-            "type": "image",
-            "uri": "file:///data/minimax-h3/first-frame.png",
-            "role": "keyframe",
-            "frame_index": 0
-          }
-        ],
-        "target": {
-          "short_edge": 768,
-          "aspect_ratio": "auto",
-          "duration_seconds": 5.0
-        },
-        "num_outputs_per_prompt": 1,
-        "num_inference_steps": 50,
-        "flow_shift": 12.0,
-        "audio_flow_shift": 3.0,
-        "seed": 2101
-      }'
-    ```
-  </Tab>
-
-  <Tab title="V2V">
-    V2V uses the reference-conditioning weights. Launch the server with
-    `--model-variant ref2va`, keep the request `task` set to `ref2va`, and provide a video
-    reference in `conditions`. There is no separate `v2v` task value.
-
-    Use `type: "video"` when the input may be silent. If the file has a soundtrack,
-    H3 also uses it as an audio reference. Use `type: "video_audio"` only when both
-    streams are required; that form rejects an input without audio. The prompt tag
-    for the visual stream is `<Video 1>`; an available soundtrack is exposed as
-    `<Audio 1>`.
-
-    <Note>
-      Ref2VA treats the input video as reference material, not as a pixel-aligned
-      edit source. It can resynthesize or reorder motion and cuts, and it does not
-      expose a denoising-strength control. Do not rely on it to preserve every source
-      frame or exact timing.
-    </Note>
-
-    Set `conditions[].start_time_seconds` to select a segment from a longer source.
-    The default is `0`. SGLang seeks the visual stream and soundtrack to the same
-    offset, then decodes at most the requested target duration in one pass; the
-    source is not re-encoded into an intermediate clip.
-
-    ```bash Command theme={null}
-    curl -sS -X POST http://127.0.0.1:30010/v1/videos \
-      -H "Content-Type: application/json" \
-      -d '{
-        "model": "MiniMaxAI/MiniMax-H3",
-        "prompt": "Follow the motion and appearance of <Video 1>, changing the setting to a moonlit bedroom while preserving coherent timing.",
-        "seconds": 5,
-        "task": "ref2va",
-        "conditions": [
-          {
-            "type": "video",
-            "uri": "file:///data/minimax-h3/input.mp4",
-            "role": "reference",
-            "start_time_seconds": 35.0
-          }
-        ],
-        "target": {
-          "short_edge": 768,
-          "aspect_ratio": "16:9",
-          "duration_seconds": 5.0
-        },
-        "num_outputs_per_prompt": 1,
-        "num_inference_steps": 50,
-        "flow_shift": 12.0,
-        "audio_flow_shift": 3.0,
-        "seed": 4101
-      }'
-    ```
-
-    Use `conditions[].uri` for H3 V2V. The generic top-level `video_path`,
-    `video_url`, and `video_reference` upload fields are not lowered into H3
-    reference conditions.
-  </Tab>
-
-  <Tab title="Multimodal Ref2VA">
-    For `ref2va`, first launch the reference-conditioning capability with
-    `--model-variant ref2va`, then provide conditions with role `reference`.
-    Image, video, and audio references can be combined. Material tags in the
-    prompt use the one-based order for each modality.
-
-    An image condition here is semantic reference material rather than a
-    pixel-aligned first frame. Use the FL2VA tab when animating a screenshot from
-    that exact starting composition.
-
-    ```bash Command theme={null}
-    curl -sS -X POST http://127.0.0.1:30010/v1/videos \
-      -H "Content-Type: application/json" \
-      -d '{
-        "model": "MiniMaxAI/MiniMax-H3",
-        "prompt": "Use <Picture 1> as the visual subject and <Audio 1> as the sound reference, with coherent natural motion.",
-        "seconds": 5,
-        "task": "ref2va",
-        "conditions": [
-          {
-            "type": "image",
-            "uri": "file:///data/minimax-h3/reference.png",
-            "role": "reference"
-          },
-          {
-            "type": "audio",
-            "uri": "file:///data/minimax-h3/reference.mp3",
-            "role": "reference"
-          }
-        ],
-        "target": {
-          "short_edge": 768,
-          "aspect_ratio": "auto",
-          "duration_seconds": 5.0
-        },
-        "num_outputs_per_prompt": 1,
-        "num_inference_steps": 50,
-        "flow_shift": 12.0,
-        "audio_flow_shift": 3.0,
-        "seed": 3101
-      }'
-    ```
-  </Tab>
-</Tabs>
+> [tab] Multimodal Ref2VA
+>
+> For `ref2va`, first launch the reference-conditioning capability with
+> `--model-variant ref2va`, then provide conditions with role `reference`.
+> Image, video, and audio references can be combined. Material tags in the
+> prompt use the one-based order for each modality.
+>
+> An image condition here is semantic reference material rather than a
+> pixel-aligned first frame. Use the FL2VA tab when animating a screenshot from
+> that exact starting composition.
+>
+> Set `reference_resize_mode` on the request to choose how reference images are
+> resized before encoding:
+>
+> * `diffusers` (default) scales the short edge to 2048 pixels, including upscaling
+>   small inputs. This preserves the original preprocessing behavior.
+> * `max` only downsizes references whose short edge exceeds 2048 pixels.
+> * `match` downsizes to the target canvas pixel area when needed, without
+>   upscaling smaller references. Use this with the
+>   [ModelTC Ref2VA Turbo LoRA](https://github.com/ModelTC/Minimax-H3-Turbo#note-on-reference-image-resizing),
+>   whose training uses this policy.
+>
+> All modes scale without cropping, then round each dimension to the nearest
+> multiple of 32. This rounding can slightly change the aspect ratio. The option
+> affects Ref2VA image references, not FL2VA keyframes, video, or audio references.
+> Changing it changes the conditioning input, so keep it fixed for quality and
+> performance comparisons; the server does not infer it from the adapter name.
+>
+> ```bash Command theme={null}
+> curl -sS -X POST http://127.0.0.1:30010/v1/videos \
+>   -H "Content-Type: application/json" \
+>   -d '{
+>     "model": "MiniMaxAI/MiniMax-H3",
+>     "prompt": "Use <Picture 1> as the visual subject and <Audio 1> as the sound reference, with coherent natural motion.",
+>     "seconds": 5,
+>     "task": "ref2va",
+>     "reference_resize_mode": "diffusers",
+>     "conditions": [
+>       {
+>         "type": "image",
+>         "uri": "file:///data/minimax-h3/reference.png",
+>         "role": "reference"
+>       },
+>       {
+>         "type": "audio",
+>         "uri": "file:///data/minimax-h3/reference.mp3",
+>         "role": "reference"
+>       }
+>     ],
+>     "target": {
+>       "short_edge": 768,
+>       "aspect_ratio": "auto",
+>       "duration_seconds": 5.0
+>     },
+>     "num_outputs_per_prompt": 1,
+>     "num_inference_steps": 50,
+>     "flow_shift": 12.0,
+>     "audio_flow_shift": 3.0,
+>     "seed": 3101
+>   }'
+> ```
 
 Poll and download any conditioned request with the same job-status and
 content endpoints used in the T2VA example. Server-local `file://` URIs must
@@ -691,25 +722,30 @@ refer to files visible inside the SGLang server environment.
 
 ## 5. LoRA recipes
 
-H3 accepts both native fused adapters and standard Diffusers/PEFT adapters.
-Native adapters target modules such as `blocks.*.attn.qkv_proj`; PEFT adapters
-may instead provide separate `to_q`, `to_k`, and `to_v` projections and the
-`default` adapter namespace. SGLang normalizes both layouts.
+H3 accepts native fused adapters, standard Diffusers/PEFT adapters, and Kohya
+`lora_unet_blocks_*` exports from `networks.lora_minimax_h3`. Native adapters
+target modules such as `blocks.*.attn.qkv_proj`; PEFT adapters may instead
+provide separate `to_q`, `to_k`, and `to_v` projections and the `default`
+adapter namespace. SGLang normalizes all three layouts.
 
 The following pinned FL2VA adapters have distinct purposes:
 
 | Recipe | Repository and pinned file | Request setting | Prompt requirement |
 | - | - | - | - |
-| Recommended speed/quality balance | [`larryvrh/MiniMax-H3-Turbo-Lora`](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora), `minimax_h3_turbo_v4_step600_ema.safetensors` | `num_inference_steps: 9` (8 denoiser evaluations), `lora_scale: 1.0` | None |
-| Most aggressive speed preset (standard PEFT layout) | [`lightx2v/Minimax-h3-Turbo`](https://huggingface.co/lightx2v/Minimax-h3-Turbo), `minimax_h3_fl2v_turbo_4step_v0.1.safetensors` | `num_inference_steps: 5` (4 denoiser evaluations), `lora_scale: 1.0`, `lora_alpha: 8` | None |
+| Recommended speed/quality balance | [`larryvrh/MiniMax-H3-Turbo-Lora`](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora), `minimax_h3_turbo_v4_step600_ema.safetensors` | `num_inference_steps: 8` (8 denoiser evaluations), `lora_scale: 1.0` | None |
+| Most aggressive speed preset (standard PEFT layout) | [`lightx2v/Minimax-h3-Turbo`](https://huggingface.co/lightx2v/Minimax-h3-Turbo), `minimax_h3_fl2v_turbo_4step_v0.1.safetensors` | `num_inference_steps: 4` (4 denoiser evaluations), `lora_scale: 1.0`, `lora_alpha: 8` | None |
 | Realistic people style | [`fal/MiniMax-H3-Realism-People-LoRA`](https://huggingface.co/fal/MiniMax-H3-Realism-People-LoRA), `h3-realism-people-t2v-i2v-r2v.safetensors` | Keep the normal `num_inference_steps: 50` schedule; start with `lora_scale: 0.7` | Include `r34l1sm` in the prompt |
+| Spatial and physics | [`Jojocodex/minimax-h3-spatial-physics-lora`](https://huggingface.co/Jojocodex/minimax-h3-spatial-physics-lora), `wushu_spatial_physics_clean_3000_pruned.safetensors` | Keep the normal `num_inference_steps: 50` schedule; start with `lora_scale: 0.4` | None. Describe collisions, stacking, and gravity-consistent motion in the prompt |
+| Wushu action | [`Jojocodex/minimax-h3-wushu-action-lora`](https://huggingface.co/Jojocodex/minimax-h3-wushu-action-lora), `wushu_action_h3_lora_v5_3000_pruned.safetensors` | Keep the normal `num_inference_steps: 50` schedule; start with `lora_scale: 0.8` | Put `wushu_action` at the start of the prompt |
+| Camera motion | [`Jojocodex/minimax-h3-yunjing-lora`](https://huggingface.co/Jojocodex/minimax-h3-yunjing-lora), `camera_motion_h3_lora_v1_3000_pruned.safetensors` | Keep the normal `num_inference_steps: 50` schedule; start with `lora_scale: 0.8` | Put `camera motion` at the start of the prompt |
+| Looping sketch anime | [`Inner-Reflections/MiniMax-H3-Looping-Sketch-Anime`](https://huggingface.co/Inner-Reflections/MiniMax-H3-Looping-Sketch-Anime), `minimax_h3_looping_sketch_anime_v1.safetensors` | Keep the normal `num_inference_steps: 50` schedule; start with `lora_scale: 1.0` | Include the author's hand-drawn sketch style phrase in the prompt |
+| 3D-to-real detail slider | [`siraxe/3d_to_real_detail_slider_H3`](https://huggingface.co/siraxe/3d_to_real_detail_slider_H3), `3d_to_real_H3_detail_slider_bf16.safetensors` | Keep the normal `num_inference_steps: 50` schedule; start with `lora_scale: 1.0` | None. Sweep the scale; this is a slider, not a fixed style |
 
-The H3 request field controls the number of sigma grid points, including the
-terminal zero; the denoising loop therefore runs one fewer model evaluation.
-This is why an adapter described as 8-step uses `9`, and a 4-step adapter uses
-`5`, in the request.
+The H3 request field controls the number of denoiser evaluations. An 8-step
+adapter uses `8`, and a 4-step adapter uses `4`; the sigma schedule includes
+one additional terminal zero.
 
-All three use the same launch shape. Pinning the filename is required for
+Every recipe uses the same launch shape. Pinning the filename is required for
 repositories that publish multiple revisions, and is also recommended for a
 reproducible single-file recipe:
 
@@ -737,9 +773,13 @@ sglang serve \
 ```
 
 `auto` merges an adapter into ordinary resident weights to avoid per-step LoRA
-matmuls, but keeps the dynamic path for FSDP-sharded weights where a full
-gather can increase peak memory. Use `dynamic` when one resident server must
-switch repeatedly between base and LoRA output.
+matmuls. It keeps the dynamic path in two cases. One is FSDP-sharded weights,
+where a full gather can increase peak memory. The other is an adapter whose
+update would mostly round away in a BF16 merge. Distilled adapters such as the
+Larry Turbo LoRA sit below a BF16 ulp of most weights, and a merge drops
+77–97% of their update in typical layers. Use `dynamic` when one resident
+server must switch repeatedly between base and LoRA output, and `merge` to
+force a merge.
 
 Use the filename, scale, and request schedule from the table together. The
 4-evaluation LightX2V recipe is the more aggressive latency/quality tradeoff.
@@ -761,6 +801,57 @@ can also consume a LoRA trained against the released full-width AdaLN modules:
 SGLang projects those adapter factors onto the pruned coordinates at load time.
 A structurally modified checkpoint without that metadata still fails closed,
 and packed GGUF weights remain incompatible with LoRA.
+
+### Pika H3 Flex: six-step adapters
+
+[Pika-Labs/Pika-H3-Flex](https://huggingface.co/Pika-Labs/Pika-H3-Flex) is
+MiniMax-H3 plus two FP32 PEFT LoRA adapters (rank/alpha 128): `fl2va` for the
+FL2VA partition (`t2va`, `fl2va`) and `ref2va` for the Ref2VA partition. The
+adapters were post-trained for a fixed six-step sampler: knots
+`1000/750/500/250/100/40`, shifted per modality (video 12, audio 3), with a
+re-noising update. Each step predicts x0 and then re-noises it to the next
+sigma with fresh noise. Pika notes that generic six-step Euler is not
+equivalent, so do not serve these files through the `--lora-path` recipe
+above.
+
+Pass the repository directly to `--model-path`. Its registered model overlay
+downloads only the two adapters (about 5.5 GB) and checks their sha256 against
+Pika's manifests. It then links the base `FL2VA/` and `Ref2VA/` partitions
+from `MiniMaxAI/MiniMax-H3` at the revision the adapters pin, so an existing
+MiniMax-H3 download is reused. The matching adapter loads at startup, and
+`model_index.json` turns on the six-step re-noising schedule. There,
+`stochastic_sampling` requires `dmd_denoising_steps`, which carries the
+knots. The adapter stays unmerged (`--lora-merge-mode dynamic`) unless a merge
+mode is passed: a BF16 merge rounds away about a third of its update.
+
+```bash Command theme={null}
+# t2va / fl2va
+sglang serve --model-path Pika-Labs/Pika-H3-Flex --port 30010
+
+# ref2va
+sglang serve --model-path Pika-Labs/Pika-H3-Flex --model-variant ref2va --port 30010
+```
+
+Use the requests in [Generate video and audio](#4-generate-video-and-audio)
+with `"model": "Pika-Labs/Pika-H3-Flex"` and `num_inference_steps: 6`. That is
+the default, and any other value is rejected. Omit `flow_shift` and
+`audio_flow_shift` to keep the trained 12 / 3. `--lora-path` cannot replace
+the bundled adapter, and `quality: "high"` is not supported.
+
+On 1× H200 with the default memory policy, 5-second requests took the
+following times:
+
+| Task | Canvas | Warm latency |
+| - | - | - |
+| `t2va` | 1344×768 | 37 s |
+| `fl2va` | 1344×768 | 42 s (cold) |
+| `ref2va` (2 images + 1 video with audio) | 1344×768 | 260 s |
+
+Most of the `ref2va` time goes to its long packed sequence, which includes
+the reference video and two 2048-pixel reference images.
+
+Pika H3 Flex is a Model Derivative of MiniMax H3 by Mellis, Inc., distributed
+under the MiniMax H3 Community License Agreement.
 
 ### PDD acceleration LoRAs
 
@@ -823,74 +914,148 @@ Keep `pdd_config.json` beside `pdd_fused_heads.safetensors`, outside the
 a separate output directory, and `--model-variant ref2va`.
 
 Use the requests in [Generate video and audio](#4-generate-video-and-audio)
-with `num_inference_steps: 9`, `flow_shift: 12.0`, and `audio_flow_shift: 3.0`.
+with `num_inference_steps: 8`, `flow_shift: 12.0`, and `audio_flow_shift: 3.0`.
 The nine sigma grid points give eight denoiser evaluations. These settings
 must match the fused heads; the server rejects a different step count or
 shift. Use `quality: "lossless"` in requests.
 
-## 6. FastH3: 4-step distilled preview
+## 6. FastH3: 8-step distilled
 
-[FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree](https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree)
-is a 4-step DMD2 distillation of MiniMax-H3, trained data-free with Video
-Sparse Attention (VSA) at 0.9 sparsity and 64-token tiles. Only the T2VA
-capability was distilled: requests must use `task: "t2va"`, and `fl2va` /
-`ref2va` requests are rejected. The checkpoint inherits the MiniMax-H3
-Community License.
+[FastVideo/FastVideo-FastH3-8-Step-V2](https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2)
+is an 8-step DMD2 distillation of MiniMax-H3, trained data-free with Video
+Sparse Attention (VSA) at 0.8 sparsity and 64-token tiles, with video / audio
+scheduler shifts 10 / 3. Only the T2VA capability was distilled: requests must
+use `task: "t2va"`, and `fl2va` / `ref2va` requests are rejected. The
+checkpoint inherits the MiniMax-H3 Community License.
 
 Pass the repository directly to `--model-path`. The flat native-Diffusers
 upload is materialized into the base-H3 layout through a registered model
 overlay; the only non-symlink step is a one-time re-serialization of the
 roughly 10 GB video VAE on first launch.
 
-```bash 4×B300 VSA-H3 theme={null}
+```bash 4×GB300 VSA-H3 theme={null}
 sglang serve \
-  --model-path FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree \
+  --model-path FastVideo/FastVideo-FastH3-8-Step-V2 \
   --num-gpus 4 \
-  --attention-backend video_sparse_attn_h3 \
-  --attention-backend-config '{"VSA_sparsity": 0.9}' \
+  --component-attention-backends transformer=video_sparse_attn_h3 \
   --port 30010
 ```
 
 Requests use the same asynchronous video endpoint as the base model, with
 `task: "t2va"`, `conditions: []`, and a target such as
 `{"short_edge": 768, "aspect_ratio": "16:9", "duration_seconds": 5.0}`. The
-request default is `num_inference_steps: 5`: five points on the standard
-shift-12/shift-3 sigma grid, i.e. the four distilled DiT evaluations. Any
-other step count is rejected.
+request default is `num_inference_steps: 8`: nine sigma grid points, i.e. the
+eight distilled DiT evaluations on the checkpoint's trained rungs
+`[999, 874, 749, 624, 500, 375, 250, 125]` (unshifted timesteps over 1000,
+shifted once per modality, as FastVideo runs them). Any other step count is
+rejected. The trained sparsity 0.8 is the default; `--attention-backend-config
+'{"VSA_sparsity": ...}'` overrides it. FastH3 requests default to
+`quality: "lossless"`, which fuses the VAE decoder's per-head QK RMSNorm and
+RoPE and runs its attention on cuDNN SDPA; `quality: "exact"` keeps the
+reference decoder kernels. Under `"lossless"` FastH3 decodes each GPU's
+spatial VAE tiles in one call rather than one at a time (base MiniMax-H3
+batches up to 64 per call), which changes GEMM shapes and so the output at
+rounding level; `"exact"` decodes tile by tile on both.
 
-`video_sparse_attn_h3` (VSA-H3) is the trained sparse policy: an in-tree
-Triton block-sparse kernel (SM90 / SM100 / SM103) over segment-pure prefix
-tiles and (4, 4, 4) video tiles, driven by the checkpoint's trained
-`to_gate_compress` compression branch. Only the DiT runs sparse; the token
-refiner, text encoder, and VAEs keep their dense defaults. Ulysses sequence
-parallelism is supported. See
-[Attention Backends](/docs/sglang-diffusion/attention_backends) for
+`video_sparse_attn_h3` (VSA-H3) is the trained sparse policy: in-tree
+block-sparse kernels (FastVideo's native tcgen05 forward on SM100 / SM103, a
+Triton tile-64 kernel on SM90) over segment-pure prefix tiles and (4, 4, 4)
+video tiles, driven by the checkpoint's trained
+`to_gate_compress` compression branch. Select it for the transformer only, as
+with cube sparse attention: the packed DiT blocks run sparse while the token
+refiner falls back to dense FA inside the backend, and the text encoder and
+VAEs keep their own backends. Ulysses sequence parallelism is supported. See
+[Attention Backends](https://docs.sglang.io/docs/sglang-diffusion/attention_backends.md) for
 `VSA_sparsity`, `vsa_mode`, `vsa_dense_first_n_steps`, and
-`vsa_dense_layers`. Every dense backend that runs on base H3 (`fa`,
-`torch_sdpa`, ...) also runs on the FastH3 weights without VSA flags, and
-`sglang generate` takes the same flags as `sglang serve`.
+`vsa_dense_layers`. On CUDA, FastH3 selects VSA-H3 for the transformer when no
+transformer backend is given, unless torch.compile, the breakable CUDA graph or
+ring attention is on (VSA-H3 serves none of them). Every dense backend that
+runs on base H3 also runs on the FastH3 weights, without the compression
+branch: select it with `--component-attention-backends transformer=fa` (or
+`torch_sdpa`, ...). On 4× H200 dense FA is about 25% slower end to end than
+VSA-H3 (12.6 s against 10.0 s). `sglang generate` takes the same flags as
+`sglang serve`.
 
-Measured latencies for the 4× B300 recipe are in
-[FastH3 on B300](#fasth3-on-b300).
+Measured latencies for the 4× GB300 recipe are in
+[FastH3 on GB300](#fasth3-on-gb300).
 
-FastH3 rejects deployment options that do not apply to the distilled preview
-instead of silently ignoring them: `--model-variant`, `quality: "high"`,
-`fl2va` / `ref2va` requests, and, with VSA-H3, `--ring-degree` greater than 1,
-`torch.compile`, and breakable CUDA graph execution.
+FastH3 rejects deployment options that do not apply to the distilled
+checkpoint instead of silently ignoring them: `--model-variant`,
+`quality: "high"`, `fl2va` / `ref2va` requests, and, with VSA-H3,
+`--ring-degree` greater than 1, `torch.compile`, and breakable CUDA graph
+execution.
 
-<Warning>
-  The sibling `FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA` adapters carry
-  full-rank `.diff` / `.diff_b` deltas and `set_weight` gate tensors beyond the
-  LoRA contract; `--lora-path` rejects them with an explicit error. Serve the
-  merged VSA-DataFree checkpoint above instead.
-</Warning>
+> [!NOTE]
+>
+> Quality gaps versus base H3 on hard motion and fine detail are properties of
+> the released distillation, not of the SGLang port. Use base MiniMax-H3 when
+> output quality matters more than latency.
 
-<Note>
-  Upstream labels this checkpoint a preview. Quality gaps versus base H3 on hard
-  motion and fine detail are properties of the released distillation, not of the
-  SGLang port. Use base MiniMax-H3 when output quality matters more than
-  latency.
-</Note>
+### FastH3 Omni: Ref2VA, 8-step PDD
+
+[FastVideo/FastVideo-FastH3-Omni-8-Step-V1](https://huggingface.co/FastVideo/FastVideo-FastH3-Omni-8-Step-V1)
+is a Parallel Decoding Distillation (PDD) student of the MiniMax-H3 Ref2VA
+partition: eight denoiser evaluations over a 32-interval grid, with VSA at 0.9
+sparsity on 128-token (4, 4, 8) tiles and each reference video keeping 0.1 of
+its tiles. Only `task: "ref2va"` is served, with up to 9 images, 3 videos and 3
+audio clips as ordered references (12 in total), at least one of them visual.
+
+Pass the repository directly to `--model-path`. Its registered model overlay
+maps `transformer_ref/` into the base-H3 layout, fuses the 32 interval output
+heads into 8 per-step heads (the math of `tools/fuse_minimax_h3_pdd_heads.py`)
+and links the text encoder and VAEs from the `MiniMaxAI/MiniMax-H3` Ref2VA
+partition pinned by the release. The served model is the native H3 pipeline:
+the release's `pdd_fused_heads` load through the same path as the PDD LoRA
+recipe above, and the PDD grid is the 8-step shifted grid scaled to the
+release's `sigma_max` of 0.999 (FastGen's `max_t`).
+
+```bash 2×H200 theme={null}
+sglang serve \
+  --model-path FastVideo/FastVideo-FastH3-Omni-8-Step-V1 \
+  --num-gpus 2 --ulysses-degree 2 \
+  --port 30010
+```
+
+Everything stays resident on 141 GB and 180 GB cards. On a card that cannot
+hold it, add `--dit-cpu-offload true --text-encoder-cpu-offload true --vae-cpu-offload true`; on H200 and B200 the three offloads only cost time
+(image reference, 768 short edge, 124 frames, median of two requests after
+three warmups):
+
+| GPUs | Resident | With the three offloads |
+| - | - | - |
+| 2× H200, Ulysses 2 | 39.0 s | 43.8 s |
+| 4× B200, Ulysses 4 | 10.3 s | 15.3 s |
+
+```json Request theme={null}
+{
+  "model": "FastVideo/FastVideo-FastH3-Omni-8-Step-V1",
+  "prompt": "<Picture 1> is the appearance reference for <Subject 1>. [reference generation] ...",
+  "task": "ref2va",
+  "conditions": [{"type": "image", "role": "reference", "uri": "/path/to/subject.png"}],
+  "target": {"short_edge": 480, "aspect_ratio": "16:9", "duration_seconds": 5.0},
+  "seed": 0
+}
+```
+
+Requests default to `num_inference_steps: 8` and clean references
+(`imgvid_cond_noise_aug_for_inference` and `audio_cond_noise_aug_for_inference`
+of 1.0, the release's target-only flow). On CUDA the transformer selects VSA-H3
+when no backend is given; Ref2VA layouts tile every reference video as its own
+region and take a per-region top-k, while text, reference images and audio
+rows stay dense. `--attention-backend-config` keys `vsa_tile_size`,
+`vsa_ref_keep_rate` and `VSA_sparsity` override the trained values.
+
+Warm request latency on 2× H200 with the three CPU offloads (Ulysses 2; median
+of three requests after one full warmup, 124 frames at 24 FPS with audio,
+until the MP4 is saved):
+
+| References | Short edge | Latency |
+| - | - | - |
+| Image | 480 | 26.9 s |
+| Image + audio | 480 | 27.8 s |
+| Video with audio | 480 | 23.2 s |
+| Image | 768 | 46.6 s |
+| Video with audio | 768 | 37.1 s |
 
 ## 7. VDN-H3: hybrid attention, 8-step distill
 
@@ -936,7 +1101,7 @@ Requests use the same video endpoint as the base model with `task: "t2va"`
 and `conditions: []`, or `task: "fl2va"` with the
 [keyframe conditions](#4-generate-video-and-audio), and a target such as
 `{"short_edge": 768, "aspect_ratio": "16:9", "duration_seconds": 14.375}` (the
-345-frame paper workload). The default `num_inference_steps: 9` is the only
+345-frame paper workload). The default `num_inference_steps: 8` is the only
 accepted value: nine sigma grid points, eight DiT forwards. Each keyframe adds
 about 2,000 dense rows, so an `fl2va` forward costs a little more than `t2va`.
 
@@ -950,7 +1115,7 @@ benchmarked. Ulysses sequence parallelism is supported; `--model-variant`,
 `quality: "high"`, `--ring-degree` greater than 1, `torch.compile`, and
 breakable CUDA graph execution are rejected. The backend's
 `--attention-backend-config` keys are listed in
-[Attention Backends](/docs/sglang-diffusion/attention_backends).
+[Attention Backends](https://docs.sglang.io/docs/sglang-diffusion/attention_backends.md).
 
 Measured latencies for 1, 2, 4 and 8 B200s are in
 [VDN-H3 on B200](#vdn-h3-on-b200); single-card and PCIe multi-card numbers
@@ -989,18 +1154,24 @@ done
 `quality` is a cumulative request-scoped optimization parameter with three
 levels:
 
-* `"lossless"` (default): the exact reference path. Output is bit-exact
-  against the reference implementation and the CI ground truth.
-* `"extra-high"`: includes the global fusion-only tier but does not enable
-  Cache-DiT or another approximate optimization. MiniMax-H3 currently has no
-  request-gated fusion site, so its denoise path is the same as `lossless`.
+* `"exact"`: the exact reference path. Output is bit-exact
+  against the reference implementation and the CI ground truth. On SM100+
+  the video VAE's temporal blend and output denormalization run as single
+  kernels that reproduce the reference arithmetic bit for bit and verify that
+  against the eager chain on first use.
+* `"lossless"` (default): includes the global fusion-only tier but does not enable
+  Cache-DiT or another approximate optimization. Each DiT block runs its
+  RMSNorm and AdaLN modulation as one kernel that rounds once instead of after
+  every op, and VAE decode fuses the ViT decoder's per-head QK RMSNorm and
+  RoPE into one launch, runs its attention on cuDNN SDPA and, on CUDA, decodes
+  several spatial tiles per decoder forward (rounding-level differences only).
 * `"high"`: the audited accelerated path. Quality is guaranteed (the audited
   Cache-DiT configuration measures SSIM 0.931 / PSNR 28.16 dB against
-  `lossless`), but output is no longer bit-identical to the reference.
+  `exact`), but output is no longer bit-identical to the reference.
 
 One resident server serves all three levels; a `quality: "high"` request
 mounts its audited Cache-DiT policy at the batch boundary, and a later
-`quality: "lossless"` or `quality: "extra-high"` request removes the hooks
+`quality: "exact"` or `quality: "lossless"` request removes the hooks
 before denoising.
 
 Start the validated server once:
@@ -1023,47 +1194,48 @@ sglang serve \
 
 Then choose a request level:
 
-<Tabs>
-  <Tab title="lossless (default)">
-    Native denoising with no feature-cache approximation. This is the default;
-    omitting the field is equivalent.
+> [tab] exact
+>
+> Native denoising and VAE decode with no feature-cache approximation or
+> quality-gated VAE fusions.
+>
+> ```json Request field theme={null}
+> {
+>   "quality": "exact"
+> }
+> ```
 
-    ```json Request field theme={null}
-    {
-      "quality": "lossless"
-    }
-    ```
-  </Tab>
+> [tab] lossless (default)
+>
+> The global fusion-only tier. It does not enable MiniMax-H3 Cache-DiT. It
+> differs from `exact` only in rounding: the DiT blocks' fused RMSNorm + AdaLN
+> modulation, and the VAE decoder's fused QK RMSNorm + RoPE and cuDNN SDPA
+> attention.
+> Omitting the field selects this level.
+>
+> ```json Request field theme={null}
+> {
+>   "quality": "lossless"
+> }
+> ```
 
-  <Tab title="extra-high">
-    The global fusion-only tier. It does not enable MiniMax-H3 Cache-DiT and
-    currently follows the same H3 denoise path as `lossless`.
-
-    ```json Request field theme={null}
-    {
-      "quality": "extra-high"
-    }
-    ```
-  </Tab>
-
-  <Tab title="high">
-    The audited accelerated path. Use it when you can trade bit-exactness for
-    latency while keeping output closest to the same-seed lossless trajectory.
-
-    ```json Request field theme={null}
-    {
-      "quality": "high"
-    }
-    ```
-  </Tab>
-</Tabs>
+> [tab] high
+>
+> The audited accelerated path. Use it when you can trade bit-exactness for
+> latency while keeping output closest to the same-seed exact trajectory.
+>
+> ```json Request field theme={null}
+> {
+>   "quality": "high"
+> }
+> ```
 
 The measured trade-off is:
 
-| `quality` | Mean <br />inference <br />latency | Speedup | SSIM vs <br />lossless | PSNR vs <br />lossless | Expected <br />trade-off |
+| `quality` | Mean inference latency | Speedup | SSIM vs exact | PSNR vs exact | Expected trade-off |
 | - | -: | -: | -: | -: | - |
-| `lossless` | 75.10 s | 1.00× | 1.000 | exact | Native reference path |
-| `extra-high` | Not separately measured | — | Same H3 denoise path | Same H3 denoise path | Fusion-only tier; no H3-specific request-gated site yet |
+| `exact` | 75.10 s | 1.00× | 1.000 | exact | Native reference path |
+| `lossless` | Not separately measured | — | Same H3 denoise path | Same H3 denoise path | Fusion-only tier; VAE decode fuses QK RMSNorm + RoPE and uses cuDNN SDPA (rounding-level differences) |
 | `high` | 53.70 s | 1.40× | 0.931 | 28.16 dB | Smallest same-seed visual change |
 
 These numbers use 1344×768, 124-frame, 24 fps T2VA with 50 inference steps,
@@ -1072,7 +1244,7 @@ video flow shift 12, audio flow shift 3, and three fixed prompt/seed pairs on
 and a moving close-up portrait. `inference_time_s` is averaged across the three
 prompts; the quiet-scene point is itself the mean of two repeats.
 
-SSIM and PSNR compare decoded, frame-aligned output with the `lossless`
+SSIM and PSNR compare decoded, frame-aligned output with the `exact`
 result for the same prompt and seed. They measure trajectory deviation, not
 absolute perceptual quality: the `high` path can produce a different but
 still plausible realization. It also changes the joint audio-video denoise
@@ -1083,15 +1255,15 @@ deployment above; other hardware, task modes, request shapes, step counts, or
 flow shifts fail before denoising. Offline generation uses the same level
 name, for example `sglang generate --quality high`.
 
-<Note>
-  `quality` selects a model sampling level and can change generated content.
-  `output_quality` controls only output-file compression; it is a separate field.
-</Note>
+> [!NOTE]
+>
+> `quality` selects a model sampling level and can change generated content.
+> `output_quality` controls only output-file compression; it is a separate field.
 
 For manually tuned Cache-DiT experiments outside that validated path, omit
 the request `quality` field and set `--enable-cache-dit` or the
 process-wide `SGLANG_CACHE_DIT_*` defaults. Any explicit `quality`, including
-`"lossless"` and `"extra-high"`, takes H3 off the generic Cache-DiT path. The
+`"exact"` and `"lossless"`, takes H3 off the generic Cache-DiT path. The
 24 GB layerwise recipe above can use the same switch; skipped blocks are
 not streamed.
 
@@ -1112,16 +1284,16 @@ sglang serve \
   --port 30010
 ```
 
-<Warning>
-  Cache-DiT skips selected block computation and is approximate. It cannot
-  be combined with FSDP inference. DiT layerwise offload is compatible:
-  skipped blocks are not streamed, and the first layer after a skip may
-  sync-load. Breakable CUDA graph execution takes precedence and leaves
-  Cache-DiT disabled. Tune the cache thresholds only after comparing both
-  video and audio quality on the target task profile. A real B200 request
-  has completed, but the `quality: "high"` path above remains fail-closed
-  to the audited 4×H200 workload.
-</Warning>
+> [!WARNING]
+>
+> Cache-DiT skips selected block computation and is approximate. It cannot
+> be combined with FSDP inference. DiT layerwise offload is compatible:
+> skipped blocks are not streamed, and the first layer after a skip may
+> sync-load. Breakable CUDA graph execution takes precedence and leaves
+> Cache-DiT disabled. Tune the cache thresholds only after comparing both
+> video and audio quality on the target task profile. A real B200 request
+> has completed, but the `quality: "high"` path above remains fail-closed
+> to the audited 4×H200 workload.
 
 ## 9. Feature contracts and advanced recipes
 
@@ -1129,279 +1301,281 @@ The generated command already contains the recommended topology and encoder
 setting. Use the detailed reference below only when applying an optional
 override or checking its installation, topology limits, and validation evidence.
 
-<Tabs>
-  <Tab title="Lossless runtime">
-    The recommended `speed` launch already combines resident components with
-    Ulysses sequence parallelism. Validation status below applies only to the
-    listed hardware and topology; it is not inherited by a similar GPU family.
+> [tab] Lossless runtime
+>
+> The recommended `speed` launch already combines resident components with
+> Ulysses sequence parallelism. Validation status below applies only to the
+> listed hardware and topology; it is not inherited by a similar GPU family.
+>
+> | Feature | Validation status | Notes |
+> | - | - | - |
+> | Ulysses sequence parallelism | Verified: 8× B200, 4× H200, 4× H100, and Ulysses1/2/4/8 on MI300X and MI355X | Use `--ulysses-degree`. Combine with Ring for cross-node scaling; see the next row. |
+> | Ring sequence parallelism (cross-node) | Verified: 2 nodes of 8× H200 each (Ulysses8 × Ring2) | Use `--ring-degree` together with `--nnodes`/`--node-rank`/`--dist-init-addr`. Ring shards the sequence across nodes while Ulysses shards heads within a node; H3's packed multi-segment attention only supports Ring across the node boundary, not within a single node's Ulysses group. Requires `--encoder-parallel replicate` — `auto`'s fold decision is not node-boundary aware. See the benchmark section below. |
+> | Tensor parallelism | Verified: B200 TP2 + Ulysses4; H100 TP2 + Ulysses2 and TP4 + Ulysses1 | `--tp-size` may be combined with Ulysses when the TP-local head count remains divisible by the Ulysses degree. On 4×H100, TP2 + Ulysses2 is the measured speed default. |
+> | FSDP inference | Verified: 4× B200 and 4× H100 + Ulysses4 | Preserves H3's mixed BF16/FP32 parameter policy. B200 completed the exact eager comparison; H100 completed consecutive real requests at about 57 GB peak memory per GPU. |
+> | Resident components | Verified: B200, H200, 4×H100 with TP, and 1/2/4/8× MI300X and MI355X | This is the recommended single-request latency path when the complete workload fits. |
+> | CPU and layerwise offload | Verified: 2× RTX 5090 TP2; 1× RTX 4090 24 GB | The 5090 lossless recipe keeps 20 DiT blocks plus both VAE encoders resident, streams the remaining DiT blocks, text encoder, and video VAE decoder blocks, and leaves the small audio VAE resident. The 4090 recipe streams DiT and the text encoder with zero resident DiT layers and **omits `vae`** from `--layerwise-offload-components`. Compatible with Cache-DiT; skipped blocks are not streamed. |
+> | Breakable CUDA graph | Verified: B200 Ref2VA, opt-in | Matching eager output was observed for the captured signature, without a measured speedup. Re-capture for other shapes and reference sets. |
+> | `torch.compile` | Measured: H200, opt-in | Steady-state benefit was below measurement noise, while startup increased and numerical output changed. Do not use it for consistency ground truth. |
+>
+> The verified parallel, placement, and matching-signature BCG paths keep the
+> BF16/FP32 weights and denoising math. `torch.compile` is the exception called
+> out above. Always use the eager BF16/FP32 launch when producing CI consistency
+> ground truth.
+>
+> For the validated 1344×768 Ref2VA profile, use a 5504-row text bucket so both
+> the server warmup and reference-conditioned requests share the captured
+> signature:
+>
+> ```bash Command theme={null}
+> sglang serve \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant ref2va \
+>   --num-gpus 8 \
+>   --ulysses-degree 8 \
+>   --encoder-parallel auto \
+>   --performance-mode speed \
+>   --enable-breakable-cuda-graph true \
+>   --warmup-resolutions 1344x768 \
+>   --bcg-text-buckets 5504 \
+>   --port 30010
+> ```
+>
+> BCG is lossless for a matching captured signature, but capture reserves extra
+> GPU memory. Re-measure the live H3 text length before reusing this bucket for a
+> different task profile, reference set, resolution, or prompt template.
 
-    | Feature | Validation status | Notes |
-    | - | - | - |
-    | Ulysses sequence parallelism | Verified: 8× B200, 4× H200, 4× H100, and Ulysses1/2/4/8 on MI300X and MI355X | Use `--ulysses-degree`. Combine with Ring for cross-node scaling; see the next row. |
-    | Ring sequence parallelism (cross-node) | Verified: 2 nodes of 8× H200 each (Ulysses8 × Ring2) | Use `--ring-degree` together with `--nnodes`/`--node-rank`/`--dist-init-addr`. Ring shards the sequence across nodes while Ulysses shards heads within a node; H3's packed multi-segment attention only supports Ring across the node boundary, not within a single node's Ulysses group. Requires `--encoder-parallel replicate` — `auto`'s fold decision is not node-boundary aware. See the benchmark section below. |
-    | Tensor parallelism | Verified: B200 TP2 + Ulysses4; H100 TP2 + Ulysses2 and TP4 + Ulysses1 | `--tp-size` may be combined with Ulysses when the TP-local head count remains divisible by the Ulysses degree. On 4×H100, TP2 + Ulysses2 is the measured speed default. |
-    | FSDP inference | Verified: 4× B200 and 4× H100 + Ulysses4 | Preserves H3's mixed BF16/FP32 parameter policy. B200 completed the exact eager comparison; H100 completed consecutive real requests at about 57 GB peak memory per GPU. |
-    | Resident components | Verified: B200, H200, 4×H100 with TP, and 1/2/4/8× MI300X and MI355X | This is the recommended single-request latency path when the complete workload fits. |
-    | CPU and layerwise offload | Verified: 2× RTX 5090 TP2; 1× RTX 4090 24 GB | The 5090 lossless recipe keeps 20 DiT blocks plus both VAE encoders resident, streams the remaining DiT blocks, text encoder, and video VAE decoder blocks, and leaves the small audio VAE resident. The 4090 recipe streams DiT and the text encoder with zero resident DiT layers and **omits `vae`** from `--layerwise-offload-components`. Compatible with Cache-DiT; skipped blocks are not streamed. |
-    | Breakable CUDA graph | Verified: B200 Ref2VA, opt-in | Matching eager output was observed for the captured signature, without a measured speedup. Re-capture for other shapes and reference sets. |
-    | `torch.compile` | Measured: H200, opt-in | Steady-state benefit was below measurement noise, while startup increased and numerical output changed. Do not use it for consistency ground truth. |
+> [tab] Attention backends
+>
+> Leave `--attention-backend` unset for the platform default. Use
+> `--attention-backend fa` only for an explicit FlashAttention comparison.
+>
+> SageAttention uses quantized attention math and is not a consistency mode. To
+> select H3's native packed-varlen Sage path, install the dependency and add
+> `--attention-backend sage_attn`. On Hopper, install the upstream SM90 binding
+> fix rather than the PyPI 2.2.0 build:
+>
+> ```bash Command theme={null}
+> pip install --force-reinstall \
+>   git+https://github.com/thu-ml/SageAttention.git@d9704247a5139ab4c03bf7fc6b35cc0e2cbb5ea4 \
+>   --no-build-isolation
+> ```
+>
+> The backend is a server-wide default. Use
+> `--component-attention-backends` only when a measured component needs a
+> different kernel, and keep the platform default for every component not named
+> in the override.
 
-    The verified parallel, placement, and matching-signature BCG paths keep the
-    BF16/FP32 weights and denoising math. `torch.compile` is the exception called
-    out above. Always use the eager BF16/FP32 launch when producing CI consistency
-    ground truth.
+> [tab] Online quantization
+>
+> On the verified 8× B200 topology, quantize the BF16 transformer at server load:
+>
+> ```bash Command theme={null}
+> sglang serve \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant ref2va \
+>   --num-gpus 8 \
+>   --ulysses-degree 8 \
+>   --encoder-parallel auto \
+>   --performance-mode speed \
+>   --quantization fp8 \
+>   --port 30010
+> ```
+>
+> H3 automatically keeps its video/audio patch projections, timestep MLP, and
+> final video/audio heads in FP32. All other linear layers have stable full
+> module prefixes, so additional layers can be kept unquantized:
+>
+> ```bash Command theme={null}
+> sglang serve \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant ref2va \
+>   --num-gpus 8 \
+>   --ulysses-degree 8 \
+>   --encoder-parallel auto \
+>   --quantization fp8 \
+>   --quantization-ignored-layers blocks.0.attn token_refiner \
+>   --port 30010
+> ```
+>
+> > [!WARNING]
+> >
+> > Online FP8 is approximate and is not a consistency ground-truth mode. It can
+> > be combined with Cache-DiT, but the two approximations compound. Validate
+> > visual quality, audio quality, memory use, and latency on the target workload.
+> > This recipe is limited to the resident B200 and B300 topologies used for real
+> > H3 validation runs.
+>
+> On a single 24 GB card, use `convrot_int8` instead of FP8. It quantizes the
+> four GEMMs per DiT block online from the Hub BF16 weights (data-free, no
+> calibration) and runs them on `comfy_kitchen.int8_linear` on the 4090 (CC 8.9)
+> or on SGLang's JIT-compiled ConvRot ops on CC 9.0, 10.0, 12.0 and 12.1
+> (see [Quantization](https://docs.sglang.io/docs/sglang-diffusion/quantization.md#convrot-int8)).
+> Quantization happens after H3's grouped `qkv` reorder, so do not load an
+> externally pre-quantized INT8 checkpoint here.
+>
+> ```bash Command theme={null}
+> sglang generate \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant fl2va \
+>   --quantization convrot_int8 \
+>   --attention-backend fa \
+>   --performance-mode memory \
+>   --layerwise-offload-components dit,text_encoder \
+>   --dit-offload-prefetch-size 1 \
+>   --dit-layerwise-resident-layers 0 \
+>   --enable-torch-compile false \
+>   --prompt "A cat walking on a sunny beach, gentle waves." \
+>   --save-output
+> ```
+>
+> `fa` keeps exact attention. For a faster, approximate DiT path, use
+> `--attention-backend sol_attn` with
+> `--attention-backend-config dense_backend=sage_attn,dense_steps=10` and
+> `--component-attention-backends text_encoder=torch_sdpa,transformer=sol_attn`.
+> See [Quantization](https://docs.sglang.io/docs/sglang-diffusion/quantization.md#convrot-int8)
+> and [Attention Backends](https://docs.sglang.io/docs/sglang-diffusion/attention_backends.md#sage-then-sol-hybrid).
+>
+> > [!WARNING]
+> >
+> > `convrot_int8` changes Linear numerics. `sol_attn` / `sage_attn` also change
+> > the attention algorithm. Neither is a consistency ground-truth mode. The
+> > BF16 path never depends on `comfy-kitchen`; `convrot_int8` needs it only on
+> > GPUs the JIT ops do not cover (any CC other than 9.0, 10.0, 12.0 and 12.1) or
+> > when no CUDA toolchain is available to build them.
+>
+> Pre-quantized and compact H3 text encoders are listed once in
+> [Checkpoint and adapter formats](#checkpoint-and-adapter-formats). They use
+> component-local paths and never inherit the DiT's `--quantization` setting.
+> SGLang reads their metadata before constructing the native Qwen3-VL encoder and
+> fails closed when the selected format, projection, or topology is incompatible.
 
-    For the validated 1344×768 Ref2VA profile, use a 5504-row text bucket so both
-    the server warmup and reference-conditioned requests share the captured
-    signature:
+> [tab] Cube sparse attention
+>
+> Cube sparse attention applies TopK sparsity only to H3's 3D visual streams.
+> Text, audio, standalone reference images, and the text-only token refiner stay
+> dense. It runs on pure PyTorch plus FlexAttention, so it has no third-party
+> kernel dependency.
+>
+> Select it for the H3 transformer with
+> `--component-attention-backends transformer=cube_sparse_attn` and pass
+> `--attention-backend-config` with both `local_cube_size` and
+> `topk_ratio_list`. Scoping the backend leaves the text encoder on its native
+> backend:
+>
+> ```bash Command theme={null}
+> sglang serve \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant ref2va \
+>   --num-gpus 8 \
+>   --ulysses-degree 8 \
+>   --performance-mode speed \
+>   --component-attention-backends transformer=cube_sparse_attn \
+>   --attention-backend-config '{"local_cube_size": [4, 4, 4], "topk_ratio_list": [1.0, 1.0, 0.8, 0.7, 0.6, 0.5, 0.5]}' \
+>   --port 30010
+> ```
+>
+> * `local_cube_size` is the `(T, H, W)` cube that groups neighboring latent
+>   tokens into one attention block. It must have exactly three entries.
+> * `topk_ratio_list` sets the per-step keep ratio and must have exactly one
+>   entry per denoise step, each in `(0, 1]`. A ratio of `1.0` keeps a step
+>   on H3's native dense attention path; smaller values select the FlexAttention
+>   sparse path and drop more blocks. The example above matches a request with
+>   `num_inference_steps: 7`, whose endpoint-inclusive sigma schedule has seven
+>   denoise updates.
+>
+> Cube labeling is coordinate-driven. FL2VA keyframes share the target video's
+> position grid, so a keyframe token and a target token at the same `(T, H, W)`
+> coordinate receive the same semantic cube label. Duplicate coordinates do not
+> extend the temporal grid; a semantic cube can therefore span multiple physical
+> attention blocks. In Ref2VA, standalone reference images remain dense, while
+> reference videos and the target video contribute to one global TopK candidate
+> pool rather than receiving separate per-stream quotas.
+>
+> > [!WARNING]
+> >
+> > Cube sparse attention is an approximate backend and is not a consistency
+> > ground-truth mode. `topk_ratio_list` length must equal the denoise step count
+> > or the server rejects the request. Cube sparse attention does not support Ring
+> > parallelism; use `--ulysses-degree` without `--ring-degree`. FlexAttention's
+> > routing overhead can outweigh sparse-kernel savings on short sequences, so
+> > benchmark latency as well as visual and audio quality on the target workload.
 
-    ```bash Command theme={null}
-    sglang serve \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant ref2va \
-      --num-gpus 8 \
-      --ulysses-degree 8 \
-      --encoder-parallel auto \
-      --performance-mode speed \
-      --enable-breakable-cuda-graph true \
-      --warmup-resolutions 1344x768 \
-      --bcg-text-buckets 5504 \
-      --port 30010
-    ```
+> [tab] SubBlock sparse attention
+>
+> SubBlock sparse attention applies training-free block sparsity to MiniMax-H3's
+> long, non-causal DiT self-attention. The BF16 path supports CUDA SM90, SM100,
+> and SM120. Other compute capabilities, including SM103/B300, are rejected.
+> Ulysses sequence parallelism is supported; Ring parallelism is not.
+>
+> The global backend selects the H3 DiT lazily, so keep the Qwen text encoder on
+> its compatible dense backend with a component override:
+>
+> ```bash Command theme={null}
+> sglang serve \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant fl2va \
+>   --num-gpus 8 \
+>   --ulysses-degree 8 \
+>   --attention-backend subblock_sparse_attn \
+>   --component-attention-backends text_encoder=fa \
+>   --attention-backend-config '{"sparsity": 0.75, "skip_first_steps": 10}' \
+>   --port 30010
+> ```
+>
+> Use `text_encoder=torch_sdpa` on SM120. The default configuration drops at
+> most 75% of key blocks after the first 10 denoise forwards; short sequences,
+> cross-attention, and unsupported shapes continue on the dense path. Tune
+> `sparsity` and `skip_first_steps` together with visual and audio quality checks.
+>
+> On H100/H200 (SM90), `compute_mode=sage_fp8` switches the sparse kernel to
+> online INT8 Q/K and FP8 P/V compute. Install the optional kernel and add the
+> compute mode:
+>
+> ```bash Command theme={null}
+> pip install git+https://github.com/thu-ml/SpargeAttn.git --no-build-isolation
+>
+> sglang serve \
+>   --model-path MiniMaxAI/MiniMax-H3 \
+>   --model-variant fl2va \
+>   --num-gpus 8 \
+>   --ulysses-degree 8 \
+>   --attention-backend subblock_sparse_attn \
+>   --component-attention-backends text_encoder=fa \
+>   --attention-backend-config '{"compute_mode": "sage_fp8", "sparsity": 0.75}' \
+>   --port 30010
+> ```
+>
+> > [!WARNING]
+> >
+> > Both SubBlock routing and `sage_fp8` are approximate. Use dense BF16 attention
+> > for consistency ground truth, and validate the selected sparsity on the target
+> > resolution, duration, task, and checkpoint.
 
-    BCG is lossless for a matching captured signature, but capture reserves extra
-    GPU memory. Re-measure the live H3 text length before reusing this bucket for a
-    different task profile, reference set, resolution, or prompt template.
-  </Tab>
-
-  <Tab title="Attention backends">
-    Leave `--attention-backend` unset for the platform default. Use
-    `--attention-backend fa` only for an explicit FlashAttention comparison.
-
-    SageAttention uses quantized attention math and is not a consistency mode. To
-    select H3's native packed-varlen Sage path, install the dependency and add
-    `--attention-backend sage_attn`. On Hopper, install the upstream SM90 binding
-    fix rather than the PyPI 2.2.0 build:
-
-    ```bash Command theme={null}
-    pip install --force-reinstall \
-      git+https://github.com/thu-ml/SageAttention.git@d9704247a5139ab4c03bf7fc6b35cc0e2cbb5ea4 \
-      --no-build-isolation
-    ```
-
-    The backend is a server-wide default. Use
-    `--component-attention-backends` only when a measured component needs a
-    different kernel, and keep the platform default for every component not named
-    in the override.
-  </Tab>
-
-  <Tab title="Online quantization">
-    On the verified 8× B200 topology, quantize the BF16 transformer at server load:
-
-    ```bash Command theme={null}
-    sglang serve \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant ref2va \
-      --num-gpus 8 \
-      --ulysses-degree 8 \
-      --encoder-parallel auto \
-      --performance-mode speed \
-      --quantization fp8 \
-      --port 30010
-    ```
-
-    H3 automatically keeps its video/audio patch projections, timestep MLP, and
-    final video/audio heads in FP32. All other linear layers have stable full
-    module prefixes, so additional layers can be kept unquantized:
-
-    ```bash Command theme={null}
-    sglang serve \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant ref2va \
-      --num-gpus 8 \
-      --ulysses-degree 8 \
-      --encoder-parallel auto \
-      --quantization fp8 \
-      --quantization-ignored-layers blocks.0.attn token_refiner \
-      --port 30010
-    ```
-
-    <Warning>
-      Online FP8 is approximate and is not a consistency ground-truth mode. It can
-      be combined with Cache-DiT, but the two approximations compound. Validate
-      visual quality, audio quality, memory use, and latency on the target workload.
-      This recipe is limited to the resident B200 and B300 topologies used for real
-      H3 validation runs.
-    </Warning>
-
-    On a single 24 GB card, use `kitchen_int8` instead of FP8. It quantizes the
-    four GEMMs per DiT block online from the Hub BF16 weights (data-free, no
-    calibration) and dispatches them through `comfy_kitchen.int8_linear`.
-    Quantization happens after H3's grouped `qkv` reorder, so do not load an
-    externally pre-quantized INT8 checkpoint here.
-
-    ```bash Command theme={null}
-    sglang generate \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant fl2va \
-      --quantization kitchen_int8 \
-      --attention-backend fa \
-      --performance-mode memory \
-      --layerwise-offload-components dit,text_encoder \
-      --dit-offload-prefetch-size 1 \
-      --dit-layerwise-resident-layers 0 \
-      --enable-torch-compile false \
-      --prompt "A cat walking on a sunny beach, gentle waves." \
-      --save-output
-    ```
-
-    `fa` keeps exact attention. For a faster, approximate DiT path, use
-    `--attention-backend sol_attn` with
-    `--attention-backend-config dense_backend=sage_attn,dense_steps=10` and
-    `--component-attention-backends text_encoder=torch_sdpa,transformer=sol_attn`.
-    See [Quantization](/docs/sglang-diffusion/quantization#kitchen-int8)
-    and [Attention Backends](/docs/sglang-diffusion/attention_backends#sage-then-sol-hybrid).
-
-    <Warning>
-      `kitchen_int8` changes Linear numerics. `sol_attn` / `sage_attn` also change
-      the attention algorithm. Neither is a consistency ground-truth mode. The
-      BF16 path is unchanged when `comfy-kitchen` is not installed.
-    </Warning>
-
-    Pre-quantized and compact H3 text encoders are listed once in
-    [Checkpoint and adapter formats](#checkpoint-and-adapter-formats). They use
-    component-local paths and never inherit the DiT's `--quantization` setting.
-    SGLang reads their metadata before constructing the native Qwen3-VL encoder and
-    fails closed when the selected format, projection, or topology is incompatible.
-  </Tab>
-
-  <Tab title="Cube sparse attention">
-    Cube sparse attention applies TopK sparsity only to H3's 3D visual streams.
-    Text, audio, standalone reference images, and the text-only token refiner stay
-    dense. It runs on pure PyTorch plus FlexAttention, so it has no third-party
-    kernel dependency.
-
-    Select it for the H3 transformer with
-    `--component-attention-backends transformer=cube_sparse_attn` and pass
-    `--attention-backend-config` with both `local_cube_size` and
-    `topk_ratio_list`. Scoping the backend leaves the text encoder on its native
-    backend:
-
-    ```bash Command theme={null}
-    sglang serve \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant ref2va \
-      --num-gpus 8 \
-      --ulysses-degree 8 \
-      --performance-mode speed \
-      --component-attention-backends transformer=cube_sparse_attn \
-      --attention-backend-config '{"local_cube_size": [4, 4, 4], "topk_ratio_list": [1.0, 1.0, 0.8, 0.7, 0.6, 0.5, 0.5]}' \
-      --port 30010
-    ```
-
-    * `local_cube_size` is the `(T, H, W)` cube that groups neighboring latent
-      tokens into one attention block. It must have exactly three entries.
-    * `topk_ratio_list` sets the per-step keep ratio and must have exactly one
-      entry per denoise step, each in `(0, 1]`. A ratio of `1.0` keeps a step
-      on H3's native dense attention path; smaller values select the FlexAttention
-      sparse path and drop more blocks. The example above matches a request with
-      `num_inference_steps: 8`, whose endpoint-inclusive sigma schedule has seven
-      denoise updates.
-
-    Cube labeling is coordinate-driven. FL2VA keyframes share the target video's
-    position grid, so a keyframe token and a target token at the same `(T, H, W)`
-    coordinate receive the same semantic cube label. Duplicate coordinates do not
-    extend the temporal grid; a semantic cube can therefore span multiple physical
-    attention blocks. In Ref2VA, standalone reference images remain dense, while
-    reference videos and the target video contribute to one global TopK candidate
-    pool rather than receiving separate per-stream quotas.
-
-    <Warning>
-      Cube sparse attention is an approximate backend and is not a consistency
-      ground-truth mode. `topk_ratio_list` length must equal the denoise step count
-      or the server rejects the request. Cube sparse attention does not support Ring
-      parallelism; use `--ulysses-degree` without `--ring-degree`. FlexAttention's
-      routing overhead can outweigh sparse-kernel savings on short sequences, so
-      benchmark latency as well as visual and audio quality on the target workload.
-    </Warning>
-  </Tab>
-
-  <Tab title="SubBlock sparse attention">
-    SubBlock sparse attention applies training-free block sparsity to MiniMax-H3's
-    long, non-causal DiT self-attention. The BF16 path supports CUDA SM90, SM100,
-    and SM120. Other compute capabilities, including SM103/B300, are rejected.
-    Ulysses sequence parallelism is supported; Ring parallelism is not.
-
-    The global backend selects the H3 DiT lazily, so keep the Qwen text encoder on
-    its compatible dense backend with a component override:
-
-    ```bash Command theme={null}
-    sglang serve \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant fl2va \
-      --num-gpus 8 \
-      --ulysses-degree 8 \
-      --attention-backend subblock_sparse_attn \
-      --component-attention-backends text_encoder=fa \
-      --attention-backend-config '{"sparsity": 0.75, "skip_first_steps": 10}' \
-      --port 30010
-    ```
-
-    Use `text_encoder=torch_sdpa` on SM120. The default configuration drops at
-    most 75% of key blocks after the first 10 denoise forwards; short sequences,
-    cross-attention, and unsupported shapes continue on the dense path. Tune
-    `sparsity` and `skip_first_steps` together with visual and audio quality checks.
-
-    On H100/H200 (SM90), `compute_mode=sage_fp8` switches the sparse kernel to
-    online INT8 Q/K and FP8 P/V compute. Install the optional kernel and add the
-    compute mode:
-
-    ```bash Command theme={null}
-    pip install git+https://github.com/thu-ml/SpargeAttn.git --no-build-isolation
-
-    sglang serve \
-      --model-path MiniMaxAI/MiniMax-H3 \
-      --model-variant fl2va \
-      --num-gpus 8 \
-      --ulysses-degree 8 \
-      --attention-backend subblock_sparse_attn \
-      --component-attention-backends text_encoder=fa \
-      --attention-backend-config '{"compute_mode": "sage_fp8", "sparsity": 0.75}' \
-      --port 30010
-    ```
-
-    <Warning>
-      Both SubBlock routing and `sage_fp8` are approximate. Use dense BF16 attention
-      for consistency ground truth, and validate the selected sparsity on the target
-      resolution, duration, task, and checkpoint.
-    </Warning>
-  </Tab>
-
-  <Tab title="Encoder scheduling">
-    The picker explicitly writes `--encoder-parallel auto` in every single-node
-    recipe. At the default request batch size of one, H100/H200/B200/B300 servers
-    with peer-to-peer access fold the Qwen encoder across otherwise idle Ulysses
-    ranks. A pure-TP recipe keeps the encoder inside its TP group, while a
-    PCIe-only host can avoid an expensive world fold. Keep `auto` unless one of
-    the cases below applies.
-
-    Encoder DP is a throughput policy for compatible request batches. It requires
-    TP1 and DiT DP1, replicates the encoder weights, and does not improve a batch
-    of one:
-
-    ```bash Overlay theme={null}
-    --encoder-parallel dp \
-    --batching-max-size 2
-    ```
-
-    The cross-node picker recipe already uses replication because the automatic
-    fold decision is not node-boundary aware:
-
-    ```bash Overlay theme={null}
-    --encoder-parallel replicate
-    ```
-  </Tab>
-</Tabs>
+> [tab] Encoder scheduling
+>
+> The picker explicitly writes `--encoder-parallel auto` in every single-node
+> recipe. At the default request batch size of one, H100/H200/B200/B300 servers
+> with peer-to-peer access fold the Qwen encoder across otherwise idle Ulysses
+> ranks. A pure-TP recipe keeps the encoder inside its TP group, while a
+> PCIe-only host can avoid an expensive world fold. Keep `auto` unless one of
+> the cases below applies.
+>
+> Encoder DP is a throughput policy for compatible request batches. It requires
+> TP1 and DiT DP1, replicates the encoder weights, and does not improve a batch
+> of one:
+>
+> ```bash Overlay theme={null}
+> --encoder-parallel dp \
+> --batching-max-size 2
+> ```
+>
+> The cross-node picker recipe already uses replication because the automatic
+> fold decision is not node-boundary aware:
+>
+> ```bash Overlay theme={null}
+> --encoder-parallel replicate
+> ```
 
 ## 10. Configuration notes
 
@@ -1415,7 +1589,9 @@ override or checking its installation, topology limits, and validation evidence.
 * The distilled pipeline uses a single denoising branch, so CFG parallelism does not apply. Keep it disabled: a CFG degree greater than 1 is accepted for request compatibility, but the extra ranks only recompute the same branch and do not accelerate the request. Explicitly disabling CFG, or setting its size to 1, remains a valid no-op.
 * The released visual VAE quality recipe uses overlapping tiled decode. SGLang keeps that recipe by default and distributes complete tiles across the decode group; this changes scheduling, not the computation inside each tile.
 * H3 rejects `--vae-config.parallel-decode-mode spatial` and `spatial_shard`: validation found output mismatches. Use the default released tiled recipe.
+* On CUDA, `quality: "lossless"` (the default) decodes up to `vae_config.decoder_tile_batch` (64) spatial tiles and `vae_config.window_batch` (1) temporal windows per video VAE decoder forward, next to the fused Q/K norm+RoPE and cuDNN SDPA; `exact` decodes one tile and one window at a time, `--performance-mode memory` does so at every level, and other platforms keep one tile per forward. On SM100+ the temporal blend and output denormalization run as bit-exact kernels at every quality level.
 * Keep the default `--encoder-parallel auto`. With the server’s default `batching_max_size` of 1, single-node H100/H200/B200/B300 recipes with peer-to-peer access fold the Qwen text encoder over otherwise idle Ulysses ranks. This is separate from DiT tensor parallelism. A pure-TP recipe already shards the encoder over its TP group and does not add a world fold.
+* Single-node Ulysses recipes pipeline each block's all-to-all against dense attention (FlashAttention on Hopper, cuDNN SDPA on Blackwell) over the copy engine: one head group's q/k/v moves while the previous group attends, every copy (the merge into the output included) runs on the copy engine, and the output is bit-identical to the sequential exchange. It needs peer-to-peer access and stream memory operations on every rank and about 6 × (rows per rank) × heads × head\_dim extra activations per rank (2.1 GB for Ref2VA at Ulysses 2), one set shared by every resolution; when that does not fit on some rank, every rank keeps the sequential exchange. `SGLANG_DIFFUSION_ULYSSES_PIPELINE_GROUPS=0` restores the sequential exchange.
 * For throughput-oriented serving, select **DP (batched throughput)**. The picker pairs `--encoder-parallel dp` with an editable `--batching-max-size` greater than 1. Encoder DP stays inside each DiT replica and composes with encoder TP: the H100 TP2 + Ulysses2 recipe has two TP-sharded encoder copies that can split a batch, while the RTX 5090 pure-TP2 recipe has one encoder copy and therefore no additional batch-DP degree. It provides no benefit for a batch of one and is not bitwise-identical to the unsplit deployment.
 * Use explicit **Fold** to prioritize single-request latency and encoder memory on a measured high-bandwidth single-node topology. Use **Replicate** as the compatibility path when folding or encoder DP is unsuitable.
 * `--use-fsdp-inference true` shards only the DiT. MiniMax-H3 preserves the original FP32 dtype of its patch, time, and output projections during FSDP all-gather, so this path does not trade numerical correctness for memory. On 4×H100, prefer TP2 + Ulysses2 for speed; use FSDP as an explicit capacity policy rather than assuming it is faster.
@@ -1441,7 +1617,7 @@ the configurations with collected measurements:
 | Ascend NPU | 8 NPUs, TP2 + SP4, Laser Attention | 4 NPUs, TP2 + SP2, Laser Attention |
 | MI300X / MI355X | 8× Ulysses8 resident | 1×, 2×, and 4× scaling runs |
 | RTX 5090 | 1× layerwise offload, measured on a physical desktop | 2× TP2 + layerwise offload |
-| RTX 4090 24 GB | 1× layerwise offload + `kitchen_int8` | Spectrum and approximate attention backends are opt-in |
+| RTX 4090 24 GB | 1× layerwise offload + `convrot_int8` | Spectrum and approximate attention backends are opt-in |
 
 ### GB300 single-host
 
@@ -1458,7 +1634,7 @@ Dynamic cuDNN/FA attention, and eager execution. The model was downloaded by
 `sglang serve` from `MiniMaxAI/MiniMax-H3`.
 
 The workload uses the builder's cat-band prompt, FL2VA T2VA, a 5-second request
-at a 768-pixel short edge, 50 inference steps, `quality="lossless"`, one output,
+at a 768-pixel short edge, 50 inference steps, `quality="exact"`, one output,
 and seed 1101. Every MP4 contained video and audio and passed a full decode check.
 
 | First full request after server warmup | Following three requests | Warm median |
@@ -1563,36 +1739,39 @@ python3 -m sglang.multimodal_gen.benchmarks.bench_serving \
 | Ref2VA | FP8 | fold | 112.0 s | 34.44 s | **27.12 s** | 52,816 MB |
 | Ref2VA | FP8 | replicate | 116.0 s | 33.42 s | **27.12 s** | 93,396 MB |
 
-### FastH3 on B300
+### FastH3 on GB300
 
-The same 4× B300 host served [FastH3](#6-fasth3-4-step-distilled-preview)
-with the VSA-H3 recipe above (1344×768 at 24 fps with audio, `task: "t2va"`,
-`num_inference_steps: 5`, seed 1000, eager BF16, Ulysses4, `VSA_sparsity` 0.9).
-E2E is the client wall clock of a `/v1/videos` request including decode,
-muxing, and file output, median of three requests after one warm request;
-the stage columns are the server timings of the same request. H3 aligns the
-requested durations to 124, 243, and 362 frames. Client RTF is E2E divided by
-the video duration:
+A 4× GB300 host served [FastH3](#6-fasth3-8-step-distilled) with the VSA-H3
+recipe above (1344×768 at 24 fps with audio, `task: "t2va"`,
+eight DiT forwards, the default `quality: "extra-high"` and sparsity 0.8,
+eager BF16, Ulysses4, `NCCL_NVLS_ENABLE=0`), measured with the MP4 encoded
+while the VAE decodes
+([sgl-project/sglang#41819](https://github.com/sgl-project/sglang/pull/41819)).
+The workload is 72 requests at
+concurrency 1 after one warm request per shape: six scene families, 1,000- and
+10,000-token prompts, 5 / 10 / 15 s, two seeds, every prompt unique so no
+conditioning cache hits. E2E is the client wall clock from submission to the
+last byte of the MP4; the stage columns are the server timings of the same
+requests. Each cell is the median of the 12 requests of that shape:
 
-| Requested / aligned | Encoder | Denoise (4 forwards) | Decode | Transport + MP4 | E2E | Client RTF | Peak/GPU |
-| - | -: | -: | -: | -: | -: | -: | -: |
-| 5 s / 124 | 0.07 s | 2.18 s | 0.87 s | 0.9 s | **4.1 s** | 0.79 | 95,744 MB |
-| 10 s / 243 | 0.07 s | 4.83 s | 1.71 s | 1.3 s | **8.0 s** | 0.79 | 102,666 MB |
-| 15 s / 362 | 0.07 s | 8.80 s | 2.56 s | 1.8 s | **13.3 s** | 0.88 | 110,774 MB |
+| Prompt / requested / aligned | Text encoder | Denoise (8 forwards) | Decode (video + audio) | E2E | Peak/GPU |
+| - | -: | -: | -: | -: | -: |
+| 1K / 5 s / 124 | 0.10 s | 3.84 s | 0.56 s | **5.20 s** | 94,468 MB |
+| 1K / 10 s / 243 | 0.10 s | 8.45 s | 1.12 s | **10.74 s** | 97,628 MB |
+| 1K / 15 s / 362 | 0.10 s | 14.85 s | 1.72 s | **18.24 s** | 100,246 MB |
+| 10K / 5 s / 124 | 0.18 s | 6.31 s | 0.55 s | **7.90 s** | 94,510 MB |
+| 10K / 10 s / 243 | 0.18 s | 12.35 s | 1.12 s | **14.98 s** | 98,128 MB |
+| 10K / 15 s / 362 | 0.18 s | 20.28 s | 1.67 s | **24.01 s** | 100,408 MB |
 
-All three requests finish faster than playback. Dense FA on the same weights
-and topology takes 3.77 / 9.84 / 18.45 s (`sglang generate`, stage sum): it is
-competitive at 5 s, and VSA-H3 pulls ahead from 10 s on. At 5 s,
-TP2 + Ulysses2 (3.42 s, 62,290 MB), FSDP + Ulysses4 (3.42 s, 50,984 MB), and
-online `--quantization fp8` (2.93 s, 64,204 MB) trade a little latency for
-peak memory.
+Over all 72 requests the E2E p50 / p90 / p95 is 12.94 / 23.94 / 24.08 s, and
+every MP4 carries 1344×768 H.264 at 24 fps with a 32 kHz stereo AAC track.
 
 ### VDN-H3 on B200
 
 An 8× B200 (SM100, 183 GB) host served [VDN-H3](#7-vdn-h3-hybrid-attention-8-step-distill)
 on the paper workload: 1344×768 at 24 fps with audio for 14.375 s (345 frames,
 102 latent frames, about 104k packed rows), `task: "t2va"`,
-`num_inference_steps: 9` (8 DiT forwards), seed 1000, `hybrid_window_attn_h3`,
+nine sigma grid points (8 DiT forwards), seed 1000, `hybrid_window_attn_h3`,
 eager, and the warmup run at the served clip shape
 (`--warmup-num-frames 345 --warmup-resolutions 1344x768`), so every forward
 of the served request is steady state; without those flags the first forward
@@ -1600,9 +1779,12 @@ pays 2 to 3 s of allocator growth and kernel setup. "Steady
 s/NFE" is the mean of forwards 2 to 8. The OpenVDN reference rows ran the released
 inference stack (`8nfe_tuned_fp8.yaml`, `infer_ulysses.py`) on the same host
 and the same clip length, with its Ulysses layout (`parallel.softmax_ranks`)
-swept at every GPU count rather than assumed. Every row below comes from one
-campaign, one arm at a time on an otherwise idle node; a repeated arm moves by
-about 3% across nodes, so treat smaller differences as noise:
+swept at every GPU count rather than assumed. The SGLang rows were re-measured
+in one campaign at `f1a2ee763d`, one arm at a time on an otherwise idle node,
+each with the [8×B200 recipe](#7-vdn-h3-hybrid-attention-8-step-distill) and
+only `--num-gpus` and `--quantization` changed; the OpenVDN reference rows come
+from an earlier campaign on the same host type. A repeated arm moves by about
+3% across nodes, so treat smaller differences as noise:
 
 | Config | Steady s/NFE | Denoise (8 forwards) | Decode | Peak/GPU |
 | - | -: | -: | -: | -: |
@@ -1612,18 +1794,18 @@ about 3% across nodes, so treat smaller differences as noise:
 | OpenVDN reference, FP8, 2× B200 Ulysses (standard / 1+1 branch-parallel) | 4.87 / 5.04 | 39.0 / 40.3 s | — | — |
 | OpenVDN reference, FP8, 4× B200 Ulysses (3+1 branch-parallel) | 2.59 | 20.7 s | — | — |
 | OpenVDN reference, FP8, 8× B200 Ulysses (5+3 / 4+4 / standard) | 1.40 / 1.47 / 1.52 | 11.2 / 11.7 / 12.2 s | — | — |
-| SGLang, `--quantization bf16`, 1× B200 | 7.45 | 58.8 s | 8.8 s | 156,298 MB |
-| SGLang, `--quantization fp8` (→ online `mxfp8` on SM100+), 1× B200 | 6.03 | 47.6 s | 8.7 s | 128,418 MB |
-| SGLang default (online `mxfp8`), 2× B200 Ulysses2, `--performance-mode speed`, served-shape warmup | **3.30** | **25.9 s** | 4.7 s | 106,738 MB |
-| SGLang, `--quantization bf16`, 4× B200 Ulysses4, `--performance-mode speed`, served-shape warmup | 2.06 | 16.2 s | 2.3 s | 108,434 MB |
-| SGLang default (online `mxfp8`), 4× B200 Ulysses4, `--performance-mode speed`, served-shape warmup | **1.67** | **13.1 s** | 2.4 s | 85,244 MB |
-| SGLang default (online `mxfp8`), 8× B200 Ulysses8, `--performance-mode speed`, served-shape warmup | **0.88** | **6.9 s** | 1.5 s | 79,972 MB |
-| SGLang, per-channel fp8 weight scales (the online `fp8` path of other models; on SM100+ `--quantization fp8` resolves to `mxfp8`, so this arm selects the per-channel path explicitly), 8× B200 Ulysses8 | 0.98 | 7.7 s | 1.5 s | 79,504 MB |
+| SGLang, `--quantization bf16`, 1× B200, `--performance-mode speed`, served-shape warmup | 7.27 | 58.2 s | 7.0 s | 156,298 MB |
+| SGLang, `--quantization fp8` (→ online `mxfp8` on SM100+), 1× B200, `--performance-mode speed`, served-shape warmup | 5.93 | 47.4 s | 7.0 s | 128,420 MB |
+| SGLang default (online `mxfp8`), 2× B200 Ulysses2, `--performance-mode speed`, served-shape warmup | **3.25** | **26.0 s** | 3.7 s | 102,664 MB |
+| SGLang, `--quantization bf16`, 4× B200 Ulysses4, `--performance-mode speed`, served-shape warmup | 2.05 | 16.4 s | 2.1 s | 104,358 MB |
+| SGLang default (online `mxfp8`), 4× B200 Ulysses4, `--performance-mode speed`, served-shape warmup | **1.67** | **13.3 s** | 2.1 s | 81,168 MB |
+| SGLang default (online `mxfp8`), 8× B200 Ulysses8, `--performance-mode speed`, served-shape warmup | **0.85** | **6.8 s** | 1.4 s | 76,918 MB |
+| SGLang, per-channel fp8 weight scales (the online `fp8` path of other models; on SM100+ `--quantization fp8` resolves to `mxfp8` and no flag selects the per-channel path, so this arm forces it), 8× B200 Ulysses8 | 0.91 | 7.3 s | 1.4 s | 76,450 MB |
 
-On 8× B200 the SGLang Ulysses8 path runs the paper workload at 0.88 s/NFE
-(7.0 GPU-seconds per NFE) against the published 1.40 s/NFE of OpenVDN's 5+3
+On 8× B200 the SGLang Ulysses8 path runs the paper workload at 0.85 s/NFE
+(6.8 GPU-seconds per NFE) against the published 1.40 s/NFE of OpenVDN's 5+3
 branch-parallel layout; the whole request (text encoding, 8 forwards, joint
-decode) completes in about 8.7 s after warmup. At this GPU count the step is
+decode) completes in about 8.2 s after warmup. At this GPU count the step is
 launch- and copy-bound in the linear branch rather than FLOP-bound, and the
 transformer runs online `mxfp8` by default (e4m3 with one E8M0 scale per 32
 elements into cuBLASLt's block-scaled GEMM, with the activation quant fused
@@ -1632,11 +1814,11 @@ into the adaLN and SwiGLU producers).
 Against the published 8× B200 headline (1.40 s/NFE, 11.2
 GPU-seconds per NFE), the SGLang 4× B200 run spends 6.7 GPU-seconds per
 NFE, with half the GPUs and half the all-to-all fan-out. At equal GPU count
-SGLang is 1.48× faster at two cards (3.30 vs 4.87 s/NFE), 1.55× at four
-(1.67 vs 2.59) and 1.60× at eight (0.88 vs 1.40), while on one card the two
-stacks are within 4% of each other (6.03 vs 6.25 s/NFE quantized, 7.45 vs 7.66
+SGLang is 1.50× faster at two cards (3.25 vs 4.87 s/NFE), 1.56× at four
+(1.67 vs 2.59) and 1.66× at eight (0.85 vs 1.40), while on one card the two
+stacks are within 5% of each other (5.93 vs 6.25 s/NFE quantized, 7.27 vs 7.66
 in BF16). The advantage is therefore parallel scaling rather than per-GPU
-kernel work: SGLang holds 86-91% parallel efficiency from 2 to 8 cards against
+kernel work: SGLang holds 88-91% parallel efficiency from 2 to 8 cards against
 the reference stack's 56-64%, and sweeping the reference stack's own layout
 does not close it (its best split is 8% better than standard Ulysses at eight
 cards, 1.40 against 1.52 s/NFE).
@@ -1759,12 +1941,12 @@ across hops accumulates floating-point operations in a different order
 than single-node attention, which is an expected source of bit-level
 difference, not a correctness regression.
 
-<Warning>
-  `--encoder-parallel auto`'s fold decision is not yet node-boundary aware
-  and attempts to fold the text encoder across nodes, which crashes the
-  Ref2VA reference-conditioned encoder. Always pass
-  `--encoder-parallel replicate` explicitly for cross-node H3 deployments.
-</Warning>
+> [!WARNING]
+>
+> `--encoder-parallel auto`'s fold decision is not yet node-boundary aware
+> and attempts to fold the text encoder across nodes, which crashes the
+> Ref2VA reference-conditioned encoder. Always pass
+> `--encoder-parallel replicate` explicitly for cross-node H3 deployments.
 
 ### H100 topology comparison
 
@@ -2080,15 +2262,15 @@ timed (seed 42); only the timed pass is reported. GPU peak stayed about
 | Config | Timed e2e | Denoise | vs BF16 | PSNR vs BF16 |
 | - | -: | -: | -: | -: |
 | BF16 + FlashAttention | 405.6 s | 370.2 s | 1.00× | — |
-| `kitchen_int8` + FA | 303.3 s | 273.7 s | 1.34× | 24.81 dB |
-| `kitchen_int8` + `sol_attn` | 223.9 s | 203.9 s | 1.81× | 24.44 dB |
-| `kitchen_int8` + `sage_attn` | 174.9 s | 154.2 s | 2.32× | 23.51 dB |
-| `kitchen_int8` + Sage→Sol hybrid | 163.8 s | 143.1 s | 2.48× | 23.04 dB |
+| `convrot_int8` + FA | 303.3 s | 273.7 s | 1.34× | 24.81 dB |
+| `convrot_int8` + `sol_attn` | 223.9 s | 203.9 s | 1.81× | 24.44 dB |
+| `convrot_int8` + `sage_attn` | 174.9 s | 154.2 s | 2.32× | 23.51 dB |
+| `convrot_int8` + Sage→Sol hybrid | 163.8 s | 143.1 s | 2.48× | 23.04 dB |
 
-`kitchen_int8` + FA changes Linear numerics only. The `sol_attn` /
+`convrot_int8` + FA changes Linear numerics only. The `sol_attn` /
 `sage_attn` / hybrid rows also change the attention algorithm, so speed
 and pixel fidelity rank in opposite orders there. Default remains
-`kitchen_int8` + `fa`. Cache-DiT can share this layerwise recipe; omit
+`convrot_int8` + `fa`. Cache-DiT can share this layerwise recipe; omit
 `quality` and see the quality-level section.
 
 Same card, 50-step run. Speedup is vs BF16+FA. PSNR is vs same-tree INT8+FA (Spectrum off).
@@ -2096,10 +2278,10 @@ Same card, 50-step run. Speedup is vs BF16+FA. PSNR is vs same-tree INT8+FA (Spe
 | Config | e2e | vs BF16+FA | PSNR mean / min |
 | - | -: | -: | -: |
 | BF16 + FlashAttention | 1008.6 s | 1.00× | — |
-| `kitchen_int8` + FA | 718.5 s | 1.40× | — |
-| `kitchen_int8` + FA + Spectrum `11 / 5 / 1.0` | **285.3 s** | **3.53×** | **27.4 / 25.3** |
-| `kitchen_int8` + `sage_attn` + Spectrum `15 / 5 / 0` | 245.3 s | 4.11× | 23.6 / 21.0 |
-| `kitchen_int8` + Sage→Sol hybrid + Spectrum `15 / 5 / 0.5` | **219.0 s** | **4.61×** | 20.6 / 17.8 |
+| `convrot_int8` + FA | 718.5 s | 1.40× | — |
+| `convrot_int8` + FA + Spectrum `11 / 5 / 1.0` | **285.3 s** | **3.53×** | **27.4 / 25.3** |
+| `convrot_int8` + `sage_attn` + Spectrum `15 / 5 / 0` | 245.3 s | 4.11× | 23.6 / 21.0 |
+| `convrot_int8` + Sage→Sol hybrid + Spectrum `15 / 5 / 0.5` | **219.0 s** | **4.61×** | 20.6 / 17.8 |
 
 Prefer FA + `11 / 5 / 1.0` when the bar is FA-like. Sage / hybrid + Spectrum is faster; quality then follows the attention backend, not the skip schedule.
 
@@ -2141,12 +2323,35 @@ MI300X.
 
 ## 10. Run in ComfyUI
 
-<ComfyUISupport model="minimax-h3" />
+Run this model from ComfyUI with the
+[SGLDiffusion plugin](https://github.com/sgl-project/sglang/tree/main/python/sglang/multimodal_gen/apps/ComfyUI_SGLDiffusion), which ships in the SGLang
+repository at `python/sglang/multimodal_gen/apps/ComfyUI_SGLDiffusion`.
 
+**Server mode** — SGLang runs the pipeline and ComfyUI
+sends the request. Start a server as shown above, point the
+`SGLDiffusion Server Model` node at it, then generate with
+`SGLDiffusion Generate H3`.
+This path has been run end to end against a live server.
+
+**Integrated mode** — not available for this model
+: H3 denoises a packed video-and-audio sequence in one pass and routes conditioning by task, while ComfyUI's KSampler drives a single latent tensor and has no audio branch
+. Use server mode.
 
 ---
 
 ## Appendix A: MDX components and recipe data
+
+> [!WARNING]
+>
+> **Snapshot from 2026-09-29, not re-verified on 2026-11-04.** The current page
+> exports Markdown instead of MDX, so this block cannot be refreshed from the page and
+> several of its values are now behind the live recipe: the request `quality` tiers were
+> renamed (`lossless` → `exact` for the reference-exact tier, `extra-high` → `lossless`
+> for the fusion-only default), `--quantization kitchen_int8` is now `convrot_int8`, and
+> FastH3 moved from the 4-step preview to the 8-step V2 / Omni checkpoints. Treat the
+> numbered sections above as authoritative; this appendix is kept only because it is the
+> only record of the builder's selectable options.
+
 
 Verbatim copy of the component definitions and the `config` object that the live page uses
 to render the interactive deployment builder (hardware profiles, precision, parallelism,

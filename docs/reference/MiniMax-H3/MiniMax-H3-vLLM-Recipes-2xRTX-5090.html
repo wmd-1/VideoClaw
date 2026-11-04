@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniMaxAI/MiniMax-H3 · 2× RTX 5090 — offline copy</title>
+<meta name="description" content="Offline copy of https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&task=t2va">
+<style>
+/* --- base.css --- */
+/* ============================================================ tokens */
+:root {
+  --brand: #2563eb;
+  --output-accent: var(--brand);
+  --bg: #ffffff;
+  --bg-raised: #fbfbfc;
+  --well: #f6f7f9;
+  --code-bg: #f8f9fb;
+  --text: #212226;
+  --text-strong: #0d0e11;
+  --muted: #6c6f77;
+  --line: #e6e7ea;
+  --line-strong: #d3d5da;
+  --shadow: 0 1px 2px rgba(16, 18, 22, .05), 0 8px 24px -12px rgba(16, 18, 22, .12);
+  --topbar-h: 60px;
+  --radius: 10px;
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --note: #2563eb; --note-bg: #eff5ff;
+  --warn: #b45309; --warn-bg: #fff8ec;
+  --info: #0e7490; --info-bg: #ecfbff;
+  --tip: #15803d;  --tip-bg: #effcf3;
+  --tok-comment: #8a8f98; --tok-key: #a626a4; --tok-str: #0a7d43;
+  --tok-num: #b3541c; --tok-fn: #2c6bce; --tok-var: #9c3b3b; --tok-meta: #6b7280;
+}
+html[data-theme="dark"] {
+  --bg: #0d0e11;
+  --bg-raised: #14161a;
+  --well: #17191e;
+  --code-bg: #101216;
+  --text: #dcdde1;
+  --text-strong: #f4f5f7;
+  --muted: #8b8f99;
+  --line: #26282e;
+  --line-strong: #33363d;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -14px rgba(0, 0, 0, .7);
+  --note-bg: #101a2e; --warn-bg: #221a0d; --info-bg: #0c1e24; --tip-bg: #0f1f14;
+  --note: #7aa2f7; --warn: #e0a34a; --info: #56c2d6; --tip: #7dd89b;
+  --tok-comment: #6f747d; --tok-key: #c678dd; --tok-str: #98c379;
+  --tok-num: #d19a66; --tok-fn: #61afef; --tok-var: #e06c75; --tok-meta: #8b8f99;
+}
+
+/* ============================================================ base */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 15px; line-height: 1.7;
+  font-feature-settings: "cv02", "cv03";
+  -webkit-font-smoothing: antialiased;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--brand); color: #fff; padding: 8px 14px; border-radius: 0 0 8px 0;
+}
+.skip:focus { left: 0; }
+::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+
+/* ============================================================ topbar */
+.topbar {
+  position: sticky; top: 0; z-index: 40; height: var(--topbar-h);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-inner {
+  height: 100%; max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: flex; align-items: center; gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.brand-title {
+  font-weight: 600; font-size: 14.5px; color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.filter {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px;
+  background: var(--well); border: 1px solid var(--line); border-radius: 8px; color: var(--muted);
+}
+.filter svg { width: 14px; height: 14px; flex: none; }
+.filter input { border: 0; background: none; outline: none; font: inherit; font-size: 13px; color: var(--text); width: 150px; }
+.filter kbd {
+  font: 600 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 3px 5px; background: var(--bg);
+}
+.tool {
+  font: inherit; font-size: 13px; color: var(--muted); background: var(--well);
+  border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 11px; cursor: pointer;
+  display: inline-flex; align-items: center; text-decoration: none;
+}
+.tool:hover { color: var(--text-strong); border-color: var(--line-strong); }
+.tool svg { width: 16px; height: 16px; }
+#theme-toggle .ico-moon { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-sun { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-moon { display: block; }
+@media (max-width: 860px) { .filter, #toc-toggle { display: none; } }
+
+/* ============================================================ layout */
+.shell {
+  max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 40px;
+  align-items: start;
+}
+.sidebar { position: sticky; top: var(--topbar-h); max-height: calc(100vh - var(--topbar-h)); overflow: auto; padding: 28px 0 40px; scrollbar-width: thin; }
+.main { min-width: 0; padding-bottom: 24px; }
+.toc-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+.toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--line); }
+.toc li { margin: 0; }
+.toc a {
+  display: block; padding: 5px 0 5px 13px; margin-left: -1px; font-size: 13px; line-height: 1.45;
+  color: var(--muted); text-decoration: none; border-left: 2px solid transparent;
+}
+.toc a:hover { color: var(--text-strong); }
+.toc a.is-active { color: var(--brand); border-left-color: var(--brand); font-weight: 500; }
+.toc-l3 a { padding-left: 26px; font-size: 12.5px; }
+.toc-l4 a { padding-left: 38px; font-size: 12.5px; }
+body.toc-open .sidebar { display: block; }
+@media (max-width: 1100px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: fixed; inset: var(--topbar-h) auto 0 0; width: 280px; background: var(--bg-raised); border-right: 1px solid var(--line); padding: 20px 16px; transform: translateX(-100%); transition: transform .18s ease; z-index: 30; }
+  body.toc-open .sidebar { transform: none; box-shadow: var(--shadow); }
+}
+@media (min-width: 1101px) { .sidebar { display: block; } }
+
+/* ============================================================ prose */
+.prose { max-width: 780px; margin: 0 auto; padding: 30px 0 8px; }
+.prose > *:first-child { margin-top: 0; }
+.prose h1, .prose h2, .prose h3, .prose h4 { color: var(--text-strong); font-weight: 600; scroll-margin-top: calc(var(--topbar-h) + 18px); }
+.prose h1 { font-size: 31px; line-height: 1.25; letter-spacing: -.02em; margin: 0 0 10px; }
+.prose h2 { font-size: 22px; line-height: 1.35; margin: 46px 0 14px; padding-top: 20px; border-top: 1px solid var(--line); }
+.prose h3 { font-size: 17.5px; margin: 32px 0 10px; }
+.prose h4 { font-size: 15.5px; margin: 26px 0 8px; }
+.prose .heading { position: relative; }
+.heading-anchor { position: absolute; left: -22px; top: .18em; width: 16px; color: var(--muted); opacity: 0; transition: opacity .12s; }
+.heading-anchor svg { width: 15px; height: 15px; }
+.heading:hover .heading-anchor, .heading-anchor:focus { opacity: 1; }
+.prose p, .prose ul, .prose ol, .prose blockquote { margin: 14px 0; }
+.prose > h1 + blockquote {
+  font-size: 17px; line-height: 1.6; color: var(--muted); border: 0; padding: 0; margin: 0 0 26px; background: none;
+}
+.prose ul, .prose ol { padding-left: 24px; }
+.prose li { margin: 6px 0; }
+.prose li::marker { color: var(--muted); }
+.prose strong { color: var(--text-strong); font-weight: 600; }
+.prose em { font-style: italic; }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+.prose blockquote { border-left: 2px solid var(--line-strong); padding-left: 15px; color: var(--muted); }
+.prose :not(pre) > code {
+  font-family: var(--mono); font-size: .855em; background: var(--well);
+  border: 1px solid var(--line); border-radius: 5px; padding: .1em .35em; color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+html[data-theme="dark"] .prose :not(pre) > code { background: #1b1e24; border-color: #2a2d34; }
+.prose a.link { color: var(--brand); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+.prose a.link:hover { border-bottom-color: var(--brand); }
+.prose a.external svg { width: .78em; height: .78em; display: inline-block; vertical-align: baseline; margin-left: 2px; }
+.prose img { max-width: 100%; border-radius: var(--radius); border: 1px solid var(--line); }
+.prose details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 14px 0; background: var(--bg-raised); }
+.prose summary { cursor: pointer; font-weight: 500; color: var(--text-strong); }
+.tablewrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: var(--radius); scrollbar-width: thin; }
+/* :where() keeps these at zero specificity so a doc's own stylesheet (SGLang ships
+   table rules in its Mintlify custom.css) still wins where it defines them. */
+:where(.prose) table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+:where(.prose) thead th { text-align: left; font-weight: 600; color: var(--text-strong); background: var(--well); padding: 9px 13px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+:where(.prose) tbody td { padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+:where(.prose) tbody tr:last-child td { border-bottom: 0; }
+:where(.prose) tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--well) 45%, transparent); }
+
+/* ============================================================ tabs */
+.tabs { margin: 22px 0; }
+.tablist { display: flex; gap: 2px; list-style: none; margin: 0; padding: 0 0 0 2px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.tab-btn {
+  font: inherit; font-size: 13.5px; white-space: nowrap; cursor: pointer;
+  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 8px 13px; color: var(--muted); border-radius: 6px 6px 0 0;
+}
+.tab-btn:hover { color: var(--text-strong); background: var(--well); }
+.tab-btn.is-active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 500; }
+.tab-panel { padding: 4px 0 0; }
+.tab-panel > .prose-inner > *:first-child { margin-top: 14px; }
+
+/* ============================================================ callouts */
+.callout { display: grid; grid-template-columns: 22px 1fr; gap: 0 11px; margin: 20px 0; padding: 14px 16px; border-radius: var(--radius); border: 1px solid var(--line); border-left: 3px solid var(--tone, var(--note)); background: var(--tone-bg, var(--note-bg)); }
+.callout-head { grid-column: 2; display: flex; align-items: center; gap: 7px; }
+.callout-icon { grid-row: span 2; width: 20px; height: 20px; color: var(--tone, var(--note)); }
+.callout-icon svg { width: 20px; height: 20px; }
+.callout-title { font-weight: 600; font-size: 13.5px; color: var(--tone, var(--note)); }
+.callout-body { grid-column: 2; font-size: 14px; color: var(--text); }
+.callout-body > *:first-child { margin-top: 6px; }
+.callout-body > *:last-child { margin-bottom: 0; }
+.callout-warning { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.callout-info { --tone: var(--info); --tone-bg: var(--info-bg); }
+.callout-tip { --tone: var(--tip); --tone-bg: var(--tip-bg); }
+
+/* ============================================================ code blocks */
+.codeblock { margin: 18px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--code-bg); overflow: hidden; }
+.codebar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 13px; background: var(--well); border-bottom: 1px solid var(--line); }
+.codelang { font: 500 11.5px/1 var(--mono); letter-spacing: .02em; color: var(--muted); }
+.codehint { font: 500 10.5px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); opacity: .7; }
+.copy-btn { margin-left: auto; width: 26px; height: 26px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.copy-btn:hover { color: var(--text-strong); background: color-mix(in srgb, var(--line) 55%, transparent); }
+.copy-btn svg { width: 15px; height: 15px; }
+.codeblock pre { margin: 0; padding: 14px 16px; overflow-x: auto; background: none; scrollbar-width: thin; }
+.codeblock code, .codeblock pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.65; }
+.codeblock pre { color: var(--text-strong); }
+pre code { display: block; }
+/* highlight.js tokens */
+.hljs-comment, .hljs-quote { color: var(--tok-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: var(--tok-key); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: var(--tok-str); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--tok-num); }
+.hljs-title, .hljs-function, .hljs-title.function_, .hljs-section { color: var(--tok-fn); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-selector-attr { color: var(--tok-var); }
+.hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tok-fn); }
+.hljs-meta, .hljs-meta .hljs-keyword { color: var(--tok-meta); }
+.hljs-deletion { color: var(--tok-var); }
+.hljs-name, .hljs-tag { color: var(--tok-key); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+/* ============================================================ footer */
+.page-footer { max-width: 780px; margin: 40px auto 0; padding: 18px 0 60px; border-top: 1px solid var(--line); }
+.page-footer p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.page-footer a { color: var(--brand); text-decoration: none; }
+
+/* ============================================================ print */
+@media print {
+  .topbar, .sidebar, .copy-btn, .heading-anchor { display: none !important; }
+  .shell { display: block; padding: 0; }
+  .prose { max-width: none; }
+  .tab-panel[hidden] { display: block !important; }
+  .tabs { break-inside: avoid; }
+  body { background: #fff; color: #000; }
+}
+
+</style>
+<style>:root{--brand:#5b4bd6;--output-accent:#5b4bd6}</style>
+
+<style>
+/* --- offline-copy additions (refresh 2026-11-04) --- */
+.panels-expand {
+  font: inherit; font-size: 12.5px; margin: 0 0 10px; padding: 4px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--bg-raised);
+  color: var(--muted); cursor: pointer;
+}
+.panels-expand:hover { color: var(--text-strong); background: var(--well); }
+.tab-panel[data-panel-title]::before { content: none; }
+body[data-all-panels="on"] .tab-panel[hidden] { display: block !important; }
+body[data-all-panels="on"] .tab-panel[data-panel-title]::before {
+  content: attr(data-panel-title); display: block; font-size: 12.5px; font-weight: 600;
+  color: var(--brand); letter-spacing: .02em; margin: 12px 0 -4px;
+}
+.copy-btn.is-copied::after { content: '✓'; margin-left: 4px; color: var(--tip); }
+.snapshot-note { border-left: 3px solid var(--warn); }
+</style>
+</head>
+
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-badge">vLLM Recipes</span>
+      <span class="brand-title">MiniMaxAI/MiniMax-H3 · 2× RTX 5090</span>
+    </div>
+    <div class="topbar-tools">
+      <label class="filter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="tocfilter" type="search" placeholder="Filter sections" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+      <button class="tool" id="toc-toggle" type="button" aria-expanded="false">Sections</button>
+      <button class="tool" id="theme-toggle" type="button" aria-label="Toggle dark mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path class="ico-sun" d="M12 4.5V3m0 18v-1.5M6 12a6 6 0 1 0 12 0 6 6 0 0 0-12 0Zm-1.4-4.9L3.2 5.7m16.1 14.9-1.4-1.4M4.5 12H3m18 0h-1.5M5.7 18.4l1.4-1.4M17 7l1.4-1.4"/><path class="ico-moon" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg></button>
+      <a class="tool tool-link" href="https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&task=t2va" target="_blank" rel="noreferrer noopener">View live</a>
+    </div>
+  </div>
+</header>
+<div class="shell">
+  <aside class="sidebar"><nav class="toc" id="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul>
+      <li class="toc-l2"><a href="#other-configurations" data-target="other-configurations">Other configurations</a></li>
+      <li class="toc-l2"><a href="#install" data-target="install">Install</a></li>
+      <li class="toc-l2"><a href="#serve" data-target="serve">Serve</a></li>
+      <li class="toc-l2"><a href="#guide" data-target="guide">Guide</a></li>
+      <li class="toc-l3"><a href="#overview" data-target="overview">Overview</a></li>
+      <li class="toc-l3"><a href="#model-specifications" data-target="model-specifications">Model specifications</a></li>
+      <li class="toc-l4"><a href="#input-modes-and-limits" data-target="input-modes-and-limits">Input modes and limits</a></li>
+      <li class="toc-l3"><a href="#prerequisites" data-target="prerequisites">Prerequisites</a></li>
+      <li class="toc-l3"><a href="#installation" data-target="installation">Installation</a></li>
+      <li class="toc-l4"><a href="#docker-recommended" data-target="docker-recommended">Docker (recommended)</a></li>
+      <li class="toc-l4"><a href="#pip" data-target="pip">pip</a></li>
+      <li class="toc-l3"><a href="#launch--two-2432-gb-gpus-with-distributed-layerwise-offload" data-target="launch--two-2432-gb-gpus-with-distributed-layerwise-offload">Launch — two 24/32 GB GPUs with distributed layerwise offload</a></li>
+      <li class="toc-l3"><a href="#launch--four-gpus-validated-best-practice" data-target="launch--four-gpus-validated-best-practice">Launch — four GPUs (validated best practice)</a></li>
+      <li class="toc-l4"><a href="#optional-lossy-attention-sage--skip-softmax" data-target="optional-lossy-attention-sage--skip-softmax">Optional lossy attention: SAGE + Skip-Softmax</a></li>
+      <li class="toc-l4"><a href="#fasth3-model-family" data-target="fasth3-model-family">FastH3 model family</a></li>
+      <li class="toc-l4"><a href="#fasth3-four-step-dense-and-vsa-adapters" data-target="fasth3-four-step-dense-and-vsa-adapters">FastH3 four-step Dense and VSA adapters</a></li>
+      <li class="toc-l4"><a href="#lightx2v-turbo-few-step-lora" data-target="lightx2v-turbo-few-step-lora">LightX2V Turbo few-step LoRA</a></li>
+      <li class="toc-l4"><a href="#rtx-pro-5000-blackwell--four-pcie-gpus" data-target="rtx-pro-5000-blackwell--four-pcie-gpus">RTX PRO 5000 Blackwell — four PCIe GPUs</a></li>
+      <li class="toc-l4"><a href="#amd-rocm--four-mi300x-gpus" data-target="amd-rocm--four-mi300x-gpus">AMD ROCm — four MI300X GPUs</a></li>
+      <li class="toc-l4"><a href="#amd-rocm--four-mi355x-gpus" data-target="amd-rocm--four-mi355x-gpus">AMD ROCm — four MI355X GPUs</a></li>
+      <li class="toc-l3"><a href="#launch--single-gpu-accuracy-and-memory-first" data-target="launch--single-gpu-accuracy-and-memory-first">Launch — single GPU (accuracy and memory first)</a></li>
+      <li class="toc-l3"><a href="#launch--dgx-spark-gb10-128-gb-unified-memory" data-target="launch--dgx-spark-gb10-128-gb-unified-memory">Launch — DGX Spark (GB10, 128 GB unified memory)</a></li>
+      <li class="toc-l3"><a href="#launch--single-ascend-950pr-npu-int8" data-target="launch--single-ascend-950pr-npu-int8">Launch — single Ascend 950PR NPU (INT8)</a></li>
+      <li class="toc-l3"><a href="#text-encoder-tensor-parallelism" data-target="text-encoder-tensor-parallelism">Text-encoder tensor parallelism</a></li>
+      <li class="toc-l3"><a href="#key-request-parameters" data-target="key-request-parameters">Key request parameters</a></li>
+      <li class="toc-l3"><a href="#validated-performance-4b300" data-target="validated-performance-4b300">Validated performance (4×B300)</a></li>
+      <li class="toc-l4"><a href="#validated-performance-4mi300x" data-target="validated-performance-4mi300x">Validated performance (4×MI300X)</a></li>
+      <li class="toc-l4"><a href="#cache-dit" data-target="cache-dit">Cache-DiT</a></li>
+      <li class="toc-l4"><a href="#offload-and-accuracy" data-target="offload-and-accuracy">Offload and accuracy</a></li>
+      <li class="toc-l3"><a href="#known-limitations" data-target="known-limitations">Known limitations</a></li>
+      <li class="toc-l3"><a href="#references" data-target="references">References</a></li>
+      <li class="toc-l2"><a href="#本地核对记录rtx50902x-的-6-个-task-取值" data-target="本地核对记录rtx50902x-的-6-个-task-取值">本地核对记录：rtx_5090_2x 的 6 个 task 取值</a></li>
+</ul></nav></aside>
+  <main class="main">
+    <article class="prose" id="content">
+
+<div class="callout callout-info snapshot-note"><div class="callout-head"><span class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"></path></svg></span><span class="callout-title">Offline copy</span></div><div class="callout-body"><p>Captured 2026-11-04 from the page's own Markdown export (<a class="link external" href="https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&task=t2va" target="_blank" rel="noreferrer noopener">https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&task=t2va</a>). Tab panels are collapsed by default; every panel is present in the file.</p></div></div>
+
+<h1 id="minimaxaiminimax-h3--vllm-serving-recipe" class="heading"><a class="heading-anchor" href="#minimaxaiminimax-h3--vllm-serving-recipe" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>MiniMaxAI/MiniMax-H3 — vLLM serving recipe</span></h1>
+<blockquote>
+<p>Open-weight general-purpose multimodal generation model — jointly generates 24 FPS video with native stereo audio from text, image, video, and audio references, served via vLLM-Omni</p>
+<p>Saved locally from https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3.md?hardware=rtx_5090_2x&amp;task=t2va on 2026-11-04. This is the per-configuration export for 2× RTX 5090 (variant <code>default</code>, BF16); the body below is that export verbatim. The page's other five task values (<code>fl2va_first</code>, <code>fl2va_first_last</code>, <code>ref_image</code>, <code>ref_image_audio</code>, <code>ref_video_mixed</code>) were fetched in the same session and are byte-identical to this body apart from three metadata lines and, for the reference tasks, the <code>--task-type</code> flag — the line-by-line comparison is recorded in the "本地核对记录" section at the end, so no second copy of the guide is needed here. <code>rtx_5090_2x</code> exposes no variant choice beyond <code>default</code>.</p>
+</blockquote>
+<p>Configuration: hardware <code>rtx_5090_2x</code> (2× RTX 5090) · variant <code>default</code> (BF16) · task <code>t2va</code></p>
+<ul><li>Interactive page: https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&amp;task=t2va</li><li>This configuration as JSON: https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3.json?hardware=rtx_5090_2x&amp;task=t2va</li></ul>
+<p>The commands below were rendered for exactly this configuration and take precedence over any example in the guide.</p>
+<h2 id="other-configurations" class="heading"><a class="heading-anchor" href="#other-configurations" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Other configurations</span></h2>
+<p>Change the query string (the same parameters as the page URL) and fetch this URL again. Unknown or incompatible values fall back to the recipe default, so check the Configuration line.</p>
+<ul><li><code>hardware</code>: <code>h100</code>, <code>h200</code>, <code>b200</code>, <code>gb200</code>, <code>b300</code>, <code>gb300</code>, <code>dgx_spark_gb10</code>, <code>rtx_pro_6000_2x</code>, <code>rtx_pro_5000_4x</code>, <code>rtx_4090_2x</code>, <code>rtx_5090_2x</code>, <code>mi300x</code>, <code>mi325x</code>, <code>mi350x</code>, <code>mi355x</code>, <code>ascend_950pr</code></li><li><code>variant</code>: <code>default</code></li><li><code>task</code>: <code>t2va</code>, <code>fl2va_first</code>, <code>fl2va_first_last</code>, <code>ref_image</code>, <code>ref_image_audio</code>, <code>ref_video_mixed</code></li></ul>
+<h2 id="install" class="heading"><a class="heading-anchor" href="#install" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Install</span></h2>
+<p>Requires vLLM &gt;= 0.26.0.</p>
+<p>H3 also needs current vLLM-Omni main for the modular FL2VA/Ref2VA pipeline — see the extra install block below.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">uv</span> venv
+<span class="hljs-built_in">source</span> .venv/bin/activate
+<span class="hljs-built_in">uv</span> pip install vllm==0.26.0</code></pre></figure>
+<p>Extra dependencies:</p>
+<ul><li>Gated checkpoint — request access on the model card, then download it locally. Serve the root directory: both DiTs remain in subdirectories while the modular service shares the encoder and VAEs.</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">hf</span> download MiniMaxAI/MiniMax-H3 <span class="hljs-attr">--local-dir</span> /path/to/MiniMax-H3</code></pre></figure>
+<ul><li>pip path only: install current vLLM-Omni main for the modular MiniMax-H3 pipeline.</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">git</span> clone <span class="hljs-attr">--depth</span> 1 https://github.com/vllm-project/vllm-omni.git /path/to/vllm-omni &amp;&amp; cd /path/to/vllm-omni &amp;&amp; uv pip install <span class="hljs-attr">-e</span> .</code></pre></figure>
+<ul><li>Optional FastH3 adapters: download the Dense / Data-Free baseline and the recommended VSA / Data-Free artifact under the already-mounted H3 root. FastH3 preview v1 serves T2VA only and is fused at startup. (optional)</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">hf</span> download FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA \
+  dense-datafree/adapter_model.safetensors \
+  vsa-datafree/adapter_model.safetensors \
+  <span class="hljs-attr">--local-dir</span> /path/to/MiniMax-H3/FastH3-LoRA</code></pre></figure>
+<ul><li>Optional LightX2V Turbo few-step LoRA: download one Diffusers-layout artifact under the already-mounted H3 root. The filename carries the sampling contract, so do not rename it; the _comfyui_ exports are not supported. (optional)</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">hf</span> download lightx2v/Minimax-h3-Turbo \
+  minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors \
+  <span class="hljs-attr">--local-dir</span> /path/to/MiniMax-H3/Turbo-LoRA</code></pre></figure>
+<ul><li>Optional CUDA-only FastH3 VSA kernel for the pip path. --no-deps preserves the PyTorch/CUDA stack managed by vLLM. The tested B300/SM103 route uses the Triton fallback with FASTVIDEO_VSA_SM100A=0. (optional)</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">uv</span> pip install <span class="hljs-attr">--no-deps</span> fastvideo-kernel==0.3.5</code></pre></figure>
+<ul><li>Optional pip extra for explicitly comparing FA4 on datacenter Blackwell. The generated B300/GB200 route uses the TRTLLM_ATTN default; RTX PRO 5000 and the two-GPU RTX routes use CUDNN_ATTN. (optional)</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">cd</span> /path/to/vllm-omni &amp;&amp; uv pip install <span class="hljs-attr">-e</span> <span class="hljs-string">'.[fa4]'</span></code></pre></figure>
+<ul><li>Docker path only: clone current vLLM-Omni main to the path mounted by the generated command so it overrides the older package in the image.</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">git</span> clone <span class="hljs-attr">--depth</span> 1 https://github.com/vllm-project/vllm-omni.git /path/to/vllm-omni</code></pre></figure>
+<ul><li>pip path only: ffmpeg and ffprobe must be on PATH for reference-video preparation and MP4 video+audio muxing. The official Docker images already bundle them.</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">sudo apt-get</span> install <span class="hljs-attr">-y</span> ffmpeg</code></pre></figure>
+<h2 id="serve" class="heading"><a class="heading-anchor" href="#serve" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Serve</span></h2>
+<p>vLLM-Omni recipe — the generation endpoints and request examples are in the guide below.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">export</span> VLLM_WORKER_MULTIPROC_METHOD=spawn
+<span class="hljs-built_in">export</span> VLLM_OMNI_VIDEO_SYNC_TIMEOUT=14400
+<span class="hljs-built_in">export</span> FLASHINFER_DISABLE_VERSION_CHECK=1
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--task-type</span> fl2va \
+  <span class="hljs-attr">--num-gpus</span> 2 \
+  <span class="hljs-attr">--tensor-parallel-size</span> 2 \
+  <span class="hljs-attr">--usp</span> 1 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--text-encoder-tp-size</span> 2 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 2 \
+  <span class="hljs-attr">--diffusion-attention-backend</span> CUDNN_ATTN \
+  <span class="hljs-attr">--enable-distributed-layerwise-offload</span> \
+  <span class="hljs-attr">--dlo-no-use-allgather</span> \
+  <span class="hljs-attr">--dlo-resident-layers</span> 20 \
+  <span class="hljs-attr">--enforce-eager</span> \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--omni</span></code></pre></figure>
+<h2 id="guide" class="heading"><a class="heading-anchor" href="#guide" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Guide</span></h2>
+<blockquote>
+<p>Background reference. Commands in it are examples and may target another configuration — use the Serve section above.</p>
+</blockquote>
+<h3 id="overview" class="heading"><a class="heading-anchor" href="#overview" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Overview</span></h3>
+<p>MiniMax H3 is an <strong>open-weight, general-purpose multimodal generation model</strong>. Rather than being confined to one specialized task — generate, edit, or reference — H3 reads a multimodal context that mixes text, images, video, and audio together, interprets the creative intent as a whole, and produces coherent audio-visual output end to end.</p>
+<p>Architecturally it is a <strong>CFG-distilled joint video/audio diffusion transformer</strong> served through vLLM-Omni's OpenAI-compatible <code>/v1/videos</code> API. Every request returns a single MP4 containing H.264 video and <strong>native stereo audio</strong> — the audio is generated jointly with the video by the same DiT, not dubbed on afterwards.</p>
+<p>Three capability areas the model targets:</p>
+<ul><li><strong>Commercial-grade generation</strong> — film and entertainment, advertising and branding, e-commerce, gaming; dynamic typography, VFX, product showcases, UI/UX motion design.</li><li><strong>Native multimodal understanding + generation</strong> — interprets characters, motion, sound, emotion, cinematography, and visual style across mixed references, then combines them.</li><li><strong>Precise multimodal editing and control</strong> — iterative refinement of characters, objects, scenes, sound, and rhythm with strong instruction following.</li></ul>
+<p>The checkpoint contains two DiT backbones that share the encoder and VAEs:</p>
+<div class="tablewrap"><table><thead><tr><th>DiT</th><th>Tasks</th><th>Conditioning</th></tr></thead><tbody><tr><td><code>FL2VA</code></td><td><code>t2va</code>, <code>fl2va</code></td><td>text only, or text + first/last frame</td></tr><tr><td><code>Ref2VA</code></td><td><code>ref2va</code></td><td>text + omni references (images, video clips, audio clips)</td></tr></tbody></table></div>
+<p>Since vLLM-Omni <a class="link external" href="https://github.com/vllm-project/vllm-omni/pull/5720" target="_blank" rel="noreferrer noopener">#5720</a>, serving <code>/path/to/MiniMax-H3</code> initializes both DiTs by default, while the Qwen3-VL encoder and video/audio VAEs stay shared. One server can therefore handle all three task types. Add <code>--task-type fl2va</code> or <code>--task-type ref2va</code> only when the hardware profile needs to load one DiT to save GPU or host memory.</p>
+<p>Components (BF16): two 52-block joint video/audio DiTs (66.3 GB each), a shared Qwen3-VL layer-50 text/vision encoder (51.5 GB), a video VAE (~10 GB), and an audio VAE (~0.6 GB).</p>
+<h3 id="model-specifications" class="heading"><a class="heading-anchor" href="#model-specifications" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Model specifications</span></h3>
+<div class="tablewrap"><table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td>Output duration</td><td>4–15 seconds</td></tr><tr><td>Frame rate</td><td>24 FPS (fixed)</td></tr><tr><td>Audio</td><td>Native stereo, on every generation</td></tr><tr><td>Resolution — 1440p (2K)</td><td>Short edge 1440 px for 16:9 … 9:16; wider formats ≈3.7 MP (e.g. 2976×1248 at 21:9)</td></tr><tr><td>Resolution — 768p</td><td>Short edge 768 px for 16:9 … 9:16; wider formats ≈1 MP (e.g. 1536×672 at 21:9). Upscalable to 1440p. <em>(mode coming soon)</em></td></tr><tr><td>Aspect ratio</td><td>First/Last Frame follows the uploaded image. Text-to-Video and Omni Reference select from 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 — Omni Reference also offers Auto</td></tr><tr><td>Prompt length</td><td>Up to 7,000 characters</td></tr></tbody></table></div>
+<h4 id="input-modes-and-limits" class="heading"><a class="heading-anchor" href="#input-modes-and-limits" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Input modes and limits</span></h4>
+<p><strong>First/Last Frame</strong> — 0, 1, or 2 images. Edge lengths in <code>[256, 5760]</code>, aspect ratio 5:2 to 2:5. With no image, H3 falls back to Text-to-Video.</p>
+<p><strong>Omni Reference</strong> — up to 9 images; up to 3 video clips (2–15 s each, 15 s total); up to 3 audio clips (2–15 s each, 15 s total). Edge lengths in <code>[256, 5760]</code>, video aspect ratio 5:2 to 2:5. <strong>Audio must be paired with at least one image or video</strong> — it cannot be the sole reference. Mixed inputs cap at 12 files total; with none, H3 falls back to Text-to-Video.</p>
+<div class="tablewrap"><table><thead><tr><th></th><th>Formats</th><th>Per-file size</th></tr></thead><tbody><tr><td>Video</td><td>H.264/AVC, H.265/HEVC (embedded audio AAC or MP3)</td><td>50 MB</td></tr><tr><td>Image</td><td>JPG, JPEG, PNG, WEBP, HEIC, HEIF</td><td>30 MB</td></tr><tr><td>Audio</td><td>WAV, MP3</td><td>15 MB</td></tr></tbody></table></div>
+<p>Limits are per file, not per combined upload. Keep the whole request body under 64 MB — prefer URL-based media over inlined uploads for anything large.</p>
+<h3 id="prerequisites" class="heading"><a class="heading-anchor" href="#prerequisites" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Prerequisites</span></h3>
+<p>H3 can be served directly from the gated HF ID or from a local root directory. The local root contains both DiT subdirectories plus the shared encoder and VAEs. Request access on the gated model card, then download the complete repository:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">hf</span> download MiniMaxAI/MiniMax-H3 <span class="hljs-attr">--local-dir</span> /path/to/MiniMax-H3</code></pre></figure>
+<p>That yields <code>/path/to/MiniMax-H3/FL2VA</code>, <code>/path/to/MiniMax-H3/Ref2VA</code>, and the shared component directories. Serve <code>/path/to/MiniMax-H3</code> itself and substitute your own <code>--local-dir</code> throughout the commands below.</p>
+<p><code>ffmpeg</code> and <code>ffprobe</code> must be on <code>PATH</code> — they are used for reference-video preparation and MP4 muxing.</p>
+<h3 id="installation" class="heading"><a class="heading-anchor" href="#installation" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Installation</span></h3>
+<h4 id="docker-recommended" class="heading"><a class="heading-anchor" href="#docker-recommended" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Docker (recommended)</span></h4>
+<p>The image bundles H3 handlers and media dependencies. The published tag predates the modular pipeline merged in vLLM-Omni #5720, so clone current <code>main</code> before starting:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">docker</span> pull vllm/vllm-omni:minimax-h3
+<span class="hljs-built_in">git</span> clone <span class="hljs-attr">--depth</span> 1 https://github.com/vllm-project/vllm-omni.git /path/to/vllm-omni</code></pre></figure>
+<p>The command builder's Docker mode binds both the root checkpoint and source checkout, then prepends the checkout to <code>PYTHONPATH</code>:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-attr">-v</span> /path/to/MiniMax-H3:/path/to/MiniMax-H3:ro
+<span class="hljs-attr">-v</span> /path/to/vllm-omni:/path/to/vllm-omni:ro
+<span class="hljs-attr">-e</span> PYTHONPATH=/path/to/vllm-omni</code></pre></figure>
+<h4 id="pip" class="heading"><a class="heading-anchor" href="#pip" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>pip</span></h4>
+<p>H3 support ships in vLLM-Omni rather than the <code>vllm</code> wheel, so the pip path needs a current source checkout:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">uv</span> venv
+<span class="hljs-built_in">source</span> .venv/bin/activate
+<span class="hljs-built_in">uv</span> pip install vllm==0.26.0
+<span class="hljs-built_in">git</span> clone <span class="hljs-attr">--depth</span> 1 https://github.com/vllm-project/vllm-omni.git /path/to/vllm-omni
+<span class="hljs-built_in">cd</span> /path/to/vllm-omni
+<span class="hljs-built_in">uv</span> pip install <span class="hljs-attr">-e</span> .</code></pre></figure>
+<p>The generated datacenter Blackwell route uses the default <code>TRTLLM_ATTN</code>; RTX PRO 5000 and the two-GPU RTX profiles use <code>CUDNN_ATTN</code>. These routes need no FlashAttention-4 install. Install the optional extra only when explicitly comparing FA4: <code>uv pip install -e '.[fa4]'</code>.</p>
+<h3 id="launch--two-2432-gb-gpus-with-distributed-layerwise-offload" class="heading"><a class="heading-anchor" href="#launch--two-2432-gb-gpus-with-distributed-layerwise-offload" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Launch — two 24/32 GB GPUs with distributed layerwise offload</span></h3>
+<p>vLLM-Omni includes a low-memory TP2 path for H3. Install the current vLLM-Omni source checkout as shown above.</p>
+<p>The two-GPU profile combines TP2 with distributed layerwise offload (DLO). Each rank keeps its rank-local TP shard in pinned host memory; <code>--dlo-no-use-allgather</code> streams those shards directly instead of reconstructing full DiT blocks on every rank. A configurable prefix of DiT blocks stays resident for the complete denoise stage, then releases its HBM before VAE decode.</p>
+<p>Select the profile first. RTX 5090 uses 20 resident DiT layers at the released 1344×768 shape; RTX 4090 keeps more HBM headroom with 12 resident layers and a 1024×576 starting shape:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-comment"># 2× RTX 5090 (32 GB)</span>
+<span class="hljs-built_in">export</span> DLO_RESIDENT_LAYERS=20 WIDTH=1344 HEIGHT=768
+
+<span class="hljs-comment"># Or, 2× RTX 4090 (24 GB)</span>
+<span class="hljs-comment"># export DLO_RESIDENT_LAYERS=12 WIDTH=1024 HEIGHT=576</span></code></pre></figure>
+<p>Load only the FL2VA DiT on these memory-constrained profiles:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0,1 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=14400 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--task-type</span> fl2va \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--num-gpus</span> 2 \
+  <span class="hljs-attr">--tensor-parallel-size</span> 2 \
+  <span class="hljs-attr">--usp</span> 1 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--text-encoder-tp-size</span> 2 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 2 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--enable-distributed-layerwise-offload</span> \
+  <span class="hljs-attr">--dlo-no-use-allgather</span> \
+  <span class="hljs-attr">--dlo-resident-layers</span> <span class="hljs-string">"${DLO_RESIDENT_LAYERS}"</span> \
+  <span class="hljs-attr">--enforce-eager</span> \
+  <span class="hljs-attr">--diffusion-attention-backend</span> CUDNN_ATTN</code></pre></figure>
+<p>The resident count changes placement and transfer frequency only; it does not quantize or change the BF16/FP32 denoise math. Use a <strong>384 GiB-class host</strong> for the pinned model shards and offload buffers.</p>
+<p>Wait for <code>Application startup complete</code>, then verify health and run one full 50-step T2VA request:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">--fail</span> http://127.0.0.1:8000/health
+
+<span class="hljs-built_in">curl</span> <span class="hljs-attr">--fail-with-body</span> <span class="hljs-attr">-sS</span> \
+  <span class="hljs-attr">-X</span> POST http://127.0.0.1:8000/v1/videos/sync \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'prompt=At night, three cats march into a bedroom playing tiny brass instruments, then abruptly file out, with synchronized room ambience.'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">"width=${WIDTH}"</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">"height=${HEIGHT}"</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'fps=24'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'num_inference_steps=50'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'flow_shift=12'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'seed=1101'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'extra_params={"task":"t2va","duration":5.0,"audio_flow_shift":3.0}'</span> \
+  <span class="hljs-attr">-o</span> minimax-h3-t2va.mp4
+
+ffprobe <span class="hljs-attr">-v</span> error <span class="hljs-attr">-show_entries</span> \
+  stream=index,codec_name,width,height,r_frame_rate,sample_rate,channels \
+  <span class="hljs-attr">-of</span> json minimax-h3-t2va.mp4
+ffmpeg <span class="hljs-attr">-v</span> error <span class="hljs-attr">-i</span> minimax-h3-t2va.mp4 \
+  <span class="hljs-attr">-map</span> 0:v:0 <span class="hljs-attr">-map</span> 0:a:0 <span class="hljs-attr">-f</span> null -</code></pre></figure>
+<p><strong>Note:</strong> If using 2× RTX 4090, the curl request must include -F 'aspect_ratio=16:9' to succeed.</p>
+<p>A successful output has H.264 video at 24 FPS and stereo AAC audio at 32 kHz, and the final <code>ffmpeg</code> command exits with status 0. This capacity profile intentionally loads one DiT. Restart the same root-model command with <code>--task-type ref2va</code> for Ref2VA; remove <code>--task-type</code> only after confirming that the combined modular service fits the target.</p>
+<p>The same root path is used for both task families; only <code>--task-type</code> changes on these capacity profiles.</p>
+<h3 id="launch--four-gpus-validated-best-practice" class="heading"><a class="heading-anchor" href="#launch--four-gpus-validated-best-practice" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Launch — four GPUs (validated best practice)</span></h3>
+<p>On B300/GB200, the no-offload root service uses Ulysses SP4, tiled VAE patch parallelism 4, regional <code>torch.compile</code>, dense BF16 <code>TRTLLM_ATTN</code>, and Ring/TP1. Both DiTs load once while the encoder and VAEs remain shared.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0,1,2,3 \
+FLASHINFER_DISABLE_VERSION_CHECK=1 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--num-gpus</span> 4 \
+  <span class="hljs-attr">--usp</span> 4 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 4 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span></code></pre></figure>
+<p>Omitting the attention flag is intentional: current datacenter Blackwell builds default to dense BF16 <code>TRTLLM_ATTN</code>. Install <code>[fa4]</code> and add <code>--diffusion-attention-backend FLASH_ATTN</code> only for an explicit FA4 comparison.</p>
+<h4 id="optional-lossy-attention-sage--skip-softmax" class="heading"><a class="heading-anchor" href="#optional-lossy-attention-sage--skip-softmax" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Optional lossy attention: SAGE + Skip-Softmax</span></h4>
+<p><code>TRTLLM_ATTN</code> offers two <strong>lossy</strong> optimizations for the long main DiT attention sequence. Both work under the pure Ulysses parallelism of the four-GPU profile (<code>--usp 4 --ring 1</code>) and are datacenter-Blackwell only. Append the following to the four-GPU command above to enable both:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-attr">--diffusion-attention-config</span> <span class="hljs-string">'{
+  "default": {
+    "backend": "TRTLLM_ATTN",
+    "quant": {"dtype_qk": "fp8_e4m3", "q_block_size": 1, "k_block_size": 16},
+    "skip_softmax": {"threshold": 0.05, "disabled_until_timestep": 0.97}
+  },
+  "per_role": {
+    "minimax_h3.token_refiner": {"backend": "TRTLLM_ATTN"}
+  }
+}'</span></code></pre></figure>
+<ul><li><strong>SAGE</strong> quantizes Q/K to <code>fp8_e4m3</code> for <code>QK^T</code>; P and V are always FP8 in this kernel. B200 additionally supports <code>int8</code> Q/K, which preserves accuracy better than FP8.</li><li><strong>Skip-Softmax</strong> skips the Softmax and <code>PV</code> work of KV tiles whose scores fall far below the running row maximum. <code>threshold=0.05</code> with <code>disabled_until_timestep=0.97</code> is a <strong>conservative</strong> setting: a low threshold skips only clearly negligible tiles, and the cutoff keeps the early high-noise steps dense — H3's default video flow shift of 12 keeps the normalized timestep above <code>0.97</code> for the first 14 of 49 denoiser forwards at 50 steps. Raise <code>threshold</code> or lower <code>disabled_until_timestep</code> for more speedup once quality is verified.</li><li>The <code>per_role</code> entry keeps the short token-refiner attention dense; a per-role spec does not inherit <code>quant</code> or <code>skip_softmax</code> from <code>default</code>.</li></ul>
+<p>Both optimizations trade fidelity for speed, and their effects compound. The measured B300 speedup and LPIPS for each mode and for the combination are in the vLLM blog's <a class="link external" href="https://vllm.ai/blog/2026-09-01-minimax-h3-production-serving#quantized-and-sparse-attention-in-trtllm_attn" target="_blank" rel="noreferrer noopener">Quantized and Sparse Attention</a> section as a reference; tune the settings according to the accuracy and speed required. See the <a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/diffusion/attention_backends/trtllm/" target="_blank" rel="noreferrer noopener">TRTLLM attention guide</a> for the full configuration reference.</p>
+<p>No restart is required: <code>extra_params.task</code> routes T2VA/FL2VA requests to the FL2VA DiT and Ref2VA requests to the Ref2VA DiT.</p>
+<h4 id="fasth3-model-family" class="heading"><a class="heading-anchor" href="#fasth3-model-family" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>FastH3 model family</span></h4>
+<p>FastH3 is a family of post-trained models based on MiniMax-H3. It generates video with stereo audio in four or eight steps. Choose a starting point for your input and hardware:</p>
+<div class="tablewrap"><table><thead><tr><th>Input</th><th>Hardware</th><th>Model</th></tr></thead><tbody><tr><td>Prompt and reference image</td><td>RTX 5090, DGX Spark, RTX PRO 6000 Blackwell</td><td><a class="link external" href="https://huggingface.co/FastVideo/FastH3-Omni-NVFP4-QAD" target="_blank" rel="noreferrer noopener">Omni NVFP4 QAD</a>, single-card guide below</td></tr><tr><td>Prompt and reference image</td><td>RTX 4090</td><td><a class="link external" href="https://huggingface.co/FastVideo/FastVideo-FastH3-Omni-8-Step-V1" target="_blank" rel="noreferrer noopener">Omni BF16</a> with FP8 enabled, single-card guide below</td></tr><tr><td>Prompt and reference image</td><td>Eight GPUs</td><td>Omni BF16, eight-GPU guide below</td></tr><tr><td>Prompt only</td><td>Eight GPUs</td><td><a class="link external" href="https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2" target="_blank" rel="noreferrer noopener">V2</a> (experimental) or <a class="link external" href="https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA" target="_blank" rel="noreferrer noopener">four-step adapter</a></td></tr></tbody></table></div>
+<p>The command builder above serves native MiniMax-H3. Use the FastH3 setup and commands below for these models. Select one model when starting the server. The single-card profiles are configuration guidance; this documentation change does not independently qualify them with GPU inference.</p>
+<h5 id="install-fasth3" class="heading"><a class="heading-anchor" href="#install-fasth3" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Install FastH3</span></h5>
+<p>Use Linux, Python 3.12, a CUDA 13-compatible NVIDIA driver, and <a class="link external" href="https://docs.astral.sh/uv/getting-started/installation/" target="_blank" rel="noreferrer noopener">uv</a>. The eight-step models currently need the source branch from <a class="link external" href="https://github.com/vllm-project/vllm-omni/pull/9167" target="_blank" rel="noreferrer noopener">vLLM-Omni #9167</a>:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">sudo apt-get</span> update
+<span class="hljs-built_in">sudo apt-get</span> install <span class="hljs-attr">-y</span> git ffmpeg
+
+<span class="hljs-built_in">git</span> clone <span class="hljs-attr">--branch</span> pr/fasth3-omni-upstream https://github.com/lishunyang12/vllm-omni.git vllm-omni-fasth3
+<span class="hljs-built_in">cd</span> vllm-omni-fasth3
+<span class="hljs-built_in">uv</span> venv <span class="hljs-attr">--python</span> 3.12
+<span class="hljs-built_in">source</span> .venv/bin/activate
+<span class="hljs-built_in">uv</span> pip install vllm==0.32.0 <span class="hljs-attr">--torch-backend</span>=cu130
+<span class="hljs-built_in">uv</span> pip install <span class="hljs-attr">-e</span> .</code></pre></figure>
+<p>On DGX Spark, run in the native <code>aarch64</code> environment. If Hugging Face requests access, accept the model's access terms and run <code>hf auth login</code>. Run the following server commands from the <code>vllm-omni-fasth3</code> directory.</p>
+<h5 id="fasth3-refomni-single-card" class="heading"><a class="heading-anchor" href="#fasth3-refomni-single-card" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>FastH3 RefOmni Single Card</span></h5>
+<p><strong>RTX 5090 (32 GB), DGX Spark (128 GB), or RTX PRO 6000 Blackwell (96 GB):</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0 VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=7200 \
+<span class="hljs-built_in">vllm</span> serve FastVideo/FastH3-Omni-NVFP4-QAD <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--config</span> recipes/FastVideo/fasth3-omni-quantized.yaml</code></pre></figure>
+<p>This uses the smaller NVFP4 model and fast 8-layer video decoder. Layer offload reduces GPU memory use.</p>
+<p><strong>RTX 4090 (24 GB):</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">uv</span> pip install <span class="hljs-attr">-e</span> <span class="hljs-string">'.[vsa]'</span>
+
+CUDA_VISIBLE_DEVICES=0 VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=7200 \
+<span class="hljs-built_in">vllm</span> serve FastVideo/FastVideo-FastH3-Omni-8-Step-V1 <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--config</span> recipes/FastVideo/fasth3-omni-rtx4090.yaml</code></pre></figure>
+<p>The first start downloads the model; the 4090 also converts eligible weights to FP8 while loading. Later starts reuse the download cache. Keep the terminal open and wait for <code>Application startup complete</code>.</p>
+<p><strong>Generate.</strong> Save your image as <code>reference.png</code>. In a second terminal:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">--fail-with-body</span> <span class="hljs-attr">-sS</span> http://localhost:8000/v1/videos/sync \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'prompt=The person in the reference image smiles and waves at the camera. Birds chirp as the person says, "Welcome to the garden!"'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'input_reference=@reference.png'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'size=832x480'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'seconds=5'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'seed=1234'</span> \
+  <span class="hljs-attr">-o</span> output.mp4</code></pre></figure>
+<p>Open <code>output.mp4</code> to play the video with stereo audio. For 768P, change <code>size=832x480</code> to <code>size=1344x768</code>. If memory is tight, start at 480P and close other GPU workloads. For multiple images, video, or audio references, see the <a class="link external" href="https://github.com/lishunyang12/vllm-omni/blob/pr/fasth3-omni-upstream/recipes/MiniMaxAI/MiniMax-H3.md" target="_blank" rel="noreferrer noopener">H3 reference API</a>.</p>
+<p><strong>Optional settings:</strong></p>
+<ul><li><strong>FP8 model:</strong> if you have access to <a class="link external" href="https://huggingface.co/FastVideo/FastH3-Omni-FP8" target="_blank" rel="noreferrer noopener">FastH3-Omni-FP8</a>, replace the model ID in the Blackwell command with <code>FastVideo/FastH3-Omni-FP8</code>. A local model directory also works. This release also requires Blackwell because its text encoder uses NVFP4.</li><li><strong>36-layer decoder:</strong> in <code>recipes/FastVideo/fasth3-omni-quantized.yaml</code>, change <code>additional-config.video_vae_decoder.subfolder</code> from <code>fast-8L</code> to <code>quality-36L</code>, then restart. Both decoders come from <a class="link external" href="https://huggingface.co/FastVideo/FastH3-NVFP4-VAE-Decoder" target="_blank" rel="noreferrer noopener">FastH3-NVFP4-VAE-Decoder</a>.</li><li><strong>DGX Spark:</strong> remove <code>diffusion-offload-config</code> from the Blackwell YAML to keep the model resident in unified memory and avoid offload transfers.</li></ul>
+<h5 id="fasth3-omni-on-eight-gpus" class="heading"><a class="heading-anchor" href="#fasth3-omni-on-eight-gpus" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>FastH3 Omni on eight GPUs</span></h5>
+<p>Install the attention kernels, then start the server:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">uv</span> pip install <span class="hljs-attr">-e</span> <span class="hljs-string">'.[cudnn-bsa]'</span>
+
+VLLM_WORKER_MULTIPROC_METHOD=spawn VLLM_OMNI_VIDEO_SYNC_TIMEOUT=7200 \
+<span class="hljs-built_in">vllm</span> serve FastVideo/FastVideo-FastH3-Omni-8-Step-V1 <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--config</span> recipes/FastVideo/fasth3-8step-8gpu.yaml</code></pre></figure>
+<p>Wait for <code>Application startup complete</code>, then use the image-and-prompt request above. The configuration sets eight inference steps and handles GPU placement.</p>
+<p>For an NVFP4 video decoder on Blackwell, add this to the deployment YAML:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">YAML</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-yaml"><code><span class="hljs-attr">additional-config</span>:
+<span class="hljs-attr">  video_vae_decoder</span>:
+<span class="hljs-attr">    model</span>: FastVideo/FastH3-NVFP4-VAE-Decoder
+<span class="hljs-attr">    subfolder</span>: fast-8L</code></pre></figure>
+<p>Use <code>quality-36L</code> for the deeper decoder, then restart the server.</p>
+<p><strong>Performance reference: eight RTX PRO 5000 Blackwell 72 GB GPUs.</strong> BF16, 1344×768, one request at a time; timing includes MP4 encoding and excludes model loading:</p>
+<div class="tablewrap"><table><thead><tr><th>Output</th><th style="text-align:right">Generation time</th><th style="text-align:right">Reported allocator peak</th></tr></thead><tbody><tr><td>124 frames, about 5 seconds</td><td style="text-align:right">41.04 s, median of 3 runs</td><td style="text-align:right">35.15 GiB</td></tr><tr><td>345 frames, about 14 seconds</td><td style="text-align:right">95.93 s, 1 run</td><td style="text-align:right">38.94 GiB</td></tr></tbody></table></div>
+<p>These are offline measurements. See the <a class="link external" href="https://github.com/lishunyang12/vllm-omni/pull/63" target="_blank" rel="noreferrer noopener">benchmark details</a> for the measured environment and configuration.</p>
+<h5 id="fasth3-v2-text-to-video-and-audio" class="heading"><a class="heading-anchor" href="#fasth3-v2-text-to-video-and-audio" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>FastH3 V2: text to video and audio</span></h5>
+<p>This eight-GPU deployment is experimental. Install the <code>cudnn-bsa</code> extra above, then start V2 in place of the Omni server:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>VLLM_WORKER_MULTIPROC_METHOD=spawn VLLM_OMNI_VIDEO_SYNC_TIMEOUT=7200 \
+<span class="hljs-built_in">vllm</span> serve FastVideo/FastVideo-FastH3-8-Step-V2 <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--config</span> recipes/FastVideo/fasth3-8step-8gpu.yaml</code></pre></figure>
+<p>Wait for startup, then send a text-only request in a second terminal:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">--fail-with-body</span> <span class="hljs-attr">-sS</span> http://localhost:8000/v1/videos/sync \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'prompt=A train crosses a stone bridge at sunrise, with rhythmic wheels and distant birdsong.'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'size=1344x768'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'seconds=5'</span> \
+  <span class="hljs-attr">-o</span> fasth3-v2.mp4</code></pre></figure>
+<p>Keep the model's default eight steps and sampling settings.</p>
+<h4 id="fasth3-four-step-dense-and-vsa-adapters" class="heading"><a class="heading-anchor" href="#fasth3-four-step-dense-and-vsa-adapters" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>FastH3 four-step Dense and VSA adapters</span></h4>
+<p>Use the four-step adapter for text-to-video generation on eight GPUs. Choose the adapter at startup; per-request switching and CPU/layer offload are unsupported. Download the Dense and VSA adapters:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">hf</span> download FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA \
+  dense-datafree/adapter_model.safetensors \
+  vsa-datafree/adapter_model.safetensors \
+  <span class="hljs-attr">--local-dir</span> ./FastH3-LoRA</code></pre></figure>
+<p>Start with the Dense adapter:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800 \
+<span class="hljs-built_in">vllm</span> serve MiniMaxAI/MiniMax-H3 <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--host</span> 127.0.0.1 <span class="hljs-attr">--port</span> 8095 <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--task-type</span> fl2va <span class="hljs-attr">--served-model-name</span> FastH3 \
+  <span class="hljs-attr">--num-gpus</span> 8 <span class="hljs-attr">--tensor-parallel-size</span> 1 <span class="hljs-attr">--usp</span> 8 <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 8 <span class="hljs-attr">--vae-parallel-mode</span> tile <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--diffusion-attention-config</span>.default.backend FLASH_ATTN \
+  <span class="hljs-attr">--lora-path</span> ./FastH3-LoRA/dense-datafree/adapter_model.safetensors</code></pre></figure>
+<p>For the VSA adapter, install <code>uv pip install -e '.[vsa]'</code>, change <code>--lora-path</code> to <code>./FastH3-LoRA/vsa-datafree/adapter_model.safetensors</code>, and replace the attention option with:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-attr">--diffusion-attention-config</span>.default.backend FASTVIDEO_VSA \
+<span class="hljs-attr">--diffusion-attention-config</span>.default.fastvideo_vsa_topk 64</code></pre></figure>
+<p>Keep pure Ulysses parallelism (<code>--usp 8 --ring 1</code>) for VSA. See <a class="link external" href="https://github.com/lishunyang12/vllm-omni/blob/pr/fasth3-omni-upstream/recipes/FastVideo/FastH3.md#hardware-and-backend-selection" target="_blank" rel="noreferrer noopener">backend selection</a> for hardware requirements.</p>
+<p>After the server starts, generate a video in a second terminal:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">--fail-with-body</span> <span class="hljs-attr">-sS</span> http://127.0.0.1:8095/v1/videos/sync \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'model=FastH3'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'prompt=A cinematic starship glides through a luminous nebula while its engines hum and distant radio chatter fills the cabin.'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'width=1344'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'height=768'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'aspect_ratio=16:9'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'fps=24'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'num_inference_steps=4'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'guidance_scale=1'</span> <span class="hljs-attr">-F</span> <span class="hljs-string">'seed=1101'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'extra_params={"task":"t2va","duration":10.0}'</span> \
+  <span class="hljs-attr">-o</span> fasth3.mp4</code></pre></figure>
+<p>Use four steps and <code>task=t2va</code>; keep the default sampling settings.</p>
+<p><strong>Performance reference: eight B300 GPUs.</strong> At 1344×768 and 24 FPS, server generation time including MP4 encoding was:</p>
+<div class="tablewrap"><table><thead><tr><th>Output duration</th><th style="text-align:right">Dense (TRTLLM)</th><th style="text-align:right">VSA</th></tr></thead><tbody><tr><td>10 seconds</td><td style="text-align:right">9.84 s</td><td style="text-align:right">7.28 s</td></tr><tr><td>15 seconds</td><td style="text-align:right">14.20 s</td><td style="text-align:right">10.80 s</td></tr></tbody></table></div>
+<p>See <a class="link external" href="https://github.com/vllm-project/vllm-omni/pull/6909" target="_blank" rel="noreferrer noopener">benchmark details</a> for the measured environment and configuration.</p>
+<h4 id="lightx2v-turbo-few-step-lora" class="heading"><a class="heading-anchor" href="#lightx2v-turbo-few-step-lora" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>LightX2V Turbo few-step LoRA</span></h4>
+<p><a class="link external" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo" target="_blank" rel="noreferrer noopener">LightX2V Turbo</a> is a family of few-step LoRA artifacts for H3. It reaches the same goal as FastH3 by the opposite route: instead of fusing full-rank deltas at startup, Turbo stays a standard LoRA that each request activates by name. One server can therefore hold several artifacts and let requests choose between them, at the cost of the LoRA matmuls on every denoise step.</p>
+<p>Eight Diffusers-layout artifacts are supported. The filename is the contract — the server parses the task family, step count and resolution out of it, so a renamed file is rejected rather than served on a guess. <code>audio_flow_shift</code> is <code>3.0</code> across the family.</p>
+<div class="tablewrap"><table><thead><tr><th>Artifact</th><th>Tasks</th><th style="text-align:right"><code>num_inference_steps</code></th><th style="text-align:right"><code>flow_shift</code></th><th style="text-align:right">alpha</th></tr></thead><tbody><tr><td><code>minimax_h3_fl2v_turbo_4step_v0.1.safetensors</code></td><td>T2VA / FL2VA</td><td style="text-align:right">5</td><td style="text-align:right">12</td><td style="text-align:right">none → 8</td></tr><tr><td><code>minimax_h3_fl2v_turbo_4step_v1.0_768p_bf16.safetensors</code></td><td>T2VA / FL2VA</td><td style="text-align:right">5</td><td style="text-align:right">6</td><td style="text-align:right">128</td></tr><tr><td><code>minimax_h3_fl2v_turbo_4step_v1.1_768p_bf16.safetensors</code></td><td>T2VA / FL2VA</td><td style="text-align:right">5</td><td style="text-align:right">6</td><td style="text-align:right">128</td></tr><tr><td><code>minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors</code></td><td>T2VA / FL2VA</td><td style="text-align:right">5</td><td style="text-align:right">6</td><td style="text-align:right">8</td></tr><tr><td><code>minimax_h3_fl2v_turbo_8step_v1.0_bf16.safetensors</code></td><td>T2VA / FL2VA</td><td style="text-align:right">9</td><td style="text-align:right">12</td><td style="text-align:right">8</td></tr><tr><td><code>minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors</code></td><td>T2VA / FL2VA</td><td style="text-align:right">9</td><td style="text-align:right">6</td><td style="text-align:right">8</td></tr><tr><td><code>minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors</code></td><td>Ref2VA</td><td style="text-align:right">5</td><td style="text-align:right">12</td><td style="text-align:right">8</td></tr><tr><td><code>minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors</code></td><td>Ref2VA</td><td style="text-align:right">9</td><td style="text-align:right">6</td><td style="text-align:right">8</td></tr></tbody></table></div>
+<p>Requested sigma points are always one more than the artifact's forwards, which is why a four-step Turbo artifact takes <code>num_inference_steps=5</code> where FastH3 takes <code>4</code>.</p>
+<p>Every artifact is rank 128 and the delta is applied at <code>scale * alpha / 128</code>, with alpha read from the artifact's metadata — only <code>4step_v0.1</code> declares none and falls back to 8 with a warning.</p>
+<p>Download one artifact under the H3 root so the existing bind mount includes it. Each artifact except <code>4step_v0.1</code> also ships a <code>_comfyui_</code> export that fuses Q/K/V into a single projection; those are <strong>not</strong> supported and are refused by name.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">hf</span> download lightx2v/Minimax-h3-Turbo \
+  minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors \
+  <span class="hljs-attr">--local-dir</span> /path/to/MiniMax-H3/Turbo-LoRA</code></pre></figure>
+<p>Serve it on the same eight-GPU pure-Ulysses topology. <code>--lora-path</code> preloads the adapter; it accepts one artifact, or a directory holding exactly one — a directory with several recognized artifacts is rejected as ambiguous.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--host</span> 127.0.0.1 \
+  <span class="hljs-attr">--port</span> 8095 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--task-type</span> fl2va \
+  <span class="hljs-attr">--served-model-name</span> MiniMaxAI/MiniMax-H3 \
+  <span class="hljs-attr">--num-gpus</span> 8 \
+  <span class="hljs-attr">--usp</span> 8 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 8 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--diffusion-attention-backend</span> TRTLLM_ATTN \
+  <span class="hljs-attr">--lora-backend</span> peft \
+  <span class="hljs-attr">--lora-path</span> /path/to/MiniMax-H3/Turbo-LoRA/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors</code></pre></figure>
+<p>Unlike FastH3, the request must activate the adapter and carry that row's sampling contract. A request whose steps or shift do not match the loaded artifact is rejected, so a mismatch cannot silently sample the distilled model at noise levels it never saw.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">--fail-with-body</span> <span class="hljs-attr">-sS</span> <span class="hljs-attr">-X</span> POST http://127.0.0.1:8095/v1/videos/sync \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'prompt=A cinematic starship glides through a luminous nebula while its engines hum and distant radio chatter fills the cabin.'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'width=1344'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'height=768'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'aspect_ratio=16:9'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'fps=24'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'num_inference_steps=5'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'flow_shift=6'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'seed=1101'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'extra_params={"task":"t2va","duration":10.0,"audio_flow_shift":3.0}'</span> \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'lora={"name":"h3-turbo-v1.2","path":"/path/to/MiniMax-H3/Turbo-LoRA/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors","scale":1.0}'</span> \
+  <span class="hljs-attr">-o</span> turbo.mp4</code></pre></figure>
+<p>FL2VA artifacts serve <code>t2va</code> and <code>fl2va</code> on an FL2VA or combined server. The two <code>ref2v</code> rows need <code>--task-type ref2va</code>: a combined server answers <code>ref2va</code> from a second DiT the adapter cannot bind to, so loading one there is refused rather than running an undistilled model on a few-step ladder. The integration is dynamic-only — no prefusion, no LoRA composition. DLO works by keeping the request-switchable LoRA A/B buffers resident on the accelerator while DLO streams the base blocks; model-level and standard layerwise offload remain unsupported.</p>
+<p>Measured on 8×B300 with the command above, at 1344×768, 24 FPS, a 15 s FL2VA request with first and last keyframes (362 frames), fixed seed, one discarded warmup and three recorded runs. The baseline is the same server without an adapter at <code>num_inference_steps=50</code> and <code>flow_shift=12</code>:</p>
+<div class="tablewrap"><table><thead><tr><th>Metric</th><th style="text-align:right">Base H3, 49 forwards</th><th style="text-align:right">Turbo v1.2, 4 forwards</th><th style="text-align:right">Speedup</th></tr></thead><tbody><tr><td>Denoise loop</td><td style="text-align:right">~105 s</td><td style="text-align:right">~9 s</td><td style="text-align:right">11.7×</td></tr><tr><td>Per denoise step</td><td style="text-align:right">2.14–2.16 s/it</td><td style="text-align:right">2.20–2.42 s/it</td><td style="text-align:right">—</td></tr><tr><td>Diffusion engine</td><td style="text-align:right">111.1–111.3 s</td><td style="text-align:right">15.0–15.1 s</td><td style="text-align:right">7.4×</td></tr><tr><td>Server E2E incl. MP4</td><td style="text-align:right">112.5–112.9 s</td><td style="text-align:right">~16.5 s</td><td style="text-align:right">6.8×</td></tr></tbody></table></div>
+<p>The ~10% higher per-step cost is the LoRA matmul the fused FastH3 route does not pay — irrelevant against a 12× cut in forwards, but the reason a single-artifact deployment can still prefer a fused student.</p>
+<p>These figures are for a server serving Turbo requests back to back. Alternating between Turbo and adapter-free requests on one server additionally pays a LoRA rebind on each switch — measured at about 24 s per switch in the same run (39.2 s diffusion engine against 15.1 s steady state), because every one of H3's 208 LoRA layers is torn down and re-uploaded. Give Turbo its own process if the workload mixes, or track vLLM-Omni #7195, which removes that rebind.</p>
+<h4 id="rtx-pro-5000-blackwell--four-pcie-gpus" class="heading"><a class="heading-anchor" href="#rtx-pro-5000-blackwell--four-pcie-gpus" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>RTX PRO 5000 Blackwell — four PCIe GPUs</span></h4>
+<p>Select the <code>RTX PRO 5000 Blackwell 4x</code> hardware profile for the validated BF16, no-offload topology: TP2 × Ulysses2, Ring1, text-encoder TP4, VAE patch parallel 4 in tile mode, and <code>CUDNN_ATTN</code>. On the measured dual-socket host, <code>CUDA_VISIBLE_DEVICES=0,2,1,3</code> kept the TP pairs on local PXB paths; check <code>nvidia-smi topo -m</code> and adapt the order on other systems.</p>
+<p>This 72 GiB/GPU profile serves the root path but selects one DiT with <code>--task-type</code>. The task picker adds <code>fl2va</code> for T2VA/FL2VA and <code>ref2va</code> for Ref2VA; loading both DiTs together is not qualified on this memory-constrained profile.</p>
+<p>A five-step topology screen after warmup produced decodable H.264 video with stereo AAC:</p>
+<div class="tablewrap"><table><thead><tr><th>Workload</th><th style="text-align:right">Client E2E</th><th style="text-align:right">Encode</th><th style="text-align:right">Denoise</th><th style="text-align:right">VAE decode</th><th style="text-align:right">Peak/GPU</th></tr></thead><tbody><tr><td>T2VA, 124 frames, 1344×768</td><td style="text-align:right">32.993 s</td><td style="text-align:right">0.034 s</td><td style="text-align:right">27.915 s</td><td style="text-align:right">4.307 s</td><td style="text-align:right">67.6 GiB</td></tr><tr><td>FL2VA first frame, same output shape</td><td style="text-align:right">30.130 s</td><td style="text-align:right">0.276 s</td><td style="text-align:right">24.396 s</td><td style="text-align:right">4.339 s</td><td style="text-align:right">67.6 GiB</td></tr></tbody></table></div>
+<p>These are topology-screening results, not 50-step throughput claims. Nsight Systems aggregation for the same run was:</p>
+<div class="tablewrap"><table><thead><tr><th>Workload</th><th style="text-align:right">AllGather</th><th style="text-align:right">Send/Recv</th><th style="text-align:right">NCCL other</th><th style="text-align:right">NCCL total</th><th style="text-align:right">Dense FMHA</th><th style="text-align:right">max-min/mean</th></tr></thead><tbody><tr><td>T2VA</td><td style="text-align:right">0.93%</td><td style="text-align:right">8.53%</td><td style="text-align:right">14.63%</td><td style="text-align:right">24.09%</td><td style="text-align:right">31.15%</td><td style="text-align:right">1.11%</td></tr><tr><td>FL2VA</td><td style="text-align:right">0.89%</td><td style="text-align:right">7.26%</td><td style="text-align:right">15.76%</td><td style="text-align:right">23.91%</td><td style="text-align:right">32.53%</td><td style="text-align:right">0.13%</td></tr></tbody></table></div>
+<p><code>NCCL other</code> covers NCCL kernels outside recognized AllGather and point-to-point Send/Recv, including AllReduce, ReduceScatter, or Broadcast when present.</p>
+<h4 id="amd-rocm--four-mi300x-gpus" class="heading"><a class="heading-anchor" href="#amd-rocm--four-mi300x-gpus" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>AMD ROCm — four MI300X GPUs</span></h4>
+<p>Verified on 4× AMD Instinct MI300X (gfx942) with the ROCm H3 image, AITER packed variable-length attention, Ulysses 4, text-encoder TP4, and native tiled VAE patch parallelism 4:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">docker</span> pull vllm/vllm-omni-rocm:minimax-h3
+
+HIP_VISIBLE_DEVICES=0,1,2,3 \
+VLLM_ROCM_USE_AITER=1 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--num-gpus</span> 4 \
+  <span class="hljs-attr">--usp</span> 4 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--text-encoder-tp-size</span> 4 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 4 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--diffusion-attention-backend</span> FLASH_ATTN</code></pre></figure>
+<p>On ROCm, <code>FLASH_ATTN</code> resolves to AITER on supported Instinct architectures. Do not install the CUDA-only <code>[fa4]</code> extra or set <code>FLASHINFER_DISABLE_VERSION_CHECK</code>.</p>
+<p>The refreshed <code>vllm/vllm-omni-rocm:minimax-h3</code> tag includes the Ref2VA soundfile fallback, TorchCodec, and FFmpeg, so T2VA, FL2VA, and the complete Ref2VA path use the same official image.</p>
+<h4 id="amd-rocm--four-mi355x-gpus" class="heading"><a class="heading-anchor" href="#amd-rocm--four-mi355x-gpus" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>AMD ROCm — four MI355X GPUs</span></h4>
+<p>Verified on 4× AMD Instinct MI355X. The official ROCm image includes the MiniMax H3 Ref2VA fixes, TorchCodec, and FFmpeg. We tested both Ulysses 4 with Ring 1 and Ulysses 1 with Ring 4. The command below shows the Ulysses 4 / Ring 1 configuration with tiled VAE patch parallelism degree 4, AITER, and CPU offload:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">docker</span> pull vllm/vllm-omni-rocm:minimax-h3
+
+HIP_VISIBLE_DEVICES=0,1,2,3 \
+VLLM_ROCM_USE_AITER=1 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--num-gpus</span> 4 \
+  <span class="hljs-attr">--usp</span> 4 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 4 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--enable-cpu-offload</span> \
+  <span class="hljs-attr">--text-encoder-tp-size</span> 4</code></pre></figure>
+<p>This root-model command accepts T2VA, FL2VA, and Ref2VA requests without restarting.</p>
+<p>Three constraints on this configuration:</p>
+<ul><li><strong>Do not add <code>--enforce-eager</code>.</strong> Regional compile is the default (<code>--diffusion-compile-granularity regional</code>) and is worth ~9.5%. The first request includes compilation — warm the server once before measuring steady state.</li><li><strong><code>--cfg-parallel-size</code> must stay 1.</strong> H3 is CFG-distilled and has no negative branch; anything greater is rejected with an explicit error rather than silently duplicating a branch that does not exist.</li><li><strong>The VAE supports its native <code>tile</code> mode only</strong> — not <code>spatial_shard_width</code> or <code>spatial_shard_height</code> (those belong to the distributed Wan autoencoder). Patch parallel size must be 1 or the full DiT group size.</li></ul>
+<h3 id="launch--single-gpu-accuracy-and-memory-first" class="heading"><a class="heading-anchor" href="#launch--single-gpu-accuracy-and-memory-first" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Launch — single GPU (accuracy and memory first)</span></h3>
+<p>Model-level CPU offload keeps the Qwen3-VL encoder and the DiT from being resident simultaneously. This is the accuracy-qualified reference path; it trades PCIe/NVLink transfer latency for a much smaller GPU footprint, and needs enough system RAM for the offloaded components.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=1800 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--task-type</span> fl2va \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--num-gpus</span> 1 \
+  <span class="hljs-attr">--enable-cpu-offload</span> \
+  <span class="hljs-attr">--diffusion-attention-backend</span> FLASH_ATTN</code></pre></figure>
+<h3 id="launch--dgx-spark-gb10-128-gb-unified-memory" class="heading"><a class="heading-anchor" href="#launch--dgx-spark-gb10-128-gb-unified-memory" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Launch — DGX Spark (GB10, 128 GB unified memory)</span></h3>
+<p>GB10 is a <strong>unified-memory</strong> platform: the 128 GB LPDDR5X (≈121 GiB usable) is shared by CPU and GPU, so both offload strategies used elsewhere in this recipe stop being capacity levers. <code>--enable-cpu-offload</code> and distributed layerwise offload move weights from "VRAM" to "host RAM", which is the same physical pool here — nothing is freed. DLO is actively harmful: staging rank-local shards into pinned host memory creates a second copy alongside the resident one, and the process is killed by the OOM killer (<code>Exit code: -9</code>) right after <code>Enabling offloader backend</code>.</p>
+<p>One partition on disk is 135 GiB in BF16:</p>
+<div class="tablewrap"><table><thead><tr><th>Component</th><th style="text-align:right">Size</th><th>Quantized by <code>--quantization fp8</code></th></tr></thead><tbody><tr><td><code>text_encoder</code> (Qwen3-VL)</td><td style="text-align:right">63 GiB</td><td>no</td></tr><tr><td><code>transformer</code> (DiT)</td><td style="text-align:right">62 GiB</td><td>yes</td></tr><tr><td><code>video_vae</code></td><td style="text-align:right">9.8 GiB</td><td>no</td></tr><tr><td><code>audio_vae</code></td><td style="text-align:right">0.6 GiB</td><td>no</td></tr></tbody></table></div>
+<p>135 GiB does not fit in 121 GiB, so <strong>FP8 is mandatory</strong> and only one DiT can be resident — always pass <code>--task-type fl2va</code> or <code>--task-type ref2va</code>. Online FP8 touches the DiT only, bringing the partition to roughly 104 GiB before activations.</p>
+<p>Weight quantization runs at load time and is slow on this platform; <code>--init-timeout 3600</code> keeps startup from being cut short.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>CUDA_VISIBLE_DEVICES=0 \
+FLASHINFER_DISABLE_VERSION_CHECK=1 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=7200 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--task-type</span> fl2va \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--init-timeout</span> 3600 \
+  <span class="hljs-attr">--num-gpus</span> 1 \
+  <span class="hljs-attr">--usp</span> 1 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--quantization</span> fp8 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 1 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--enforce-eager</span> \
+  <span class="hljs-attr">--diffusion-attention-backend</span> CUDNN_ATTN</code></pre></figure>
+<p>Restart with <code>--task-type ref2va</code> to serve the Ref2VA family. Keep requests at a 576 px short edge (1024×576) and 5 s duration as the starting shape; GB10 has one GPU and no parallelism headroom, so wall-clock per request is far higher than the multi-GPU profiles above.</p>
+<h3 id="launch--single-ascend-950pr-npu-int8" class="heading"><a class="heading-anchor" href="#launch--single-ascend-950pr-npu-int8" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Launch — single Ascend 950PR NPU (INT8)</span></h3>
+<p>vLLM-Omni serves H3 on Ascend through the <code>vllm-ascend</code> platform plugin, on a CPU-only aarch64 PyTorch build with <code>torch_npu</code> — no CUDA runtime is present. One 950PR holds a single DiT partition, so this profile serves the <code>FL2VA</code> directory and uses online INT8 in place of the sharding levers the multi-GPU profiles rely on.</p>
+<p>Three Ascend-specific constraints come before the command:</p>
+<ul><li><strong>Attention backend.</strong> <code>CUDNN_ATTN</code>, <code>FLASHINFER_ATTN</code>, <code>TRTLLM_ATTN</code>, and the SageAttention backends are CUDA-only; selecting one on NPU fails with a <code>NotImplementedError</code> out of <code>forward_npu</code>. The NPU platform default resolves to <code>FLASH_ATTN</code> when MindIE-SD is installed and <code>TORCH_SDPA</code> otherwise, and <code>FLASH_ATTN</code> is where H3's NPU memory work lives: a mask-free packed varlen path that never materializes the quadratic padding mask, plus K/V prefix slicing. Install MindIE-SD <em>before</em> passing <code>--diffusion-attention-backend FLASH_ATTN</code> — the backend imports <code>mindiesd</code> lazily and otherwise raises <code>ImportError</code> at the first denoise step. Once installed the platform default picks it up on its own.</li><li><strong>Shared memory.</strong> Decoded video crosses the diffusion-worker process boundary through POSIX shared memory — roughly 0.9 GiB for a 5 s 1024×576 clip. The 64 MiB Docker default is large enough for the control-plane queues, so the server starts and the denoise loop reaches 100% before the write into <code>/dev/shm</code> raises SIGBUS and kills the worker with <code>Bus error (core dumped)</code>. Check <code>df -h /dev/shm</code> and start the container with <code>--shm-size=8g</code> or <code>--ipc=host</code>. It cannot be changed on a running container, and an in-container <code>mount -o remount</code> needs <code>CAP_SYS_ADMIN</code>.</li><li><strong>No <code>--enforce-eager</code>.</strong> It disables regional compilation and only slows the steady state; the first request is a warmup either way. <code>--cfg-parallel-size</code> must stay 1, as everywhere else in this recipe.</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code>ASCEND_RT_VISIBLE_DEVICES=0 \
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_OMNI_VIDEO_SYNC_TIMEOUT=14400 \
+<span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3/FL2VA \
+  <span class="hljs-attr">--omni</span> \
+  <span class="hljs-attr">--host</span> 0.0.0.0 \
+  <span class="hljs-attr">--port</span> 8000 \
+  <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--num-gpus</span> 1 \
+  <span class="hljs-attr">--tensor-parallel-size</span> 1 \
+  <span class="hljs-attr">--usp</span> 1 \
+  <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--text-encoder-tp-size</span> 1 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 1 \
+  <span class="hljs-attr">--vae-parallel-mode</span> tile \
+  <span class="hljs-attr">--vae-use-tiling</span> \
+  <span class="hljs-attr">--init-timeout</span> 14400 \
+  <span class="hljs-attr">--stage-init-timeout</span> 14400 \
+  <span class="hljs-attr">--quantization</span> int8</code></pre></figure>
+<h3 id="text-encoder-tensor-parallelism" class="heading"><a class="heading-anchor" href="#text-encoder-tensor-parallelism" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Text-encoder tensor parallelism</span></h3>
+<p>By default the whole Qwen3-VL encoder is resident on the DiT main rank, making it the peak-memory hotspot on multi-GPU no-offload runs. <code>--text-encoder-tp-size N</code> shards it across the first <code>N</code> DiT ranks using vLLM-style tensor-parallel layers on a dedicated encoder process group:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">vllm</span> serve /path/to/MiniMax-H3 \
+  <span class="hljs-attr">--omni</span> <span class="hljs-attr">--trust-remote-code</span> \
+  <span class="hljs-attr">--task-type</span> fl2va \
+  <span class="hljs-attr">--num-gpus</span> 4 <span class="hljs-attr">--usp</span> 4 <span class="hljs-attr">--ring</span> 1 \
+  <span class="hljs-attr">--text-encoder-tp-size</span> 4 \
+  <span class="hljs-attr">--vae-patch-parallel-size</span> 4 <span class="hljs-attr">--vae-parallel-mode</span> tile <span class="hljs-attr">--vae-use-tiling</span></code></pre></figure>
+<ul><li><code>N</code> must divide the Qwen3-VL head counts (64 attention heads / 8 KV heads) → 1, 2, 4 on a 4-GPU server; 1, 2, 4, 8 on 8 GPUs.</li><li>On 4 GPUs, <code>N=4</code> drops the per-rank engine peak from <strong>133 GB to 103 GB</strong> (~35.7 GB) at no measurable throughput cost, while each non-main rank gains ~51.5/N GB.</li><li>Numerically: <code>N=1</code> reproduces the HF reference path bit-exactly (<code>max_abs = 0</code>); <code>N=4</code> introduces bounded BF16 rounding only (row-parallel all-reduce in FP32), giving 31.11 dB PSNR / 0.9566 SSIM end-to-end against <code>N=1</code> with identical structure.</li><li>Combining <code>N&gt;1</code> with regional compile used to produce a <code>ValueError: v must be finite</code> on the <em>second</em> request. That is fixed — the token refiner's attention runs on replicated rows before <code>sp_prepare</code> and was wrongly getting a Ulysses SP all-to-all.</li></ul>
+<h3 id="key-request-parameters" class="heading"><a class="heading-anchor" href="#key-request-parameters" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Key request parameters</span></h3>
+<div class="tablewrap"><table><thead><tr><th>Parameter</th><th>Recommended</th><th>Notes</th></tr></thead><tbody><tr><td><code>task</code></td><td><code>t2va</code>, <code>fl2va</code>, <code>ref2va</code></td><td>Passed inside <code>extra_params</code>; must be compatible with <code>--task-type</code> when one is set</td></tr><tr><td><code>duration</code></td><td>4–15 s</td><td>Decimal seconds in <code>extra_params</code>; snapped to H3's legal <code>17n+5</code> frame count (15 s → 362 frames / 15.083 s)</td></tr><tr><td><code>fps</code></td><td><code>24</code></td><td>Output FPS is fixed</td></tr><tr><td><code>num_inference_steps</code></td><td><code>50</code></td><td>Matches the reference accuracy workloads</td></tr><tr><td><code>flow_shift</code></td><td><code>12</code></td><td>Video sigma shift</td></tr><tr><td><code>audio_flow_shift</code></td><td><code>3</code></td><td>Audio sigma shift, in <code>extra_params</code></td></tr><tr><td><code>width</code>, <code>height</code></td><td>see below</td><td>Server-side validation: multiples of 32, aspect ratio 1:4 to 4:1</td></tr><tr><td><code>seed</code></td><td>fixed value</td><td>Output is deterministic per request at a fixed seed</td></tr></tbody></table></div>
+<p>On <code>width</code>/<code>height</code>, the serving-side check is broader than the documented product modes — pick a <strong>short edge of 768 or 1440</strong> in one of the supported ratios (21:9, 16:9, 4:3, 1:1, 3:4, 9:16) to stay on shapes the model was trained and validated for. FL2VA can omit both and inherit the first frame's aspect ratio at a 768 px short edge. Prompts cap at 7,000 characters.</p>
+<p>Use <code>POST /v1/videos/sync</code> when you want the MP4 in the response body; <code>POST /v1/videos</code> is the async job-polling variant.</p>
+<h3 id="validated-performance-4b300" class="heading"><a class="heading-anchor" href="#validated-performance-4b300" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Validated performance (4×B300)</span></h3>
+<p>These measurements used task-specific single-DiT processes before the modular combined-service merge; they remain the validated per-task operating points.</p>
+<div class="tablewrap"><table><thead><tr><th>Workload</th><th>Config</th><th>Result</th></tr></thead><tbody><tr><td>FL2VA, 209 frames, 1248×768 (8.7 s)</td><td>no offload, U4, VPP4 tile, regional compile</td><td><strong>86.96 s</strong> client E2E (±0.23 s)</td></tr><tr><td>Two-video Ref2VA, 362 frames, 1344×768 (15 s)</td><td>same</td><td><strong>784.4 s</strong> accounted model-stage mean</td></tr></tbody></table></div>
+<p>Stage split for the FL2VA case: text encoder 0.21 s, visual encoder 0.20 s, DiT 79.1 s (<strong>88%</strong> of the request), video+audio VAE decode 2.40 s. VAE patch parallelism is the cheapest win available — it cuts decode 3.4–3.5× (8.24 s → 2.40 s).</p>
+<h4 id="validated-performance-4mi300x" class="heading"><a class="heading-anchor" href="#validated-performance-4mi300x" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Validated performance (4×MI300X)</span></h4>
+<p>Measured with <code>vllm/vllm-omni-rocm:minimax-h3</code> (<code>sha256:29d1946af9c69e3e0a7128c247bdc8c82437ead43fbc366fed443533cf6ce9e8</code>), BF16, AITER, U4, text-encoder TP4, VPP4 tile, regional compile, one warmup, and the synchronous Video API:</p>
+<div class="tablewrap"><table><thead><tr><th>Workload</th><th style="text-align:right">Model stages</th><th style="text-align:right">Client E2E</th></tr></thead><tbody><tr><td>T2VA, 209 frames, 1344×768 (8.7 s)</td><td style="text-align:right">encode 0.09 s, denoise 244.04 s, decode 4.15 s</td><td style="text-align:right"><strong>267.42 s</strong></td></tr><tr><td>FL2VA, 209 frames, 1344×768 (8.7 s)</td><td style="text-align:right">encode 13.98 s, denoise 257.58 s, decode 4.11 s</td><td style="text-align:right"><strong>287.07 s</strong></td></tr></tbody></table></div>
+<p>Both outputs were validated as 209-frame H.264 at 24 FPS with 32 kHz stereo AAC. A v0.26.0 source build additionally completed image+audio and video-reference Ref2VA, plus a 2048×1088 T2VA run. These measurements describe tested shapes, not a general latency guarantee.</p>
+<p>A <code>with_stack</code> profile of the two-video Ref2VA case shows the pipeline is <strong>GPU-attention-bound, not host-starved</strong>: FlashAttention-4 is ~76% of <code>diffuse</code> device time, Ulysses send/recv is secondary, GPU utilization is 92.8–94.3% and the CPU-idle union inside the transformer forwards is 3.15%. Reducing DiT time further needs a change in attention cost, which is not lossless; <a class="link" href="#optional-lossy-attention-sage--skip-softmax">SAGE + Skip-Softmax</a> above is the supported way to trade attention precision and sparsity for speed on datacenter Blackwell.</p>
+<p>Against the checkpoint's own reference implementation, the accuracy-qualified path scores SSIM 0.9873–0.9896, PSNR 39–42 dB, pixel cosine 0.9996+, and audio log-mel cosine 0.977–0.996 on T2VA/FL2VA. The two-video Ref2VA composite scores lower on raw pixels (SSIM 0.628) largely because of H.264 bitrate differences, while CLIP cosine is 0.9816 and audio log-mel cosine 0.9869 — content and motion stay aligned.</p>
+<h4 id="cache-dit" class="heading"><a class="heading-anchor" href="#cache-dit" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Cache-DiT</span></h4>
+<p>Opt-in only. A 50-step T2VA probe cut denoise time <strong>30.2%</strong> (121.01 s → 84.47 s) but dropped SSIM to <strong>0.831</strong> against the uncached output. H3's video trajectory is sensitive to cached denoise steps — choose the cache budget against your own quality target.</p>
+<h4 id="offload-and-accuracy" class="heading"><a class="heading-anchor" href="#offload-and-accuracy" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Offload and accuracy</span></h4>
+<p>On a <strong>single GPU</strong>, model-level CPU offload is the accuracy-qualified path. On four GPUs, no-offload is both faster and accuracy-clean once the encoder stays resident: an earlier no-offload build performed a ~63 GiB DiT GPU→CPU→GPU round trip inside <code>encode_prompt</code>, which was pure overhead (encoder 30.38 s → 0.207 s once removed, ~146×).</p>
+<h3 id="known-limitations" class="heading"><a class="heading-anchor" href="#known-limitations" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Known limitations</span></h3>
+<ul><li>The modular root service loads both DiTs by default. Capacity profiles use <code>--task-type fl2va</code> or <code>--task-type ref2va</code> and expose only that task family.</li><li>H3 executes <strong>one generation request per diffusion batch</strong> today.</li><li>The first request is a compile warmup only on the resident regional-compile profiles. The two-GPU DLO recipes use <code>--enforce-eager</code> and do not compile the DiT.</li><li><strong>The serving path accepts fewer references than the model supports.</strong> H3 documents up to 9 images, 3 video clips, and 3 audio clips (12 files) per Omni Reference request; the current vLLM-Omni path takes exactly one image plus one audio reference, <strong>or</strong> one or more videos with <strong>no</strong> separate <code>audio_reference</code> (it uses the source soundtracks).</li><li>The 768 px short-edge mode is available for T2VA and FL2VA; 1344×768 is the documented 16:9 request shape. The 24 GB DLO recipe uses 1024×576 as its lower-memory starting point.</li><li><code>--cfg-parallel-size &gt; 1</code> is rejected by design (CFG-distilled, no negative branch).</li><li>The VAE supports the native <code>tile</code> parallel mode only.</li><li>A <code>U2 × Ring2</code> hybrid currently fails with an attention-mask length mismatch; use pure Ulysses.</li><li>FastH3 preview v1 serves T2VA only, is fused at startup, and cannot use model-level, layerwise, or distributed layerwise offload. Its VSA variants additionally require CUDA, <code>fastvideo-kernel</code>, <code>FASTVIDEO_VSA</code>, and pure local/Ulysses attention; Ring and AllGather sequence parallelism are rejected.</li><li>Online FP8 quantizes the DiT only — the Qwen3-VL text encoder and both VAEs stay BF16. It is incompatible with layerwise offload, whose weight stride is rejected by the Cutlass FP8 kernel.</li><li>On unified-memory platforms (DGX Spark / GB10) CPU offload and DLO give no capacity benefit, because host RAM and VRAM are one pool; DLO additionally doubles peak usage while staging. Use resident FP8 with a single <code>--task-type</code> partition instead.</li><li>Pure Ulysses still replicates the 66.3 GB DiT on every rank, so 64 GB GPUs cannot use <code>--usp N --tp 1</code> as a resident capacity path. Use DiT TP plus DLO (the two-GPU recipes above), or model-level CPU offload; text-encoder TP alone is not sufficient.</li><li>DLO is a capacity path, not a free speedup: it needs substantial host RAM and streams weights over PCIe on every denoise step. Increase <code>--dlo-resident-layers</code> only after checking peak HBM on the exact request shape.</li></ul>
+<h3 id="references" class="heading"><a class="heading-anchor" href="#references" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>References</span></h3>
+<ul><li><a class="link external" href="https://huggingface.co/MiniMaxAI/MiniMax-H3" target="_blank" rel="noreferrer noopener">Model card</a></li><li><a class="link external" href="https://github.com/vllm-project/vllm-omni/pull/5720" target="_blank" rel="noreferrer noopener">Modular FL2VA/Ref2VA pipeline (vLLM-Omni #5720)</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/videos_api/" target="_blank" rel="noreferrer noopener">vLLM-Omni Video API</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/diffusion/parallelism/overview/" target="_blank" rel="noreferrer noopener">vLLM-Omni diffusion parallelism</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/diffusion/attention_backends/" target="_blank" rel="noreferrer noopener">vLLM-Omni diffusion attention backends</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/diffusion/attention_backends/fastvideo_vsa/" target="_blank" rel="noreferrer noopener">FastVideo VSA attention guide</a></li><li><a class="link external" href="https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA" target="_blank" rel="noreferrer noopener">FastH3 preview adapters</a></li><li><a class="link external" href="https://github.com/lishunyang12/vllm-omni/blob/pr/fasth3-omni-upstream/recipes/FastVideo/README.md" target="_blank" rel="noreferrer noopener">FastH3 family and deployment guides</a></li><li><a class="link external" href="https://github.com/vllm-project/vllm-omni/pull/9167" target="_blank" rel="noreferrer noopener">FastH3 Omni and V2 integration (vLLM-Omni #9167)</a></li><li><a class="link external" href="https://github.com/vllm-project/vllm-omni/pull/6909" target="_blank" rel="noreferrer noopener">MiniMax-H3 VSA and Ulysses support (vLLM-Omni #6909)</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/diffusion/attention_backends/trtllm/" target="_blank" rel="noreferrer noopener">vLLM-Omni TRTLLM attention guide (SAGE, Skip-Softmax)</a></li><li><a class="link external" href="https://vllm.ai/blog/2026-09-01-minimax-h3-production-serving" target="_blank" rel="noreferrer noopener">MiniMax-H3 production serving on vLLM-Omni (blog)</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/models/supported_models/" target="_blank" rel="noreferrer noopener">vLLM-Omni supported models</a></li><li><a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/" target="_blank" rel="noreferrer noopener">vLLM-Omni GPU installation</a></li><li><a class="link external" href="https://github.com/vllm-project/vllm-omni/issues/5697" target="_blank" rel="noreferrer noopener">ROCm H3 tracking issue</a></li></ul>
+<hr>
+<h2 id="本地核对记录rtx50902x-的-6-个-task-取值" class="heading"><a class="heading-anchor" href="#本地核对记录rtx50902x-的-6-个-task-取值" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>本地核对记录：rtx_5090_2x 的 6 个 task 取值</span></h2>
+<p>本节是本地整理，不属于上游导出正文。核对方式：对 6 个 URL 各抓取一次（每个导出均为 1140 行）， 以 <code>task=t2va</code> 为基准逐行 diff；下表“差异行”指与基准正文不同的行号。</p>
+<div class="tablewrap"><table><thead><tr><th><code>task</code> 取值</th><th>差异行</th><th>Serve 命令中的 partition 旗标</th><th>重新抓取</th></tr></thead><tbody><tr><td><code>t2va</code></td><td>无（本文件正文即该配置）</td><td><code>--task-type fl2va</code></td><td><code>https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3.md?hardware=rtx_5090_2x&amp;task=t2va</code></td></tr><tr><td><code>fl2va_first</code></td><td>第 5/7/8 行（Configuration 行 + 两条页面/JSON 链接）</td><td><code>--task-type fl2va</code></td><td><code>…&amp;task=fl2va_first</code></td></tr><tr><td><code>fl2va_first_last</code></td><td>第 5/7/8 行</td><td><code>--task-type fl2va</code></td><td><code>…&amp;task=fl2va_first_last</code></td></tr><tr><td><code>ref_image</code></td><td>第 5/7/8 行 + 第 100 行</td><td><code>--task-type ref2va</code></td><td><code>…&amp;task=ref_image</code></td></tr><tr><td><code>ref_image_audio</code></td><td>第 5/7/8 行 + 第 100 行</td><td><code>--task-type ref2va</code></td><td><code>…&amp;task=ref_image_audio</code></td></tr><tr><td><code>ref_video_mixed</code></td><td>第 5/7/8 行 + 第 100 行</td><td><code>--task-type ref2va</code></td><td><code>…&amp;task=ref_video_mixed</code></td></tr></tbody></table></div>
+<p>即：在 2× RTX 5090 上，页面的 task 选择器只决定加载哪个 DiT partition（文本/首尾帧走 <code>fl2va</code>， 参考类走 <code>ref2va</code>）以及元数据链接，不改变安装步骤、并行度、offload 参数或请求示例；Guide 部分 六个取值完全相同。若部署时只起一个实例，两种 partition 需分别拉起两个进程。</p>
+</article>
+    <footer class="page-footer">
+      <p>Offline copy saved 2026-11-04 from <a class="link" href="https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&task=t2va?hardware=rtx_5090_2x&task=t2va" target="_blank" rel="noreferrer noopener">https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3?hardware=rtx_5090_2x&task=t2va?hardware=rtx_5090_2x&task=t2va</a> — rendered from that page's own Markdown export for hardware=rtx_5090_2x · variant=default · task=t2va. The other five task values are identical apart from three metadata lines and the --task-type flag; see the audit section at the end of this copy.</p>
+    </footer>
+  </main>
+</div>
+
+<script>window.__DOC__={"slug": "vllm-rtx5090", "origin": "https://recipes.vllm.ai", "title": "MiniMaxAI/MiniMax-H3 · 2× RTX 5090"};</script>
+
+
+<script>
+(function () {
+  var rootEl = document.documentElement;
+  var THEME_KEY = 'qdoc:theme';
+  var toggleBtn = document.getElementById('theme-toggle');
+  function applyTheme(t) {
+    rootEl.setAttribute('data-theme', t);
+    if (rootEl.classList) rootEl.classList.toggle('dark', t === 'dark');
+    if (toggleBtn) toggleBtn.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+  var saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+  applyTheme(saved || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  if (toggleBtn) toggleBtn.addEventListener('click', function () {
+    var next = rootEl.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  });
+
+  var toc = document.getElementById('toc');
+  var filter = document.getElementById('tocfilter');
+  var links = toc ? Array.prototype.slice.call(toc.querySelectorAll('a')) : [];
+  if (filter) {
+    filter.addEventListener('input', function () {
+      var q = filter.value.trim().toLowerCase();
+      links.forEach(function (a) { a.parentNode.hidden = !!q && a.textContent.toLowerCase().indexOf(q) < 0; });
+    });
+    document.addEventListener('keydown', function (e) {
+      var tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (e.key === '/' && document.activeElement !== filter && tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); filter.focus(); }
+      else if (e.key === 'Escape' && document.activeElement === filter) { filter.value = ''; filter.dispatchEvent(new Event('input')); filter.blur(); }
+    });
+  }
+
+  var tocToggle = document.getElementById('toc-toggle');
+  if (tocToggle && toc) tocToggle.addEventListener('click', function () {
+    var open = document.body.classList.toggle('toc-open');
+    tocToggle.setAttribute('aria-expanded', String(open));
+  });
+
+  /* active section tracking against the outline */
+  var watched = Array.prototype.slice.call(document.querySelectorAll('#content h2[id], #content h3[id]'));
+  if (toc && watched.length && 'IntersectionObserver' in window) {
+    var ratios = {};
+    var observer = new IntersectionObserver(function () {
+      watched.forEach(function (h) {
+        var box = h.getBoundingClientRect();
+        ratios[h.id] = box.top < 140 && box.bottom > 0 ? 2 : (box.top >= 0 ? 1 : 0);
+      });
+      var best = null, bestScore = -1;
+      watched.forEach(function (h) { var s = ratios[h.id]; if (s > bestScore) { bestScore = s; best = h.id; } });
+      if (!best) return;
+      links.forEach(function (a) { a.classList.toggle('is-active', a.getAttribute('data-target') === best); });
+    }, { rootMargin: '-90px 0px -55% 0px', threshold: [0, 0.5, 1] });
+    watched.forEach(function (h) { observer.observe(h); });
+    window.addEventListener('scroll', function () { observer.observe(watched[0]); }, { passive: true });
+  }
+
+  /* deep link on load: scroll after hydration swaps panels in */
+  if (location.hash) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target) setTimeout(function () { target.scrollIntoView({ block: 'start' }); }, 60);
+  }
+})();
+</script>
+
+
+
+<script>
+(function () {
+  /* tab groups: the upstream bundle that used to drive them is not carried over,
+     so switching is implemented here; "expand" shows every panel at once. */
+  document.querySelectorAll('.tabs').forEach(function (group) {
+    var buttons = Array.prototype.slice.call(group.querySelectorAll('.tab-btn'));
+    var panels = Array.prototype.slice.call(group.querySelectorAll('.tab-panel'));
+    buttons.forEach(function (btn, idx) {
+      btn.addEventListener('click', function () {
+        buttons.forEach(function (b, i) {
+          var on = i === idx;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-selected', String(on));
+          b.tabIndex = on ? 0 : -1;
+        });
+        panels.forEach(function (p, i) {
+          if (i === idx) { p.removeAttribute('hidden'); } else { p.setAttribute('hidden', ''); }
+        });
+      });
+    });
+  });
+  var expand = document.createElement('button');
+  expand.type = 'button';
+  expand.className = 'panels-expand';
+  expand.textContent = '展开所有面板 / show all panels';
+  expand.addEventListener('click', function () {
+    var on = document.body.getAttribute('data-all-panels') === 'on';
+    document.body.setAttribute('data-all-panels', on ? 'off' : 'on');
+    expand.textContent = on ? '展开所有面板 / show all panels' : '收起非当前面板 / show active panel';
+  });
+  var first = document.querySelector('.tabs');
+  if (first && first.parentNode) first.parentNode.insertBefore(expand, first);
+  /* copy buttons for code blocks */
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.closest('.codeblock');
+      var code = pre ? pre.querySelector('code') : null;
+      if (!code || !navigator.clipboard) return;
+      navigator.clipboard.writeText(code.innerText).then(function () {
+        btn.classList.add('is-copied');
+        setTimeout(function () { btn.classList.remove('is-copied'); }, 1200);
+      });
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

@@ -58,8 +58,9 @@
 
 | 文件 / 目录 | 用途 |
 |---|---|
-| `MiniMax-H3/MiniMax-H3-SGLang-Cookbook.md` / `.html` | SGLang 部署 MiniMax-H3 官方手册副本 |
-| `MiniMax-H3/MiniMax-H3-vLLM-Recipes.md` / `.html` | vLLM 部署 MiniMax-H3 官方手册副本 |
+| `MiniMax-H3/MiniMax-H3-SGLang-Cookbook.md` / `.html` | SGLang 部署 MiniMax-H3 官方手册副本（2026-11-04 抓取；附录 A 为 2026-09-29 builder 快照，已标注过期） |
+| `MiniMax-H3/MiniMax-H3-vLLM-Recipes.md` / `.html` | vLLM 部署 MiniMax-H3 官方手册副本（2026-11-04 抓取，默认配置 hardware=b300 · variant=default · task=t2va） |
+| `MiniMax-H3/MiniMax-H3-vLLM-Recipes-2xRTX-5090.md` / `.html` | 同一 vLLM 手册的 2×RTX 5090 配置副本（2026-11-04 抓取；含 6 个 task 取值的逐行差异核对记录） |
 | `迁移机配置参考：MiniMax-H3 完整 config.md` | 推理机分离部署时的完整 `config.yaml` 模板与自检命令 |
 | `tips.md` | 打包迁移（tar 排除清单）等运维小抄 |
 
@@ -89,6 +90,7 @@
 |---|---|---|
 | `用户与个人空间设计方案.md` | 设计提案（v17，未实施） | 参照 `Design_Agent_Platform` 的 `USER_SPACE_ISOLATION_HANDOFF_2026-10-23`，采用「上游 GUIP 统一身份 + 单租户按 `login_name` 字符串隔离」（`guip`/`single` 双模式）、**PostgreSQL 元数据 + MinIO 对象存储**、媒体控制器、`/space` 个人空间与收藏转存的完整方案；含剧本/角色/分镜等 stage 中间产物入库、**每阶段完成写 DB 检查点并支持恢复**、「单进程 ≠ 单用户单任务」说明、信任边界/SSE 约束、改造清单、分期、验证断言、风险与 Q1–Q8 决策记录 |
 | `用户与个人空间-数据库方案.md` | 设计提案（v14，未实施） | **PostgreSQL + MinIO**：sessions / session_stage_artifacts（含 status/version/checkpoint）/ artifact_files / pipeline_tasks / sandbox_records / sandbox_paths / saved_items；repository、stage 检查点事务、JSON→DB 与本地→MinIO 迁移、备份/回滚、媒体预签名、compose 服务与镜像变更、测试与风险；SQLite fallback 已移除，local 仅旧文件读取 |
+| [会话状态镜像导出方案-2026-11-04.md](designs/会话状态镜像导出方案-2026-11-04.md) | 设计提案（v2，未实施、未转 OpenSpec；Q1–Q4 已拍板） | 将 DB 中**已提交**的会话元数据与各阶段产物（剧本正文、角色/场景、分镜、改写提示词、选中版本引用、状态图）**以及 Pipeline 任务与沙盒记录**单向镜像为宿主可读的 JSON/Markdown，落 `./data/code/mirror/{sessions,tasks,sandbox}/<owner_key>/<id>/`；含数据来源（`load_committed` / `task_view` / `_record_view` + `FileRepo`，及四处待新增只读查询方法）、M1–M8 不变量（非状态源、失败隔离、与 `result/`、`work/executions`、`_refs` 目录隔离、归属分区、原子写与 symlink 拒绝、fingerprint 去重、不含秘密、幂等 GC）、三档触发选型（已定定时 60s + CLI，不采提交即时）、`VC_MIRROR__*` 配置四处改动、既有机制影响核对表、容器内 T1–T14 验收矩阵与宿主实测取证、~3d 分步工作量、R1–R7 风险与 Q5/Q6 未拍板项；附零改动替代做法与修订记录 |
 | [工作流与Prompts优化计划-2026-10-29.md](designs/工作流与Prompts优化计划-2026-10-29.md) | 待确认的优化提案，未实施 | 承接 [工作流专题审查](reviews/工作流与Prompts审查报告-2026-10-29.md)：局部契约修复 → H3／视频有效输入统一 → 正文语义与模板分型 → 缓存／调用／上下文优化；含问题映射、待确认决策、Docker 验收矩阵和分步确认边界 |
 
 区分：`designs/` 放未定稿、待评审的方案提案；`decisions/` 放已拍板的定稿快照（保留历史原貌）。机制性变更实施前仍需按项目约定在 `openspec/changes/` 补齐 proposal / specs / design / tasks 四工件。
