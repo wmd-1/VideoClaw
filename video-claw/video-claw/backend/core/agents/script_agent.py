@@ -368,8 +368,12 @@ class ScriptWriterAgent(AgentInterface):
             _log(92, "正在合并单集修订结果...")
             new_episodes = script_revision.merge_single_episode(episodes, parsed["episode"])
             script_revision.assert_untouched_episodes(episodes, new_episodes, target_number)
-            new_characters = current.get("characters") or []
-            new_settings = current.get("settings") or []
+            # 单集修订不动角色/场景，但产物本身可能已经缺 ID（旧版全剧修订遗留）：
+            # 先复制一份再补齐，不能改 current（base_version 以修订前正文为准）。
+            new_characters = copy.deepcopy(current.get("characters") or [])
+            new_settings = copy.deepcopy(current.get("settings") or [])
+            script_revision.ensure_item_ids(new_characters, new_characters, "character_id", "char")
+            script_revision.ensure_item_ids(new_settings, new_settings, "setting_id", "set")
             revised = next(
                 ep for ep in new_episodes
                 if int(ep.get("episode_number", ep.get("act_number", 0))) == target_number
@@ -412,15 +416,24 @@ class ScriptWriterAgent(AgentInterface):
             if parsed is None:
                 raise ValueError("修订结果集号与原文不一致，已停止本次修订")
             _log(92, "正在整理修订后的剧集...")
-            new_characters = (
+            new_characters = copy.deepcopy(
                 parsed.get("characters")
                 if isinstance(parsed.get("characters"), list)
                 else (current.get("characters") or [])
             )
-            new_settings = (
+            new_settings = copy.deepcopy(
                 parsed.get("settings")
                 if isinstance(parsed.get("settings"), list)
                 else (current.get("settings") or [])
+            )
+            # 模型输出的角色/场景不带 character_id/setting_id：原样落入预览会在应用后把产物主键
+            # 抹掉，阶段 2 按 ID 取数会整段丢条目（“未能从剧本中读取到角色或场景描述数据”）。
+            # 同名先复用修订前 ID（保住选中/版本/资产），新增条目按名称派生补齐并随预览回写产物。
+            new_characters = script_revision.ensure_item_ids(
+                current.get("characters") or [], new_characters, "character_id", "char"
+            )
+            new_settings = script_revision.ensure_item_ids(
+                current.get("settings") or [], new_settings, "setting_id", "set"
             )
             preview_body = {"episodes": new_episodes}
 

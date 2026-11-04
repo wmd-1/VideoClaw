@@ -998,7 +998,8 @@ class WorkflowEngine:
         for char in characters:
             if not isinstance(char, dict):
                 continue
-            char_id = char.get("character_id") or char.get("id")
+            # 缺 character_id 时按名称派生主键，不能直接丢条目：否则阶段 2 既无条目也取不到描述
+            char_id = script_revision.item_id(char, "character_id", "char")
             if not char_id or char_id in existing_char_ids:
                 continue
             seeded["characters"].append({
@@ -1020,7 +1021,7 @@ class WorkflowEngine:
         for setting in settings:
             if not isinstance(setting, dict):
                 continue
-            setting_id = setting.get("setting_id") or setting.get("id")
+            setting_id = script_revision.item_id(setting, "setting_id", "set")
             if not setting_id or setting_id in existing_set_ids:
                 continue
             seeded["settings"].append({
@@ -1394,7 +1395,8 @@ class WorkflowEngine:
             for char in script_art.get("characters", []):
                 if not isinstance(char, dict):
                     continue
-                source = char_by_id.get(char.get("character_id") or char.get("id"))
+                # 与种子化/取数同源：剧本条目缺主键时按名称派生，否则描述永远回写不到剧本
+                source = char_by_id.get(script_revision.item_id(char, "character_id", "char"))
                 if source:
                     for key in ("name", "description", "species"):
                         if source.get(key):
@@ -1403,7 +1405,7 @@ class WorkflowEngine:
             for setting in script_art.get("settings", []):
                 if not isinstance(setting, dict):
                     continue
-                source = setting_by_id.get(setting.get("setting_id") or setting.get("id"))
+                source = setting_by_id.get(script_revision.item_id(setting, "setting_id", "set"))
                 if source:
                     for key in ("name", "description"):
                         if source.get(key):

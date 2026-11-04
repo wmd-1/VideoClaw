@@ -15,6 +15,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core import script_revision
 from core.asset_kind import (
     ASSET_KIND_BUILDING,
     ASSET_KIND_HUMAN,
@@ -574,7 +575,9 @@ class CharacterDesignerAgent(AgentInterface):
         script_gen = self._session_artifact(input_data, "script_generation")
         chars = {}
         for c in script_gen.get("characters", []):
-            cid = c.get("character_id") or c.get("id") or ""
+            # 与种子化同源：产物缺 character_id 时按名称派生主键，
+            # 否则整段条目被当作空数据、阶段 2 直接报「未读取到角色或场景」。
+            cid = script_revision.item_id(c, "character_id", "char")
             if cid:
                 chars[cid] = {
                     "name": c.get("name", ""),
@@ -585,7 +588,7 @@ class CharacterDesignerAgent(AgentInterface):
 
         sets = {}
         for s in script_gen.get("settings", []):
-            sid_val = s.get("setting_id") or s.get("id") or ""
+            sid_val = script_revision.item_id(s, "setting_id", "set")
             if sid_val:
                 sets[sid_val] = {
                     "name": s.get("name", ""),

@@ -8,6 +8,7 @@
 import copy
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -97,6 +98,81 @@ def _items_by_name(items: Any, name_key: str = "name") -> Dict[str, dict]:
         if key and key not in result:
             result[key] = item
     return result
+
+
+def item_id(item: Any, id_key: str, prefix: str) -> str:
+    """条目主键：产物自带 ID 优先，缺失时按名称派生稳定 ID。
+
+    剧本产物丢 ID（旧版全剧修订直接采用模型返回的角色/场景对象）时，下游“按 ID 取数”
+    会整段丢条目，阶段 2 报“未能从剧本中读取到角色或场景描述数据”。派生口径与导入路径
+    `script_import.stable_id` 一致：导入剧本可原地找回原 ID 与已生成的资产。
+    """
+    if not isinstance(item, dict):
+        return ""
+    existing = item.get(id_key) or item.get("id")
+    if existing:
+        return str(existing)
+    name = str(item.get("name") or "").strip()
+    if not name:
+        return ""
+    from core import script_import
+
+    return script_import.stable_id(prefix, name)
+
+
+def ensure_item_ids(old_items: Any, new_items: Any, id_key: str, prefix: str) -> List[dict]:
+    """就地为缺 ID 的条目补主键：同名先复用修订前条目的 ID，再按名称派生。
+
+    必须在预览计算之前调用：复用旧 ID 才能保住阶段 2 的选中/版本/资产，
+    而新 ID 一旦落入产物就要与下游（种子化、取数）的派生口径一致。
+    模型偶尔给多个条目返回同一主键：保留首个，其余按名称重新分配。
+    """
+    from core import script_import
+
+    items = [item for item in (new_items or []) if isinstance(item, dict)]
+    incoming_ids: set = set()
+    for item in items:
+        current = item.get(id_key) or item.get("id")
+        if not current:
+            continue
+        if str(current) in incoming_ids:
+            item.pop(id_key, None)
+            item.pop("id", None)
+            continue
+        incoming_ids.add(str(current))
+    taken = {
+        str(item.get(id_key) or item.get("id"))
+        for item in items
+        if item.get(id_key) or item.get("id")
+    }
+    reusable: Dict[str, List[str]] = {}
+    for old in old_items or []:
+        if not isinstance(old, dict):
+            continue
+        old_id = old.get(id_key) or old.get("id")
+        key = _normalize_name(old.get("name"))
+        if old_id and key:
+            reusable.setdefault(key, []).append(str(old_id))
+
+    for item in items:
+        if item.get(id_key) or item.get("id"):
+            continue
+        name = str(item.get("name") or "").strip()
+        candidate = next(
+            (cid for cid in reusable.get(_normalize_name(name), []) if cid not in taken), ""
+        )
+        if not candidate:
+            candidate = (
+                script_import.stable_id(prefix, name)
+                if name
+                else f"{prefix}_{uuid.uuid4().hex[:6]}"
+            )
+            if candidate in taken:
+                # 同名多条目：派生 ID 会碰撞，退回随机 ID 保证主键唯一
+                candidate = f"{prefix}_{uuid.uuid4().hex[:6]}"
+        taken.add(candidate)
+        item[id_key] = candidate
+    return items
 
 
 def removed_items(

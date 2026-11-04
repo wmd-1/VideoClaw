@@ -428,6 +428,177 @@ def test_revise_items_merges_partial_payload(session_dir, monkeypatch):
     assert artifact["items"][1]["rewritten_prompt"] == "旧提示词二"
 
 
+def test_revise_backfills_item_ids(monkeypatch):
+    """R-16：全剧修订时模型返回的角色/场景不带 ID，预览必须补上同名复用的主键。
+
+    regression：无 ID 条目一旦落入剧本产物，阶段 2 按 character_id/setting_id 取数会
+    整段丢条目，并报「未能从剧本中读取到角色或场景描述数据」。
+    """
+    import asyncio
+    import json as jsonlib
+
+    from models import llm_client
+
+    old_chars = [{"character_id": "char_aaa111", "name": "小刘", "description": "柜员"}]
+    old_settings = [{"setting_id": "set_bbb222", "name": "营业厅", "description": "大厅"}]
+    revised = {
+        "summary": "改正文",
+        "episodes": [{"episode_number": 1, "content": "新正文", "act_title": "第一集"}],
+        "characters": [
+            {"name": "小刘", "description": "资深柜员"},
+            {"name": "老张", "description": "新客户"},
+        ],
+        "settings": [{"name": "营业厅", "description": "大厅"}],
+    }
+
+    class FakeLLM:
+        def query(self, *args, **kwargs):
+            return jsonlib.dumps(revised, ensure_ascii=False)
+
+    monkeypatch.setattr(llm_client, "LLM", FakeLLM)
+    monkeypatch.setattr(ScriptWriterAgent, "_save_result", lambda *a, **k: None)
+    agent = ScriptWriterAgent()
+    script_art = {"episodes": EPISODES_A, "characters": old_chars, "settings": old_settings}
+    inputs = {
+        "session_id": "revise_ids_sid",
+        "llm_model": "fake-model",
+        "_session_artifacts": {"script_generation": script_art},
+    }
+    preview = asyncio.run(
+        agent._run_revise_script(inputs, {"instruction": "改正文", "scope": "all"})
+    )["payload"]["pending_revision"]
+
+    # 同名复用修订前 ID（保住阶段 2 的选中/版本/资产），新增条目现场补齐
+    assert preview["characters"][0]["character_id"] == "char_aaa111"
+    new_id = preview["characters"][1]["character_id"]
+    assert new_id and new_id != "char_aaa111"
+    assert preview["settings"][0]["setting_id"] == "set_bbb222"
+    # 模型原始输出与修订前产物都不能被改写：base_version 以修订前正文为准
+    assert "character_id" not in revised["characters"][0]
+    assert old_chars == [{"character_id": "char_aaa111", "name": "小刘", "description": "柜员"}]
+    assert old_settings == [{"setting_id": "set_bbb222", "name": "营业厅", "description": "大厅"}]
+    assert preview["characters"][0] is not old_chars[0]
+    assert preview["base_version"] == script_revision.content_fingerprint(script_art)
+
+    # 应用后产物仍带主键，阶段 2 能按 ID 读到角色与场景
+    from core.agents.character_agent import CharacterDesignerAgent
+
+    applied_inputs = {
+        "session_id": "revise_ids_sid",
+        "_session_artifacts": {"script_generation": dict(script_art)},
+        "pending_revision": preview,
+    }
+    applied = asyncio.run(
+        ScriptWriterAgent()._run_apply_revision(
+            applied_inputs, {"confirm_removals": True, "confirm_overwrites": True}
+        )
+    )
+    assert applied["revision_applied"] is True
+    assert [c["character_id"] for c in applied["payload"]["characters"]] == ["char_aaa111", new_id]
+    desc = CharacterDesignerAgent()._read_script_data({"_session_artifacts": {
+        "script_generation": applied["payload"]
+    }})
+    assert set(desc["characters"]) == {"char_aaa111", new_id}
+    assert set(desc["settings"]) == {"set_bbb222"}
+
+
+def test_stage2_derives_ids_for_idless_script_items(session_dir):
+    """R-16 兑底：已被旧版修订抹掉 ID 的产物，种子化与取数必须同源按名称派生主键。"""
+    from core.agents.character_agent import CharacterDesignerAgent
+
+    damaged = {
+        "episodes": EPISODES_A,
+        "characters": [{"name": "小刘", "description": "柜员"}],
+        "settings": [{"name": "营业厅", "description": "大厅"}],
+    }
+    state = workflow_engine.create_session("seed_ids_sid", {}, owner="alice")
+    state = workflow_engine.get_state("seed_ids_sid")
+    state.artifacts["script_generation"] = damaged
+    assert workflow_engine._seed_stage_items_from_script(state) is True
+
+    data = CharacterDesignerAgent()._read_script_data(
+        {"_session_artifacts": {"script_generation": damaged}}
+    )
+    seeded_ids = {item["id"] for item in state.artifacts["character_design"]["characters"]}
+    seeded_setting_ids = {item["id"] for item in state.artifacts["character_design"]["settings"]}
+    assert seeded_ids == set(data["characters"]), (seeded_ids, set(data["characters"]))
+    assert seeded_setting_ids == set(data["settings"])
+    assert data["characters"] and data["settings"], "不得因缺 ID 整段丢条目"
+
+
+def test_single_episode_revision_backfills_item_ids(monkeypatch):
+    """单集修订不动角色/场景，但必须顺带修好旧产物里缺失的主键。"""
+    import asyncio
+    import json as jsonlib
+
+    from core.script_import import stable_id
+    from models import llm_client
+
+    episodes = [
+        {"episode_number": 1, "act_title": "第一集", "content": "第一集正文"},
+        {"episode_number": 2, "act_title": "第二集", "content": "第二集正文"},
+    ]
+    damaged_chars = [{"name": "小刘", "description": "柜员"}]
+    damaged_settings = [{"name": "营业厅", "description": "大厅"}]
+    revised = {
+        "summary": "改第二集",
+        "episode": {"episode_number": 2, "act_title": "第二集", "content": "第二集新正文"},
+    }
+
+    class FakeLLM:
+        def query(self, *args, **kwargs):
+            return jsonlib.dumps(revised, ensure_ascii=False)
+
+    monkeypatch.setattr(llm_client, "LLM", FakeLLM)
+    agent = ScriptWriterAgent()
+    inputs = {
+        "session_id": "revise_single_ids_sid",
+        "llm_model": "fake-model",
+        "_session_artifacts": {"script_generation": {
+            "episodes": episodes,
+            "characters": damaged_chars,
+            "settings": damaged_settings,
+        }},
+    }
+    preview = asyncio.run(agent._run_revise_script(
+        inputs, {"instruction": "改第二集", "scope": "episode", "episode_number": 2}
+    ))["payload"]["pending_revision"]
+
+    assert preview["characters"][0]["character_id"] == stable_id("char", "小刘")
+    assert preview["settings"][0]["setting_id"] == stable_id("set", "营业厅")
+    # 修订前产物不能被补 ID 改写：base_version 仍以它计算
+    assert "character_id" not in damaged_chars[0]
+    assert preview["base_version"] == script_revision.content_fingerprint({
+        "episodes": episodes, "characters": damaged_chars, "settings": damaged_settings,
+    })
+
+
+def test_ensure_item_ids_avoids_duplicate_derived_ids():
+    """同名新增条目派生 ID 会碰撞：必须退回唯一主键。"""
+    from core.script_import import stable_id
+
+    items = [{"name": "小刘", "description": "甲"}, {"name": "小刘", "description": "乙"}]
+    out = script_revision.ensure_item_ids([], items, "character_id", "char")
+    ids = [item["character_id"] for item in out]
+    assert ids[0] == stable_id("char", "小刘")
+    assert ids[1] != ids[0] and ids[1]
+
+
+def test_ensure_item_ids_reassigns_duplicate_incoming_ids():
+    """模型给多个条目返回同一主键：保留首个，其余按名称重新分配。"""
+    from core.script_import import stable_id
+
+    items = [
+        {"name": "小刘", "description": "甲", "character_id": "char_dup"},
+        {"name": "老张", "description": "乙", "character_id": "char_dup"},
+    ]
+    out = script_revision.ensure_item_ids([], items, "character_id", "char")
+    ids = [item["character_id"] for item in out]
+    assert ids[0] == "char_dup"
+    assert ids[1] == stable_id("char", "老张")
+    assert len(set(ids)) == 2
+
+
 # ─────────────── R15：正文手改后旧行标注必须失效 ───────────────
 
 
