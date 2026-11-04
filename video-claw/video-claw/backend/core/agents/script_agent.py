@@ -197,6 +197,23 @@ class ScriptWriterAgent(AgentInterface):
         effective_title = title or str(self._session_meta(input_data).get("title") or "")
         return "zh" if self._session_language(input_data, body=body, title=effective_title) == "zh" else "en"
 
+    async def _evaluate_pair(
+        self, llm, dialogue_prompt: str, plot_prompt: str, llm_model: str,
+        sid: str, web_search: bool, enable_concurrency: bool,
+    ) -> tuple:
+        """台词/情节评估并行；复用会话 enable_concurrency，固定返回顺序。"""
+        async def _call(prompt: str) -> str:
+            return await asyncio.to_thread(
+                self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search,
+            )
+
+        if enable_concurrency:
+            dialogue, plot = await asyncio.gather(_call(dialogue_prompt), _call(plot_prompt))
+        else:
+            dialogue = await _call(dialogue_prompt)
+            plot = await _call(plot_prompt)
+        return dialogue, plot
+
     def _save_result(self, json_data: dict, sid: str, is_zh: bool):
         """调试用副本：编排器提供执行根时写入执行根，恢复只认 DB 视图。"""
         from config import settings as app_settings
@@ -886,13 +903,13 @@ class ScriptWriterAgent(AgentInterface):
             _log_progress(45, "正在生成续写初稿...")
             sequel_script_text = await asyncio.to_thread(self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
 
-            _log_progress(50, "正在进行台词评估...")
+            _log_progress(50, "正在并行评估台词与情节...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
-            dialogue_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
-            
-            _log_progress(55, "正在进行情节评估...")
             eval_plot_prompt = _get_script_prompt("eval_plot", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
-            plot_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
+            dialogue_critique, plot_critique = await self._evaluate_pair(
+                llm, eval_dialogue_prompt, eval_plot_prompt, llm_model, sid, web_search,
+                bool(input_data.get("enable_concurrency", True)),
+            )
             
             _log_progress(58, "正在根据评估意见优化续写内容...")
             revise_prompt = _get_script_prompt("revise_script", lang).format(
@@ -1098,13 +1115,13 @@ class ScriptWriterAgent(AgentInterface):
             full_script_text = await _trim_script_if_needed(full_script_text, "初稿")
             full_script_text = await _repair_episode_count_if_needed(full_script_text, "初稿")
             
-            _log_progress(20, "正在进行台词评估...")
+            _log_progress(20, "正在并行评估台词与情节...")
             eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
-            dialogue_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
-            
-            _log_progress(30, "正在进行情节评估...")
             eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=full_script_text, film_type=film_type, subject_mode=subject_mode)
-            plot_critique = await asyncio.to_thread(self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
+            dialogue_critique, plot_critique = await self._evaluate_pair(
+                llm, eval_dialogue_prompt, eval_plot_prompt, llm_model, sid, web_search,
+                bool(input_data.get("enable_concurrency", True)),
+            )
             
             _log_progress(40, "正在根据评估意见优化剧本...")
             revise_prompt = _get_script_prompt("revise_script", "zh" if is_zh else "en").format(
