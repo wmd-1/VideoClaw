@@ -1510,7 +1510,11 @@ class WorkflowEngine:
         if stage == WorkflowStage.REFERENCE_GENERATION:
             return isinstance(intervention.get("regenerate_scenes"), list)
         if stage == WorkflowStage.PROMPT_REWRITE:
-            return isinstance(intervention.get("regenerate_items"), list)
+            # revise_items 只返回被修订条目：必须走条目合并，否则整阶段产物被部分列表覆盖，
+            # 其余分镜提示词会丢失；前端 isBackgroundItemRegeneration 也是同一口径。
+            return isinstance(intervention.get("regenerate_items"), list) or isinstance(
+                intervention.get("revise_items"), list
+            )
         if stage == WorkflowStage.VIDEO_GENERATION:
             return isinstance(intervention.get("regenerate_clips"), list)
         if stage == WorkflowStage.POST_PRODUCTION:
@@ -1529,7 +1533,12 @@ class WorkflowEngine:
         if stage == WorkflowStage.REFERENCE_GENERATION:
             return {"scenes": set(intervention.get("regenerate_scenes") or [])}
         if stage == WorkflowStage.PROMPT_REWRITE:
-            return {"items": set(intervention.get("regenerate_items") or [])}
+            revise_ids = {
+                str(item.get("id"))
+                for item in (intervention.get("revise_items") or [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            return {"items": set(intervention.get("regenerate_items") or []) | revise_ids}
         if stage == WorkflowStage.VIDEO_GENERATION:
             return {"clips": set(intervention.get("regenerate_clips") or [])}
         return {}

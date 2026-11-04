@@ -243,6 +243,16 @@ class ScriptWriterAgent(AgentInterface):
         """按指令修订剧本，只产出预览，不写产物。"""
         import copy
 
+        floor = 0.0
+
+        def _log(percent: float, message: str):
+            # 只前进不后退：重试分支的档位若调整不当会倒挂，前端虽有取大兜底，
+            # overlay/阶段快照仍会记录倒退值；这里再夹一层保证任何路径单调。
+            nonlocal floor
+            floor = max(floor, float(percent))
+            self._report_progress("AI 修改", message, floor)
+
+        _log(5, "正在读取剧本产物...")
         sid = input_data.get("session_id", "")
         instruction = str(intervention.get("instruction") or "").strip()
         scope = str(intervention.get("scope") or "all")
@@ -295,15 +305,36 @@ class ScriptWriterAgent(AgentInterface):
         llm = LLM()
         loop = asyncio.get_running_loop()
 
-        def _log(percent: float, message: str):
-            self._report_progress("AI 修改", message, percent)
-
         async def _call(prompt: str) -> str:
             return await asyncio.to_thread(
                 self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
             )
 
+        async def _call_with_heartbeat(prompt: str, start: float, cap: float, message: str) -> str:
+            """长耗时模型调用期间按固定间隔推进进度，避免进度条停在同一个数值上。
+
+            模型接口本身是单次阻塞调用、没有 token 级回调，这里用渐近推进把
+            调用期可视化；cap 留出解析/校验阶段的空间，保证进度单调递增。
+            """
+            task = asyncio.ensure_future(_call(prompt))
+            percent = start
+            try:
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=8.0)
+                    if done:
+                        break
+                    percent = min(cap, percent + max(1.0, (cap - percent) * 0.12))
+                    _log(percent, message)
+            finally:
+                # 外层被取消时不留无人认领的任务（否则其异常再也取不回）。
+                # 注意：cancel 只能回收 Task，to_thread 里的真实请求/线程仍会跑完，
+                # 模型调用的中断仍由 _cancellable_query 的前后检查兜底。
+                if not task.done():
+                    task.cancel()
+            return task.result()
+
         parsed: Optional[dict] = None
+        _log(10, "正在构建修订提示词...")
         if scope == "episode":
             template = _get_script_prompt(
                 "revise_episode_by_instruction", "zh" if is_zh else "en"
@@ -317,17 +348,24 @@ class ScriptWriterAgent(AgentInterface):
                 film_type=film_type,
                 subject_mode=subject_mode,
             )
-            _log(20, "正在修订目标集...")
+            _log(20, "正在请求模型修订目标集...")
             for attempt in range(2):
-                raw = await _call(prompt)
+                raw = await _call_with_heartbeat(
+                    prompt,
+                    20 if attempt == 0 else 82,
+                    78 if attempt == 0 else 88,
+                    "模型正在生成修订稿，请稍候...",
+                )
+                _log(80 if attempt == 0 else 88, "正在解析修订结果...")
                 candidate = self._extract_json_from_text(raw)
                 if isinstance(candidate, dict) and isinstance(candidate.get("episode"), dict):
                     parsed = candidate
                     break
                 logger.warning("[ScriptWriter] 单集修订解析失败 attempt=%s", attempt + 1)
-                _log(40, f"修订结果解析失败，重试 {attempt + 1}/2")
+                _log(82 if attempt == 0 else 90, f"修订结果解析失败，重试 {attempt + 1}/2")
             if parsed is None:
                 raise ValueError("修订结果解析失败，请重试")
+            _log(92, "正在合并单集修订结果...")
             new_episodes = script_revision.merge_single_episode(episodes, parsed["episode"])
             script_revision.assert_untouched_episodes(episodes, new_episodes, target_number)
             new_characters = current.get("characters") or []
@@ -349,9 +387,15 @@ class ScriptWriterAgent(AgentInterface):
                 film_type=film_type,
                 subject_mode=subject_mode,
             )
-            _log(20, "正在修订全剧...")
+            _log(20, "正在请求模型修订全剧...")
             for attempt in range(2):
-                raw = await _call(prompt)
+                raw = await _call_with_heartbeat(
+                    prompt,
+                    20 if attempt == 0 else 82,
+                    78 if attempt == 0 else 88,
+                    "模型正在生成修订稿，请稍候...",
+                )
+                _log(80 if attempt == 0 else 88, "正在解析修订结果...")
                 candidate = self._extract_json_from_text(raw)
                 if isinstance(candidate, dict) and isinstance(candidate.get("episodes"), list):
                     try:
@@ -360,13 +404,14 @@ class ScriptWriterAgent(AgentInterface):
                         )
                     except ValueError as exc:
                         logger.warning("[ScriptWriter] 全剧修订集号校验失败: %s", exc)
-                        _log(40, f"集号校验失败，重试 {attempt + 1}/2")
+                        _log(82 if attempt == 0 else 90, f"集号校验失败，重试 {attempt + 1}/2")
                         continue
                     parsed = candidate
                     break
-                _log(40, f"修订结果解析失败，重试 {attempt + 1}/2")
+                _log(82 if attempt == 0 else 90, f"修订结果解析失败，重试 {attempt + 1}/2")
             if parsed is None:
                 raise ValueError("修订结果集号与原文不一致，已停止本次修订")
+            _log(92, "正在整理修订后的剧集...")
             new_characters = (
                 parsed.get("characters")
                 if isinstance(parsed.get("characters"), list)
@@ -379,6 +424,7 @@ class ScriptWriterAgent(AgentInterface):
             )
             preview_body = {"episodes": new_episodes}
 
+        _log(96, "正在比对集间差异与下游影响...")
         char_art = self._session_artifact(input_data, "character_design")
         storyboard_art = self._session_artifact(input_data, "storyboard")
         diff_numbers = script_revision.diff_episode_numbers(episodes, new_episodes)
@@ -423,17 +469,31 @@ class ScriptWriterAgent(AgentInterface):
 
     async def _run_apply_revision(self, input_data: Dict[str, Any], intervention: Dict[str, Any]) -> Dict:
         """应用预览：纯落盘，不再调用 LLM。"""
+        floor = [0.0]
+
+        def _log(percent: float, message: str):
+            floor[0] = max(floor[0], float(percent))
+            self._report_progress("AI 修改", message, floor[0])
+
+        _log(10, "正在读取待应用的修订预览...")
         current = self._session_artifact(input_data, "script_generation")
         if not current:
             raise ValueError("剧本产物不存在，无法应用修订")
         preview = current.get("pending_revision")
         if not isinstance(preview, dict):
+            # 编排器物化按 PREVIEW_KEYS 剥离预览（split_preview），_session_artifacts
+            # 里没有 pending_revision；干预入口的顶层快照仍带预览，从这里回退读取。
+            fallback_preview = input_data.get("pending_revision")
+            preview = fallback_preview if isinstance(fallback_preview, dict) else None
+        if not isinstance(preview, dict):
             raise ValueError("没有待应用的修订预览")
+        _log(30, "正在校验预览是否仍然有效...")
         if preview.get("base_version") != script_revision.content_fingerprint(current):
             raise ValueError("预览已过期或产物已变化，请重新发起修订")
         if preview.get("removed_items") and not intervention.get("confirm_removals"):
             raise ValueError("存在将被删除的角色或场景，请确认后再应用")
         # R13：预览时的 user_edited_items 是快照；应用前必须用「当前」阶段 2 重新比对。
+        _log(50, "正在比对角色/场景的手改冲突...")
         char_art = self._session_artifact(input_data, "character_design") or {}
         current_overwrites = (
             script_revision.user_edited_items(
@@ -500,6 +560,7 @@ class ScriptWriterAgent(AgentInterface):
             refreshed["user_edited_items"] = conflicts
             payload = _copy.deepcopy(current)
             payload["pending_revision"] = refreshed
+            _log(100, "存在需要重新确认的覆盖项")
             return {
                 "payload": payload,
                 "requires_intervention": True,
@@ -507,6 +568,7 @@ class ScriptWriterAgent(AgentInterface):
                 "revision_needs_confirmation": True,
             }
 
+        _log(70, "正在合并剧本正文...")
         updated = script_revision.apply_preview_to_artifact(
             current,
             preview,
@@ -514,7 +576,9 @@ class ScriptWriterAgent(AgentInterface):
             scope=str(preview.get("scope") or "all"),
             episode_number=preview.get("episode_number"),
         )
+        _log(90, "正在保存剧本产物...")
         self._save_result(updated, input_data.get("session_id", ""), True)
+        _log(100, "修订已应用")
         return {
             "payload": updated,
             "requires_intervention": False,

@@ -864,9 +864,16 @@ export default function WorkflowPanel() {
   };
 
   // 执行失败/中断后刷新只读摘要与缺失清单；取不到不影响主流程
-  const refreshLastRun = async (token: SessionToken, sid: string, stageId: string) => {
+  // syncStatusMap：介入失败等需要阶段页签图标立即变红的场景使用（图标取 globalStatusMap）
+  const refreshLastRun = async (
+    token: SessionToken,
+    sid: string,
+    stageId: string,
+    syncStatusMap = false,
+  ) => {
     try {
       const status = await getProjectStatus(sid);
+      if (syncStatusMap) commitSessionView(token, { globalStatusMap: status.status || {} });
       commitStageState(token, stageId, {
         lastRun: status.execution_preview?.[stageId] ?? null,
         missingInputs: status.status?.[stageId] === 'error' ? getMissingInputs(status, stageId) : null,
@@ -1434,11 +1441,25 @@ export default function WorkflowPanel() {
               ? (event.status as Record<string, string>)
               : (await getProjectStatus(sessionId))?.status || {};
             const nextStatus = (statusMap[stageId] as StageStatus) || 'waiting';
-            commitStageState(token, stageId, { artifact: artResult.artifact, status: nextStatus });
+            // 本次介入成功：同时清除上一轮失败留下的错误横幅（不刷新的话会一直接到下次拉取）
+            commitStageState(token, stageId, { artifact: artResult.artifact, status: nextStatus, error: null });
             commitSessionView(token, { globalStatusMap: statusMap });
           }
         } else if (event.type === 'error') {
           console.error('Intervention error:', event.content);
+          // 介入失败同样要落地阶段状态：否则阶段停留在 running，进度条永久停在
+          // 上一次上报的数值（应用修订无中间进度时就是 0%）。
+          // 后台单条目重生不适用：后端刻意不把该执行计入阶段状态（run.background），
+          // 前端若写 error 会与后端事实相左，且条目失败已由 asset_complete 透出。
+          if (!isBackgroundItemRegeneration) {
+            commitStageState(token, stageId, {
+              status: 'error',
+              error: event.content || 'Unknown error',
+              progressMessage: '执行失败',
+            });
+            // 阶段页签图标取 globalStatusMap：失败同样要同步，否则得等下一次刷新才变红
+            await refreshLastRun(token, sessionId as string, stageId, true);
+          }
         }
       }
     } catch (error: unknown) {

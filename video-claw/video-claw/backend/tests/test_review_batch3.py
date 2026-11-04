@@ -256,6 +256,178 @@ def test_r13_apply_proceeds_when_confirmed_snapshot_matches(monkeypatch):
     assert "pending_revision" not in result["payload"]
 
 
+def test_r13_apply_reads_preview_stripped_by_materialize(monkeypatch):
+    """真实链路：物化按 PREVIEW_KEYS 剥离预览，应用修订仍须读到 pending_revision。
+
+    regression：确认修订后固定报“没有待应用的修订预览”，前端进度停在 0%。
+    """
+    import asyncio
+
+    monkeypatch.setattr(ScriptWriterAgent, "_save_result", lambda *args, **kwargs: None)
+    current = {"episodes": EPISODES_A, "characters": [], "settings": []}
+    preview = {
+        "instruction": "把正文改掉",
+        "scope": "all",
+        "episode_number": None,
+        "summary": "改正文",
+        "base_version": script_revision.content_fingerprint(current),
+        "episodes": EPISODES_B,
+        "characters": [],
+        "settings": [],
+        "removed_items": [],
+        "user_edited_items": [],
+    }
+    inputs = {
+        "session_id": "r13_strip_sid",
+        # 编排器物化后的 agent 视图：split_preview 已剥离 pending_revision
+        "_session_artifacts": {"script_generation": dict(current)},
+        # prepare_intervention_execution 的顶层快照仍带预览
+        "episodes": EPISODES_A,
+        "pending_revision": preview,
+    }
+    result = asyncio.run(
+        ScriptWriterAgent()._run_apply_revision(
+            inputs, {"confirm_removals": True, "confirm_overwrites": True}
+        )
+    )
+
+    assert result["revision_applied"] is True
+    assert result["payload"]["episodes"] == EPISODES_B
+    assert "pending_revision" not in result["payload"]
+
+
+def test_revise_reports_multi_stage_progress(monkeypatch):
+    """修订期间必须上报多个阶段百分比：单点 20% 会让进度条长时间不动。"""
+    import asyncio
+    import json as jsonlib
+
+    from models import llm_client
+
+    revised = {
+        "summary": "改好了",
+        "episodes": [{"episode_number": 1, "content": "新正文", "act_title": "第一集"}],
+    }
+
+    class FakeLLM:
+        def query(self, *args, **kwargs):
+            return jsonlib.dumps(revised, ensure_ascii=False)
+
+    monkeypatch.setattr(llm_client, "LLM", FakeLLM)
+    events = []
+    agent = ScriptWriterAgent()
+    agent.set_progress_callback(
+        lambda phase, step, percent, data=None: events.append((phase, step, percent))
+    )
+    inputs = {
+        "session_id": "revise_sid",
+        "llm_model": "fake-model",
+        "_session_artifacts": {
+            "script_generation": {"episodes": EPISODES_A, "characters": [], "settings": []}
+        },
+    }
+    result = asyncio.run(
+        agent._run_revise_script(inputs, {"instruction": "改正文", "scope": "all"})
+    )
+
+    percents = [percent for _phase, _step, percent in events]
+    assert percents == sorted(percents), percents  # 单调递增：前端忽略回退值
+    assert {5, 10, 20, 80, 92, 96, 100} <= set(percents), percents
+    assert result["requires_intervention"] is True
+
+
+def test_revise_retry_progress_does_not_regress(monkeypatch):
+    """首次解析失败、重试后成功：进度不得从 90 跳回 88。
+
+    regression：固定档位写死「解析 90 / 合并 88」，重试成功路径会倒挂；前端虽有
+    取大兜底，但 overlay 与阶段快照仍会记录倒退值。
+    """
+    import asyncio
+    import json as jsonlib
+
+    from models import llm_client
+
+    revised = {
+        "summary": "改好了",
+        "episodes": [{"episode_number": 1, "content": "新正文", "act_title": "第一集"}],
+    }
+
+    class FlakyLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def query(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return "模型没有返回 JSON"
+            return jsonlib.dumps(revised, ensure_ascii=False)
+
+    monkeypatch.setattr(llm_client, "LLM", FlakyLLM)
+    percents = []
+    agent = ScriptWriterAgent()
+    agent.set_progress_callback(
+        lambda phase, step, percent, data=None: percents.append(percent)
+    )
+    inputs = {
+        "session_id": "revise_retry_sid",
+        "llm_model": "fake-model",
+        "_session_artifacts": {
+            "script_generation": {"episodes": EPISODES_A, "characters": [], "settings": []}
+        },
+    }
+    result = asyncio.run(
+        agent._run_revise_script(inputs, {"instruction": "改正文", "scope": "all"})
+    )
+
+    assert result["requires_intervention"] is True
+    assert percents == sorted(percents), percents
+    assert {82, 88, 92, 96} <= set(percents) and percents[-1] == 100, percents
+
+
+def test_revise_items_merges_partial_payload(session_dir, monkeypatch):
+    """提示词按意见修订只返回目标条目：必须走条目合并，不能覆盖其他分镜。
+
+    regression：非后台路径会用部分 items 整体替换阶段产物，其余分镜提示词丢失。
+    """
+    import asyncio
+
+    sid = "pw_revise_items_sid"
+    workflow_engine.create_session(sid, {}, owner="alice")
+    workflow_engine.update_artifact(sid, "prompt_rewrite", {
+        "items": [
+            {"id": "seg_1_1", "status": "done", "rewritten_prompt": "旧提示词一"},
+            {"id": "seg_1_2", "status": "done", "rewritten_prompt": "旧提示词二"},
+        ]
+    })
+
+    def process(_input, _intervention):
+        return {
+            "payload": {"items": [{
+                "id": "seg_1_1",
+                "status": "done",
+                "rewritten_prompt": "新提示词一",
+                # 真实修订路径：拷贝上一版 versions 再追加 superseded 版本
+                "versions": [
+                    {"source": "user", "content": "旧提示词一"},
+                    {"source": "superseded", "content": "旧提示词一"},
+                ],
+            }]},
+            "requires_intervention": True,
+        }
+
+    stage = WorkflowStage.PROMPT_REWRITE
+    monkeypatch.setitem(workflow_engine.agent_factories, stage, lambda: FakeAgent(process))
+    state = workflow_engine.get_state(sid)
+    asyncio.run(workflow_engine.execute_stage(
+        state, stage, {},
+        intervention={"revise_items": [{"id": "seg_1_1", "instruction": "改一下"}]},
+    ))
+
+    artifact = workflow_engine.get_state(sid).artifacts["prompt_rewrite"]
+    assert [item["id"] for item in artifact["items"]] == ["seg_1_1", "seg_1_2"]
+    assert artifact["items"][0]["rewritten_prompt"] == "新提示词一"
+    assert artifact["items"][1]["rewritten_prompt"] == "旧提示词二"
+
+
 # ─────────────── R15：正文手改后旧行标注必须失效 ───────────────
 
 
