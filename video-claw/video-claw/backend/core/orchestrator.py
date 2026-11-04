@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from config import settings
 from core import media_refs, script_revision, workflow_store
 from core.artifact_publisher import build_file_rows, new_execution_id
+from core.asset_kind import asset_kind_for
 from core.language import language_from_meta, resolve_language
 from core.persistence_service import PersistenceService
 from db.repositories.commits import (
@@ -1003,6 +1004,7 @@ class WorkflowEngine:
                 "name": char.get("name", ""),
                 "description": char.get("description", ""),
                 "species": char.get("species", ""),
+                "asset_kind": asset_kind_for(char.get("asset_kind") or char.get("species"), container="characters"),
                 "selected": "",
                 "versions": [],
                 "status": "pending",
@@ -1023,6 +1025,7 @@ class WorkflowEngine:
                 "id": setting_id,
                 "name": setting.get("name", ""),
                 "description": setting.get("description", ""),
+                "asset_kind": asset_kind_for(setting.get("asset_kind") or setting.get("species"), container="settings"),
                 "selected": "",
                 "versions": [],
                 "status": "pending",

@@ -53,7 +53,8 @@
     {{
       "name": "主角/重要配角全名",
       "description": "外貌描写，要求参见【设计要求】",
-      "species": "人类 / 具体动物种类 / 非人物主体类型（如：产品、Logo、建筑、场所）"
+      "species": "人类 / 具体动物种类 / 非人物主体类型（如：产品、Logo、建筑、场所）",
+      "asset_kind": "human / animal / product / logo / building / place / other"
     }}
   ],
   "settings": [

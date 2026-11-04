@@ -172,7 +172,7 @@ def test_generate_one_stops_after_unavailable_evaluation(monkeypatch, tmp_path):
     )
 
     _, path, eval_result, _ = agent._generate_one(
-        object(), "c1", "小陈", "描述", "characters", "anime", "", "t2i", "vlm", "sid"
+        object(), "c1", "小陈", "描述", "characters", "anime", "", "", "t2i", "vlm", "sid"
     )
 
     assert counter["gen"] == 1, "评估不可用时不应继续生图"

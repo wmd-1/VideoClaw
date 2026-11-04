@@ -44,7 +44,8 @@ Unless the revision direction explicitly requires otherwise, preserve the origin
     {{
       "name": "Character name",
       "description": "Objective appearance description",
-      "species": "human / specific animal species / non-human subject type"
+      "species": "human / specific animal species / non-human subject type",
+      "asset_kind": "human / animal / product / logo / building / place / other"
     }}
   ],
   "settings": [

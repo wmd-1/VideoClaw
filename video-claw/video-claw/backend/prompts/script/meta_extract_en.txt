@@ -47,7 +47,8 @@ Please extract the following information from the [Script Input], specifically f
     {{
       "name": "Full name of protagonist/major supporting character",
       "description": "Appearance description, see [Design Requirements]",
-      "species": "human / specific animal species / non-person subject type (e.g., product, logo, building, place)"
+      "species": "human / specific animal species / non-person subject type (e.g., product, logo, building, place)",
+      "asset_kind": "human / animal / product / logo / building / place / other"
     }}
   ],
   "settings": [

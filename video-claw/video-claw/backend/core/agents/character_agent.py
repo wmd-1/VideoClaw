@@ -14,6 +14,14 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from core.asset_kind import (
+    ASSET_KIND_BUILDING,
+    ASSET_KIND_HUMAN,
+    asset_kind_focus,
+    asset_kind_for,
+    asset_kind_label,
+    item_asset_kind,
+)
 from core.asset_quality import (
     EVALUATION_KEYS,
     asset_status,
@@ -38,16 +46,29 @@ class CharacterDesignerAgent(AgentInterface):
     # ─── 提示词模板 ───
 
     @staticmethod
-    def _char_prompt(name: str, desc: str, style: str, species: str = "") -> str:
-        """角色4视图提示词 - 直接加载 character_zh 模板"""
-        # 加载基础角色提示词模板
-        template = load_prompt('character', 'character', 'zh')
-        # 替换角色信息
-        return template.format(name=name, desc=desc, style=style)
+    def _char_prompt(name: str, desc: str, style: str, species: str = "",
+                     asset_kind: str = "") -> str:
+        """角色资产提示词：human 走人物四视图，非人物走通用资产视图。"""
+        kind = asset_kind_for(asset_kind or species, container="characters")
+        if kind == ASSET_KIND_HUMAN:
+            human_template = load_prompt('character', 'character', 'zh')
+            return human_template.format(name=name, desc=desc, style=style)
+        asset_template = load_prompt('character', 'asset', 'zh')
+        return asset_template.format(
+            name=name, desc=desc, style=style,
+            kind_label=asset_kind_label(kind), kind_focus=asset_kind_focus(kind),
+        )
 
     @staticmethod
-    def _setting_prompt(name: str, desc: str, style: str) -> str:
-        """场景全景图提示词 - 直接加载 setting_zh 模板"""
+    def _setting_prompt(name: str, desc: str, style: str, asset_kind: str = "") -> str:
+        """场景提示词：建筑走通用资产视图，其余沿用场景全景模板。"""
+        kind = asset_kind_for(asset_kind, container="settings")
+        if kind == ASSET_KIND_BUILDING:
+            asset_template = load_prompt('character', 'asset', 'zh')
+            return asset_template.format(
+                name=name, desc=desc, style=style,
+                kind_label=asset_kind_label(kind), kind_focus=asset_kind_focus(kind),
+            )
         # 加载基础场景提示词模板
         template = load_prompt('setting', 'setting', 'zh')
         # 替换场景信息
@@ -147,7 +168,8 @@ class CharacterDesignerAgent(AgentInterface):
 
     def _build_asset_info(self, sid: str, asset_type: str,
                           asset_id: str, name: str, desc: str,
-                          selected_path: str = "") -> dict:
+                          selected_path: str = "", species: str = "",
+                          asset_kind: str = "") -> dict:
         """构建单个素材的信息（含所有历史版本）"""
         versions = self._list_versions(sid, asset_type, asset_id)
         if not selected_path and versions:
@@ -160,6 +182,8 @@ class CharacterDesignerAgent(AgentInterface):
             "selected": selected_path,
             "versions": versions,
             "status": status,
+            "asset_kind": asset_kind_for(asset_kind or species, container=asset_type),
+            **({"species": species} if str(species or "").strip() else {}),
         }
 
     @staticmethod
@@ -224,6 +248,7 @@ class CharacterDesignerAgent(AgentInterface):
                             or (existing[-1] if existing else ""),
                 "versions": existing,
                 "status": asset_status(existing),
+                "asset_kind": item_asset_kind(info, "characters"),
             })
         for asset_id, info in sets_desc.items():
             existing = self._list_versions(sid, 'settings', asset_id)
@@ -237,11 +262,12 @@ class CharacterDesignerAgent(AgentInterface):
                             or (existing[-1] if existing else ""),
                 "versions": existing,
                 "status": asset_status(existing),
+                "asset_kind": item_asset_kind(info, "settings"),
             })
         return preview
 
     def _generate_one(self, img_client, asset_id: str, name: str, desc: str,
-                      asset_type: str, style: str, species: str,
+                      asset_type: str, style: str, species: str, asset_kind: str,
                       t2i_model: str, vlm_model: str, sid: str,
                       llm_model: str = "", max_iterations: int = 3) -> tuple:
         """生成单个素材图并返回 (asset_id, path_or_None, eval_result)
@@ -253,9 +279,9 @@ class CharacterDesignerAgent(AgentInterface):
         # 初始提示词
         style_prompt = self._get_style_prompt(style)
         if asset_type == 'characters':
-            base_prompt = self._char_prompt(name, desc, style_prompt, species)
+            base_prompt = self._char_prompt(name, desc, style_prompt, species, asset_kind)
         else:
-            base_prompt = self._setting_prompt(name, desc, style_prompt)
+            base_prompt = self._setting_prompt(name, desc, style_prompt, asset_kind)
 
         video_ratio = "16:9"
         resolution = "2K"
@@ -289,7 +315,9 @@ class CharacterDesignerAgent(AgentInterface):
                     os.rename(gen, save_path)
 
                 # VLM 评估
-                eval_result = self._evaluate_with_vlm(save_path, desc, asset_type, vlm_model)
+                eval_result = self._evaluate_with_vlm(
+                    save_path, desc, asset_type, vlm_model, species=species, asset_kind=asset_kind,
+                )
 
                 # 评估服务不可用（调用失败/输出不可解析）：保留本次图片并停止重试，
                 # 不把评估故障变成额外的生图费用（WF-11）。
@@ -371,21 +399,36 @@ class CharacterDesignerAgent(AgentInterface):
             rewrite_result if 'rewrite_result' in locals() else None,
         )
 
-    def _evaluate_with_vlm(self, image_path: str, description: str, asset_type: str, vlm_model: str = "qwen3.5-plus") -> dict:
+    @classmethod
+    def _eval_prompt_for(cls, description: str, asset_type: str,
+                         species: str = "", asset_kind: str = "") -> str:
+        """评估模板选路：人物用人体四视图标准；非人物/建筑用通用资产标准。"""
+        kind = asset_kind_for(asset_kind or species, container=asset_type)
+        if (asset_type == "characters" and kind != ASSET_KIND_HUMAN) or (
+                asset_type != "characters" and kind == ASSET_KIND_BUILDING):
+            return load_prompt('character', 'eval_asset', 'zh').format(
+                kind_label=asset_kind_label(kind), kind_focus=asset_kind_focus(kind),
+                character_description=description,
+            )
+        if asset_type == 'characters':
+            return load_prompt('character', 'eval_character', 'zh').format(
+                character_description=description
+            )
+        return load_prompt('setting', 'eval_setting', 'zh').format(
+            setting_description=description
+        )
+
+    def _evaluate_with_vlm(self, image_path: str, description: str, asset_type: str,
+                           vlm_model: str = "qwen3.5-plus", species: str = "",
+                           asset_kind: str = "") -> dict:
         """使用 VLM 评估生成的图片"""
         try:
             from models.vlm_client import VLM
             vlm = VLM()
 
-            # 选择评估提示词
-            if asset_type == 'characters':
-                eval_prompt = load_prompt('character', 'eval_character', 'zh').format(
-                    character_description=description
-                )
-            else:
-                eval_prompt = load_prompt('setting', 'eval_setting', 'zh').format(
-                    setting_description=description
-                )
+            eval_prompt = self._eval_prompt_for(
+                description, asset_type, species=species, asset_kind=asset_kind,
+            )
 
             result = vlm.query(
                 prompt=eval_prompt,
@@ -530,6 +573,7 @@ class CharacterDesignerAgent(AgentInterface):
                     "name": c.get("name", ""),
                     "description": c.get("description", ""),
                     "species": c.get("species", ""),
+                    "asset_kind": c.get("asset_kind", ""),
                 }
 
         sets = {}
@@ -539,6 +583,7 @@ class CharacterDesignerAgent(AgentInterface):
                 sets[sid_val] = {
                     "name": s.get("name", ""),
                     "description": s.get("description", ""),
+                    "asset_kind": s.get("asset_kind", ""),
                 }
 
         return {"characters": chars, "settings": sets}
@@ -607,6 +652,7 @@ class CharacterDesignerAgent(AgentInterface):
                             "name": c.get("name", ""),
                             "description": c.get("description", ""),
                             "species": c.get("species", ""),
+                            "asset_kind": c.get("asset_kind", ""),
                         }
             elif isinstance(input_chars, dict):
                 chars_desc = input_chars
@@ -618,6 +664,7 @@ class CharacterDesignerAgent(AgentInterface):
                         sets_desc[s["id"]] = {
                             "name": s.get("name", ""),
                             "description": s.get("description", ""),
+                            "asset_kind": s.get("asset_kind", ""),
                         }
             elif isinstance(input_sets, dict):
                 sets_desc = input_sets
@@ -643,6 +690,8 @@ class CharacterDesignerAgent(AgentInterface):
                                 chars_desc[asset_id]["description"] = info["description"]
                             if "species" in info:
                                 chars_desc[asset_id]["species"] = info["species"]
+                            if "asset_kind" in info:
+                                chars_desc[asset_id]["asset_kind"] = info["asset_kind"]
                         else:
                             # 简单字符串格式：直接更新 description
                             chars_desc[asset_id]["description"] = str(info)
@@ -666,17 +715,19 @@ class CharacterDesignerAgent(AgentInterface):
                 tasks = []
                 for asset_id in regen_chars:
                     info = chars_desc.get(asset_id, {})
-                    tasks.append(("characters", asset_id, info.get("name", ""), info.get("description", ""), info.get("species", "")))
+                    tasks.append(("characters", asset_id, info.get("name", ""), info.get("description", ""),
+                                  info.get("species", ""), item_asset_kind(info, "characters")))
                 for asset_id in regen_sets:
                     info = sets_desc.get(asset_id, {})
-                    tasks.append(("settings", asset_id, info.get("name", ""), info.get("description", ""), ""))
+                    tasks.append(("settings", asset_id, info.get("name", ""), info.get("description", ""),
+                                  "", item_asset_kind(info, "settings")))
 
                 def regen_run():
                     total = len(tasks)
                     done = 0
                     with ThreadPoolExecutor(max_workers=concurrency) as executor:
                         futs = {}
-                        for atype, aid, name, desc, species in tasks:
+                        for atype, aid, name, desc, species, kind in tasks:
                             existing_versions = self._list_versions(sid, atype, aid)
                             self._report_progress("角色设计", f"正在生成: {name}", 10, data={
                                 "asset_complete": {
@@ -688,7 +739,7 @@ class CharacterDesignerAgent(AgentInterface):
                             })
                             fut = executor.submit(
                                 self._generate_one, img_client,
-                                aid, name, desc, atype, style, species, t2i_model, vlm_model, sid, llm_model
+                                aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model
                             )
                             futs[fut] = (atype, aid, name)
                         for fut in as_completed(futs):
@@ -793,14 +844,16 @@ class CharacterDesignerAgent(AgentInterface):
                 existing = self._list_versions(sid, 'characters', asset_id)
                 if existing and str(asset_id) not in failed_ids:
                     continue
-                all_tasks.append(("characters", asset_id, info.get("name", ""), info.get("description", ""), info.get("species", "")))
+                all_tasks.append(("characters", asset_id, info.get("name", ""), info.get("description", ""),
+                                  info.get("species", ""), item_asset_kind(info, "characters")))
 
             for asset_id, info in sets_desc.items():
                 desc = info.get("description", "") if isinstance(info, dict) else info
                 existing = self._list_versions(sid, 'settings', asset_id)
                 if existing and str(asset_id) not in failed_ids:
                     continue
-                all_tasks.append(("settings", asset_id, info.get("name", "") if isinstance(info, dict) else "", desc, ""))
+                all_tasks.append(("settings", asset_id, info.get("name", "") if isinstance(info, dict) else "", desc,
+                                  "", item_asset_kind(info, "settings")))
 
             if not all_tasks:
                 self._report_progress("角色设计", "所有素材已存在", 95)
@@ -811,7 +864,7 @@ class CharacterDesignerAgent(AgentInterface):
 
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futs = {}
-                for atype, aid, name, desc, species in all_tasks:
+                for atype, aid, name, desc, species, kind in all_tasks:
                     existing_versions = self._list_versions(sid, atype, aid)
                     self._report_progress("角色设计", f"正在生成: {name}", 10, data={
                         "asset_complete": {
@@ -823,7 +876,7 @@ class CharacterDesignerAgent(AgentInterface):
                     })
                     fut = executor.submit(
                         self._generate_one, img_client,
-                        aid, name, desc, atype, style, species, t2i_model, vlm_model, sid, llm_model,
+                        aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model,
                     )
                     futs[fut] = (atype, aid, name)
 
@@ -921,7 +974,11 @@ class CharacterDesignerAgent(AgentInterface):
             desc = info.get("description", "") if isinstance(info, dict) else info
             name = info.get("name", "") if isinstance(info, dict) else ""
             sel = selected_chars.get(asset_id, "")
-            item = self._build_asset_info(sid, 'characters', asset_id, name, desc, sel)
+            info = chars_desc.get(asset_id) or {}
+            item = self._build_asset_info(
+                sid, 'characters', asset_id, name, desc, sel,
+                species=str(info.get("species") or ""), asset_kind=str(info.get("asset_kind") or ""),
+            )
             if rewrite_results.get("characters", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["characters"][asset_id]
             evaluation = _evaluation_for("characters", asset_id)
@@ -934,7 +991,11 @@ class CharacterDesignerAgent(AgentInterface):
             desc = info.get("description", "") if isinstance(info, dict) else info
             name = info.get("name", "") if isinstance(info, dict) else ""
             sel = selected_sets.get(asset_id, "")
-            item = self._build_asset_info(sid, 'settings', asset_id, name, desc, sel)
+            info = sets_desc.get(asset_id) if isinstance(sets_desc.get(asset_id), dict) else {}
+            item = self._build_asset_info(
+                sid, 'settings', asset_id, name, desc, sel,
+                asset_kind=str(info.get("asset_kind") or ""),
+            )
             if rewrite_results.get("settings", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["settings"][asset_id]
             evaluation = _evaluation_for("settings", asset_id)

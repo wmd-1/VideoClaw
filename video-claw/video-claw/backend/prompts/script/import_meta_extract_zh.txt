@@ -9,7 +9,7 @@
      "mood": "影片情绪基调",
      "film_type": "介绍/宣传/营销 之一",
      "subject_mode": "人物故事/旁白描述 之一",
-     "characters": [{{"name": "名称", "description": "客观视觉描述", "species": "人类/动物/非人物主体类型"}}],
+     "characters": [{{"name": "名称", "description": "客观视觉描述", "species": "人类/动物/非人物主体类型", "asset_kind": "human / animal / product / logo / building / place / other"}}],
      "settings": [{{"name": "地点", "description": "空间+光照+核心陈设"}}]
    }}
 2. 角色：提取所有有台词或重要动作的角色，以及出镜的非人物主体（产品、logo、机构、虚拟形象）。

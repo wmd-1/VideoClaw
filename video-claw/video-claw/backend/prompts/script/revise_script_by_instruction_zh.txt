@@ -44,7 +44,8 @@
     {{
       "name": "角色名",
       "description": "客观外貌描述",
-      "species": "人类 / 具体动物种类 / 非人物主体类型"
+      "species": "人类 / 具体动物种类 / 非人物主体类型",
+      "asset_kind": "human / animal / product / logo / building / place / other"
     }}
   ],
   "settings": [
