@@ -46,12 +46,14 @@ class GroundingCache:
         max_bytes: int = MAX_BYTES,
         ttl_seconds: float = TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        waiter_timeout: float = 120.0,
     ):
         self.max_per_session = max_per_session
         self.max_global = max_global
         self.max_bytes = max_bytes
         self.ttl_seconds = ttl_seconds
         self._clock = clock
+        self.waiter_timeout = waiter_timeout
         self._lock = threading.RLock()
         self._entries: "OrderedDict[Hashable, _Entry]" = OrderedDict()
         self._sessions: Dict[str, "OrderedDict[Hashable, None]"] = {}
@@ -143,7 +145,11 @@ class GroundingCache:
                 owner = False
 
         if not owner:
-            return waiter.result()
+            try:
+                return waiter.result(timeout=self.waiter_timeout)
+            except TimeoutError:
+                # 等待者超时后自行计算/回退，避免线程被卡死的 owner 拖住
+                return factory()
 
         try:
             value = factory()

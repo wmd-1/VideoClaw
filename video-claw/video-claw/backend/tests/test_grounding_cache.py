@@ -130,3 +130,21 @@ def test_new_process_cache_starts_empty():
     first.get_or_compute("s", "h", "m", "p", lambda: "desc")
     second = GroundingCache()
     assert second.get("s", "h", "m", "p") is None
+
+
+def test_waiter_timeout_falls_back_to_compute():
+    cache = GroundingCache(waiter_timeout=0.05)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(2)
+        return "slow"
+
+    owner = threading.Thread(target=lambda: cache.get_or_compute("s", "h", "m", "p", slow))
+    owner.start()
+    started.wait(2)
+    assert cache.get_or_compute("s", "h", "m", "p", lambda: "fallback") == "fallback"
+    release.set()
+    owner.join()

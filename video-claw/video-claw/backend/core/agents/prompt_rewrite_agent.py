@@ -82,7 +82,7 @@ _GROUNDING_PROMPT = (
     "只描述画面中真实可见的内容，不要写视频生成指令，不要给创作建议。输出一段简洁的中文描述。"
 )
 # D2：grounding 策略版本（含语言）；提示词变化时缓存自动失效
-_GROUNDING_POLICY_VERSION = content_version(_GROUNDING_PROMPT + "|zh")
+_GROUNDING_POLICY_VERSION = content_version(_GROUNDING_PROMPT)
 
 
 def _event_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
