@@ -2249,6 +2249,10 @@ class WorkflowEngine:
 
         existing = set(previous.keys()) if isinstance(previous, dict) else set()
         injected = (set(SESSION_PARAM_KEYS) | set(SESSION_META_KEYS) | {"script_source", "file_path"}) - existing
+        # `episodes` 既是会话参数（集数，int），也是剧本产物的分集正文（list）：
+        # 产物形态必须保留，否则首次生成的剧本会丢正文（只剩角色/场景）。
+        if isinstance(payload.get("episodes"), list):
+            injected.discard("episodes")
         return {key: value for key, value in payload.items() if key not in injected}
 
     @staticmethod
