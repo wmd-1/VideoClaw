@@ -73,6 +73,18 @@ def test_error_is_sanitized(monkeypatch, tmp_path):
     assert "<url>" in record["error"]
 
 
+def test_bearer_and_prompt_body_are_redacted(monkeypatch, tmp_path):
+    monkeypatch.setenv("VC_OBSERVABILITY_DIR", str(tmp_path))
+    obs.record_call(
+        call_kind="text", model="m", status="failed",
+        error='Authorization: Bearer abc.def.ghi prompt: 用户正文片段 "这里是一段很长的用户正文内容，不应该出现在观测里，长度超过阈值"',
+    )
+    record = _read(str(tmp_path))[0]
+    for secret in ("abc.def.ghi", "用户正文片段", "这里是一段很长的用户正文"):
+        assert secret not in record["error"]
+    assert "<redacted>" in record["error"]
+
+
 def test_truncated_record_keeps_core_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("VC_OBSERVABILITY_DIR", str(tmp_path))
     monkeypatch.setenv("VC_OBSERVABILITY_MAX_BYTES", "1000000")
@@ -178,3 +190,20 @@ def test_context_survives_to_thread_and_executor(monkeypatch, tmp_path):
     assert all(record["stage"] == "prompt_rewrite" for record in records)
     assert all(record["session_id"] == "sid-ctx" for record in records)
     assert all(record["execution_id"] == "e-ctx" for record in records)
+
+
+def test_project_has_no_run_in_executor_context_loss():
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    if not (backend / "core").is_dir():
+        backend = Path("/app")
+    roots = [backend / name for name in ("core", "models", "api", "pipelines")]
+    offending = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.py"):
+            if "run_in_executor" in path.read_text(encoding="utf-8", errors="ignore"):
+                offending.append(str(path))
+    assert offending == []
