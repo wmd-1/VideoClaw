@@ -401,9 +401,47 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 - **grounding 缓存**：会话隔离 LRU，键含实际图片字节 sha256/模型/策略版本；空/失败只当次执行负缓存；会话删除清桶。
 - **上下文预算（D4 测量）**：模型上下文约 128k tokens；`input_chars` 不是 token，80,000 字符只是经验告警（非安全线），hard 默认关闭；单请求/执行总量阈值见 `.env.example` 的 `VC_OBSERVABILITY_*`。
 - **D3 分集/并行**：存在集级标题时以规则集合为准；没有集级候选才用模型裁决，部分 LLM 集号不会改变规则集合；台词/情节两条评估在 `enable_concurrency=true` 时并行，返回顺序固定，成功路径调用数不变、并行失败可能多一次。
-- **模板索引**：[提示词模板索引](designs/提示词模板索引-2026-11-04.md) 覆盖 17 个直接调用点与其余模板族；无引用模板只标记、不直接删除。
+- **模板索引**：见 §10.6；无引用模板只标记、不直接删除。
 
-### 10.6 与 Pipeline / 沙盒的关系
+### 10.6 提示词模板索引（D5）
+
+- 范围：`backend/prompts/` 下的模板族与调用入口；本索引只记录，**无引用不等于可删除**。
+- 加载规则：`load_prompt(category, name, lang)` 依次尝试 `{name}_{lang}.txt` → `{name}_zh.txt` → `{name}.txt`；`load_prompt_with_fallback` 先首选语言、再回退 zh。
+- 维护：新增/删除模板必须同步本索引与 `test_prompt_call_sites_contract.py`；直接调用点新增时必须提供全部占位符；语言回退只说明“可加载”，不代表内容已本地化。
+
+**17 个直接调用点（与 `test_prompt_call_sites_contract.py` 对齐）**
+
+| # | 模板路径 | 阶段 | 语言 | 输入占位符 | 输出/用途 | 调用入口 |
+|---|---|---|---|---|---|---|
+| 1 | `character/character_zh.txt` | character_design | zh | `name,desc,style` | 人物四视图参考图提示词 | `CharacterDesignerAgent._char_prompt`（human） |
+| 2 | `character/asset_zh.txt` | character_design | zh | `name,desc,style,kind_label,kind_focus,view_requirement` | 非人物资产多视角提示词 | `_char_prompt`（非 human） |
+| 3 | `setting/setting_zh.txt` | character_design | zh | `name,desc,style` | 场景全景提示词 | `_setting_prompt`（place） |
+| 4 | `character/asset_zh.txt` | character_design | zh | 同 #2 | 建筑资产多视角提示词 | `_setting_prompt`（building） |
+| 5 | `character/eval_character_zh.txt` | character_design | zh | `character_description` | 人物图评估 | `_eval_prompt_for`（human） |
+| 6 | `character/eval_asset_zh.txt` | character_design | zh | `character_description,kind_label,kind_focus,view_requirement,view_failure` | 非人物资产评估 | `_eval_prompt_for`（非 human） |
+| 7 | `setting/eval_setting_zh.txt` | character_design | zh | `setting_description` | 场景图评估 | `_eval_prompt_for`（settings） |
+| 8 | `character/eval_select_best_zh.txt` | character_design | zh | `num_images,character_name,character_description,species,images_list` | 人物多版本选优 | `_select_best_with_vlm`（characters） |
+| 9 | `setting/eval_select_best_zh.txt` | character_design | zh | `num_images,setting_name,setting_description,images_list` | 场景多版本选优 | `_select_best_with_vlm`（settings） |
+| 10 | `doctor/diagnose_zh.txt` | 各生成阶段（失败诊断） | zh | `error,stage,model,original_prompt,context,reason_types,rewritable_reason_types,tools,validation_error` | 生图/视频失败原因诊断 | `DoctorAgent.diagnose_error` |
+| 11 | `doctor/rewrite_prompt_zh.txt` | 各生成阶段（失败重写） | zh | `original_prompt,reason,reason_type,stage,context,validation_error` | 诊断后的提示词重写 | `DoctorAgent.rewrite_prompt` |
+| 12 | `prompt_rewrite/rewrite_zh.txt` | prompt_rewrite | zh | `input_mode,duration,segment_id,shot_content,authoritative_section,current_section,grounding_section,user_section,continuity_section` | H3 分镜改写请求 | `PromptRewriteAgent._build_request_text` |
+| 13 | `prompt_rewrite/system_zh.txt` | prompt_rewrite | zh | 无 | 改写系统规则（校验约束） | `PromptRewriteAgent._rewrite_segments` 读取 |
+| 14 | `reference/eval_select_best_zh.txt` | reference_generation | zh | `num_images,num_images_minus_1,plot,visual_prompt,character_description,setting_description,images_list` | 参考图多版本选优 | `ReferenceGeneratorAgent._select_best_with_vlm` |
+| 15 | `reference/eval_first_frame_zh.txt` | reference_generation | zh | `plot,visual_prompt,character_description,setting_description` | 首帧图评估 | `_evaluate_with_vlm` |
+| 16 | `reference/first_frame_zh.txt` | reference_generation | zh | `plot,visual_prompt,character_description,setting_description,original_text` | 中文首帧生成 | `process`/`regen_run`/`segment_run` |
+| 17 | `reference/first_frame_en.txt` | reference_generation | en | 同 #16 | 英文首帧生成（与中文同结构） | 同上（`is_zh=false`） |
+
+**其余模板族**
+
+| 模板族 | 语言 | 阶段/用途 | 入口 | 备注 |
+|---|---|---|---|---|
+| `script/*`（34） | zh/en 可用时回退 zh | 剧本生成、导入、修订、续写、分类、评估、提取 | `ScriptWriterAgent._get_script_prompt`（load_prompt_with_fallback） | 含 `generate/eval/revise/meta/import/act_extract/smart_continue` 等；调用点不在直接 `load_prompt` AST 名单内 |
+| `storyboard/*`（3） | zh | storyboard | `StoryboardAgent` | 分镜规划/连续性 |
+| `pipelines/*`（2） | en/zh | 一次性 standard pipeline | `pipelines/standard.py` 的 `load_prompt("pipelines",...)` | 图片提示词/旁白生成 |
+| `style/*`（8） | 无后缀 | 各生成阶段风格前缀 | `AgentInterface._get_style_prompt`（直接读文件） | 不走 `load_prompt`；无 `_zh/_en` |
+| `video/enhance.txt` | 无后缀 | 未见调用 | — | **未引用**；保留观察项，不因无引用直接删除 |
+
+### 10.7 与 Pipeline / 沙盒的关系
 
 - **主流程**（本文档）：6 个必选阶段 + 每阶段停点确认（启用 `h3_rewrite` 时插入提示词改写，共 7 阶段），适合完整叙事视频；
 - **一次性 Pipeline**（文艺短视频 / 动作迁移 / 数字人口播）：单任务直出，无阶段停点，读取各自页面的模型选择；
