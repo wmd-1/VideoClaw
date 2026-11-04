@@ -58,6 +58,18 @@ flowchart LR
 - 注册方式三选一（等价）：设置页「自定义供应商/自定义模型」、直接编辑 `config.yaml`、`.env` 变量（`VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*`，优先级最高）。
 - 客户端路由为**注册表优先**：命中自定义模型走协议适配层，否则走内置名称路由；未注册的模型 id 会明确报错（不会误落入某供应商默认分支）。
 - 每个模型有 `concurrency`（并发缺省 1，本地单卡服务最保守）；阶段内的批量生成按该值限流（会话里 `enable_concurrency=false` 时强制串行）。
+- **web_search 实际分支（`models/llm_client.py`）**：
+
+| 模型路由 | web_search 行为 |
+|---|---|
+| `gpt*`（OpenAI） | 透传 |
+| 原 `deepseek*`（非 v3.2） | 透传 |
+| `deepseek-v3.2`（DashScope Generation） | 透传 |
+| 默认 DashScope Generation | 透传 |
+| `gemini*` | 不透传 |
+| DashScope VL（`kimi` / `qwen3.6-plus` / `qwen3.6-flash` / `vl`） | 不透传 |
+| 自定义模型（custom chat/completions） | 参数传入适配层，但当前 payload 未使用（不生效，未报错） |
+
 - **模型可用性预检**：第 2/4 阶段执行前检查所用图像模型（未注册 / 供应商缺失或不完整 / 内置缺 Key）→ 直接返回 `409 model_unavailable`（附字段级原因），不触发任何生成；设置页提供逐类型的**连通性测试**（`POST /api/models/test`，支持未保存草稿，不持久化配置）。
 
 ---
@@ -105,8 +117,8 @@ flowchart LR
 
 处理流程：
 
-1. 解析灵感（`expand_idea=true` 时先做创意扩写），结合风格与集数，由 LLM 生成结构化剧本；
-2. 流式产出剧集骨架与分幕内容（SSE `progress` 携带 `beat_sheet` / `act_complete` 等事件供前端实时展示）；
+1. 按灵感/文档、风格与集数由 LLM 生成结构化剧本；`expand_idea` 仅作为会话参数保留，**当前后端不执行创意扩写**；
+2. 通过 SSE `progress` 与 `stage_complete` 推送进度/完成（`progress.data` 可含 `asset_complete` 条目事件）；旧版分幕事件已移除；
 3. 落盘为阶段产物，阶段进入 `waiting`，等待用户确认。
 
 **产物结构**（`artifacts.script_generation`）：
@@ -389,6 +401,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 - **grounding 缓存**：会话隔离 LRU，键含实际图片字节 sha256/模型/策略版本；空/失败只当次执行负缓存；会话删除清桶。
 - **上下文预算（D4 测量）**：模型上下文约 128k tokens；`input_chars` 不是 token，80,000 字符只是经验告警（非安全线），hard 默认关闭；单请求/执行总量阈值见 `.env.example` 的 `VC_OBSERVABILITY_*`。
 - **D3 分集/并行**：存在集级标题时以规则集合为准；没有集级候选才用模型裁决，部分 LLM 集号不会改变规则集合；台词/情节两条评估在 `enable_concurrency=true` 时并行，返回顺序固定，成功路径调用数不变、并行失败可能多一次。
+- **模板索引**：[提示词模板索引](designs/提示词模板索引-2026-11-04.md) 覆盖 17 个直接调用点与其余模板族；无引用模板只标记、不直接删除。
 
 ### 10.6 与 Pipeline / 沙盒的关系
 
