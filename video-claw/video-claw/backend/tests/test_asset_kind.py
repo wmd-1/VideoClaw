@@ -114,6 +114,21 @@ def test_import_artifact_passes_asset_kind():
     assert artifact["settings"][0]["asset_kind"] == "building"
 
 
+def test_meta_extract_json_shape_keeps_asset_kind():
+    import json
+
+    from core.script_import import merge_characters
+
+    payload = json.loads(
+        '{"characters": ['
+        '{"name": "小猫", "description": "橘色短毛", "species": "猫", "asset_kind": "animal"},'
+        '{"name": "产品A", "description": "金属机身", "species": "产品", "asset_kind": "product"}'
+        '], "settings": [{"name": "仓库", "description": "空旷仓库", "asset_kind": "building"}]}'
+    )
+    merged = merge_characters([], payload["characters"])
+    assert [item["asset_kind"] for item in merged] == ["animal", "product"]
+
+
 def test_item_asset_kind_compat_species():
     assert item_asset_kind({"asset_kind": "logo", "species": "产品"}, "characters") == "logo"
     assert item_asset_kind({"species": "产品"}, "characters") == "product"

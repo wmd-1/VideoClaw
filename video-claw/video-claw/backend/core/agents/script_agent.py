@@ -192,6 +192,11 @@ class ScriptWriterAgent(AgentInterface):
         import uuid
         return f"{prefix}_{uuid.uuid4().hex[:6]}"
 
+    def _continuation_language(self, input_data, body: str = "", title: str = "") -> str:
+        """续写语言与会话语言一致；标题优先取会话元数据。"""
+        effective_title = title or str(self._session_meta(input_data).get("title") or "")
+        return "zh" if self._session_language(input_data, body=body, title=effective_title) == "zh" else "en"
+
     def _save_result(self, json_data: dict, sid: str, is_zh: bool):
         """调试用副本：编排器提供执行根时写入执行根，恢复只认 DB 视图。"""
         from config import settings as app_settings
@@ -843,20 +848,31 @@ class ScriptWriterAgent(AgentInterface):
             existing_episodes_text = json.dumps(input_data.get("episodes", []), ensure_ascii=False)
             existing_chars_text = json.dumps(input_data.get("characters", []), ensure_ascii=False)
             existing_settings_text = json.dumps(input_data.get("settings", []), ensure_ascii=False)
-            
+            lang = self._continuation_language(
+                input_data, body=existing_episodes_text,
+                title=str(self._session_meta(input_data).get("title") or input_data.get("title") or ""),
+            )
+
             last_episode_num = 0
             if input_data.get("episodes"):
                 last_episode_num = input_data["episodes"][-1].get("episode_number", len(input_data["episodes"]))
 
             if not sequel_idea:
                 _log_progress(10, "生成续写灵感...")
-                idea_prompt = f"根据以下已有的剧集内容，在100字内，提供一个后续{episodes_to_add}集的简短续写灵感(主线方向): {existing_episodes_text}"
+                if lang == "en":
+                    idea_prompt = (
+                        f"Based on the existing episodes below, provide a short continuation idea "
+                        f"(main direction) for the next {episodes_to_add} episodes in under 100 words: "
+                        f"{existing_episodes_text}"
+                    )
+                else:
+                    idea_prompt = f"根据以下已有的剧集内容，在100字内，提供一个后续{episodes_to_add}集的简短续写灵感(主线方向): {existing_episodes_text}"
                 sequel_idea = await loop.run_in_executor(None, self._cancellable_query, llm, idea_prompt, [], llm_model, True, sid, web_search)
                 sequel_idea = sequel_idea.strip()
 
             _log_progress(30, "正在生成续写剧本文本...")
             prompt_name = "smart_continue_script"
-            prompt = _get_script_prompt(prompt_name, "zh").format(
+            prompt = _get_script_prompt(prompt_name, lang).format(
                 episodes_text=existing_episodes_text,
                 chars_text=existing_chars_text,
                 settings_text=existing_settings_text,
@@ -870,20 +886,16 @@ class ScriptWriterAgent(AgentInterface):
             _log_progress(45, "正在生成续写初稿...")
             sequel_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search)
 
-            # 续写流程固定使用中文 prompt（与本函数上方及下方各 prompt 的硬编码 "zh" 一致）。
-            # is_zh 在本函数尾部已有按标题推导的赋值，因而是本函数局部变量：必须先于
-            # 下面的评估/修订 prompt 定义，否则读取时未绑定（UnboundLocalError）。
-            is_zh = True
             _log_progress(50, "正在进行台词评估...")
-            eval_dialogue_prompt = _get_script_prompt("eval_dialogue", "zh" if is_zh else "en").format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
+            eval_dialogue_prompt = _get_script_prompt("eval_dialogue", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
             dialogue_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_dialogue_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(55, "正在进行情节评估...")
-            eval_plot_prompt = _get_script_prompt("eval_plot", "zh" if is_zh else "en").format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
+            eval_plot_prompt = _get_script_prompt("eval_plot", lang).format(script_text=sequel_script_text, film_type=film_type, subject_mode=subject_mode)
             plot_critique = await loop.run_in_executor(None, self._cancellable_query, llm, eval_plot_prompt, [], llm_model, True, sid, web_search)
             
             _log_progress(58, "正在根据评估意见优化续写内容...")
-            revise_prompt = _get_script_prompt("revise_script", "zh" if is_zh else "en").format(
+            revise_prompt = _get_script_prompt("revise_script", lang).format(
                 script_text=sequel_script_text, 
                 dialogue_critique=dialogue_critique, 
                 plot_critique=plot_critique,
@@ -893,7 +905,7 @@ class ScriptWriterAgent(AgentInterface):
             sequel_script_text = await loop.run_in_executor(None, self._cancellable_query, llm, revise_prompt, [], llm_model, True, sid, web_search)
 
             _log_progress(60, "提取新增人物/场景...")
-            meta_prompt = _get_script_prompt("meta_extract_sequel", "zh").format(
+            meta_prompt = _get_script_prompt("meta_extract_sequel", lang).format(
                 existing_chars=existing_chars_text,
                 existing_settings=existing_settings_text,
                 sequel_script=sequel_script_text
@@ -910,7 +922,7 @@ class ScriptWriterAgent(AgentInterface):
                 s["setting_id"] = self._gen_id("set")
 
             _log_progress(80, "结构化续写集数据...")
-            extract_prompt = _get_script_prompt("act_extract_sequel", "zh").format(
+            extract_prompt = _get_script_prompt("act_extract_sequel", lang).format(
                 sequel_script=sequel_script_text,
                 start_episode_num=last_episode_num + 1,
                 episodes_to_add=episodes_to_add
@@ -964,8 +976,7 @@ class ScriptWriterAgent(AgentInterface):
             final_data["new_settings"] = new_settings
             final_data["sequel_idea"] = sequel_idea
             
-            is_zh = any('\u4e00' <= c <= '\u9fff' for c in final_data.get("title", "Generated Script"))
-            self._save_result(final_data, sid, is_zh)
+            self._save_result(final_data, sid, lang == "zh")
             _log_progress(100, "智能续写完成")
             return final_data
 

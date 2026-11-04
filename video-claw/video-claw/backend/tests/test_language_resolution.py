@@ -111,3 +111,77 @@ def test_agent_prefers_stored_language_over_body():
     assert agent._session_language(
         {"_session_meta": {}}, body="中文正文" * 20,
     ) == "zh"
+
+
+def test_smart_continue_language_routing_and_en_template():
+    from core.agents.script_agent import ScriptWriterAgent
+    from prompts.loader import load_prompt
+
+    agent = ScriptWriterAgent()
+    assert agent._continuation_language({"_session_meta": {"language": "en"}}) == "en"
+    assert agent._continuation_language({"_session_meta": {"language": "zh"}}) == "zh"
+    assert agent._continuation_language({}, body="This is an English script body. " * 5) == "en"
+    assert agent._continuation_language(
+        {"_session_meta": {"title": "An English Title For The Sequel"}},
+    ) == "en"
+
+    en = load_prompt("script", "smart_continue_script", "en")
+    zh = load_prompt("script", "smart_continue_script", "zh")
+    for placeholder in ("episodes_text", "chars_text", "settings_text", "sequel_idea",
+                        "episodes_to_add", "start_episode_num", "film_type", "subject_mode"):
+        assert "{" + placeholder + "}" in en
+        assert "{" + placeholder + "}" in zh
+    assert "Episode" in en and "第" in zh
+
+
+def test_smart_continue_prompts_all_use_en(monkeypatch):
+    import asyncio
+
+    from core.agents import script_agent as sa
+
+    recorded = []
+    real_prompt = sa._get_script_prompt
+
+    def fake_prompt(name, lang="zh"):
+        recorded.append((name, lang))
+        return real_prompt(name, lang)
+
+    monkeypatch.setattr(sa, "_get_script_prompt", fake_prompt)
+    monkeypatch.setattr("models.llm_client.LLM", lambda: object())
+
+    agent = sa.ScriptWriterAgent()
+    monkeypatch.setattr(agent, "_report_progress", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "_save_result", lambda *a, **k: None)
+
+    script = "Episode 2\n**2-1 Day INT Office**\nCharacters: Chen\n<action>Chen enters.</action>\nChen: Hello."
+
+    def fake_query(llm, prompt, image_urls=None, model="m", safe_content=True, task_id=None, web_search=False):
+        if "new_characters" in prompt and "new_settings" in prompt:
+            return '{"new_characters": [], "new_settings": []}'
+        if "episode_number" in prompt and "JSON array" in prompt:
+            return '[{"episode_number": 2, "act_title": "Episode 2", "content": "x"}]'
+        if "promotional-film screenwriter" in prompt or "Please optimize and revise" in prompt:
+            return script
+        return "ok"
+
+    monkeypatch.setattr(agent, "_cancellable_query", fake_query)
+
+    input_data = {
+        "session_id": "s-en",
+        "llm_model": "fake",
+        "web_search": False,
+        "episodes": [{"episode_number": 1, "content": "Episode 1"}],
+        "characters": [{"name": "Chen"}],
+        "settings": [{"name": "Office"}],
+        "_session_meta": {"language": "en", "title": "English Series"},
+        "meta": {"film_type": "介绍", "subject_mode": "旁白描述"},
+    }
+    result = asyncio.run(agent.process(
+        input_data,
+        {"action": "smart_continue", "sequel_idea": "Next episode", "episodes_to_add": 1},
+    ))
+    assert result["requires_intervention"] is True
+    names = {name for name, _ in recorded}
+    assert {"smart_continue_script", "eval_dialogue", "eval_plot", "revise_script",
+            "meta_extract_sequel", "act_extract_sequel"} <= names
+    assert all(lang == "en" for _, lang in recorded), recorded
