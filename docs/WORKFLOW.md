@@ -370,7 +370,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 ### 10.3 并发与稳定性
 
-- 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；台词/情节评估在 `enable_concurrency=true` 时并行（调用数不变），false 时串行；
+- 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；台词/情节评估在 `enable_concurrency=true` 时并行（成功路径调用数不变；并行失败可能多一次调用），false 时串行；
 - 长时间任务支持 `stop`（`POST /api/project/{sid}/stop`）中断并保留已完成内容；
 - 生成失败的条目可单独重试；模型级失败会携带 `error_type=model_unavailable` 供前端弹窗引导。
 
@@ -388,7 +388,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 - **调用观测**：`core/observability.py` 记录 LLM/VLM/生图/视频调用的 stage、template、model、耗时、重试、`cache_hit` 与 `input_chars`；JSONL 每进程每日文件、单行 ≤4KB，不记录 prompt 正文/URL/密钥。汇总见 `tools/observability_report.py`。
 - **grounding 缓存**：会话隔离 LRU，键含实际图片字节 sha256/模型/策略版本；空/失败只当次执行负缓存；会话删除清桶。
 - **上下文预算（D4 测量）**：模型上下文约 128k tokens；`input_chars` 不是 token，80,000 字符只是经验告警（非安全线），hard 默认关闭；单请求/执行总量阈值见 `.env.example` 的 `VC_OBSERVABILITY_*`。
-- **D3 分集/并行**：导入时显式集标题由规则优先，歧义才回退模型；台词/情节两条评估在 `enable_concurrency=true` 时并行，返回顺序固定。
+- **D3 分集/并行**：存在集级标题时以规则集合为准；没有集级候选才用模型裁决，部分 LLM 集号不会改变规则集合；台词/情节两条评估在 `enable_concurrency=true` 时并行，返回顺序固定，成功路径调用数不变、并行失败可能多一次。
 
 ### 10.6 与 Pipeline / 沙盒的关系
 
