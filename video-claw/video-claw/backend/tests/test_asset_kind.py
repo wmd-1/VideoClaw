@@ -118,3 +118,51 @@ def test_item_asset_kind_compat_species():
     assert item_asset_kind({"asset_kind": "logo", "species": "产品"}, "characters") == "logo"
     assert item_asset_kind({"species": "产品"}, "characters") == "product"
     assert item_asset_kind({}, "settings") == "place"
+
+
+def test_five_kind_generation_and_eval_matrix():
+    cases = {
+        "human": ("4 个视角", "4 个视角", "4个角色视图"),
+        "animal": ("体态、毛色", "至少 3 个稳定视角", "资产类型：动物"),
+        "product": ("结构、材质与配色", "至少 3 个稳定视角", "资产类型：产品"),
+        "logo": ("轮廓、比例与文字", "单张正面/平铺", "资产类型：标识"),
+        "building": ("立面、结构与空间关系", "至少 3 个稳定视角", "资产类型：建筑"),
+    }
+    for kind, (focus, view, eval_label) in cases.items():
+        if kind == "building":
+            prompt = CharacterDesignerAgent._setting_prompt("楼", "玻璃幕墙", "风格", kind)
+        else:
+            prompt = CharacterDesignerAgent._char_prompt("主体", "描述", "风格", "", kind)
+        eval_prompt = CharacterDesignerAgent._eval_prompt_for("描述", "characters", "", kind)
+        assert focus in prompt
+        assert view in prompt
+        assert eval_label in eval_prompt
+
+
+def test_import_and_sequel_contract_cover_all_kinds():
+    from core.script_import import build_import_artifact
+    from prompts.loader import load_prompt
+
+    artifact = build_import_artifact(
+        "第1集\n这是一段用于导入契约的正文。",
+        session_id="s-kinds",
+        inferred_characters=[
+            {"name": "小陈", "description": "银行职员", "asset_kind": "human"},
+            {"name": "小猫", "description": "橘色短毛", "asset_kind": "animal"},
+            {"name": "产品A", "description": "金属机身", "asset_kind": "product"},
+            {"name": "Logo", "description": "圆形标识", "asset_kind": "logo"},
+        ],
+        inferred_settings=[
+            {"name": "大楼", "description": "玻璃幕墙", "asset_kind": "building"},
+            {"name": "会议室", "description": "会议室", "asset_kind": "place"},
+        ],
+    )
+    assert {item["asset_kind"] for item in artifact["characters"]} == {
+        "human", "animal", "product", "logo",
+    }
+    assert {item["asset_kind"] for item in artifact["settings"]} == {"building", "place"}
+
+    for lang in ("zh", "en"):
+        sequel = load_prompt("script", "meta_extract_sequel", lang)
+        meta = load_prompt("script", "meta_extract", lang)
+        assert "asset_kind" in sequel and "asset_kind" in meta
