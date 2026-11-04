@@ -243,7 +243,7 @@ def summarize_records(
 ) -> Dict[str, Any]:
     """按 stage/model/template/kind/execution 汇总；供工具与测试共用。"""
     if input_warn_chars is None:
-        input_warn_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_WARN_CHARS", "20000"))
+        input_warn_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_WARN_CHARS", "80000"))
     if input_hard_chars is None:
         input_hard_chars = int(os.getenv("VC_OBSERVABILITY_INPUT_HARD_CHARS", "0"))
     if execution_warn_chars is None:
