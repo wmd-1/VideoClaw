@@ -140,9 +140,11 @@ def test_smart_continue_prompts_all_use_en(monkeypatch):
     from core.agents import script_agent as sa
 
     recorded = []
+    current = {"name": ""}
     real_prompt = sa._get_script_prompt
 
     def fake_prompt(name, lang="zh"):
+        current["name"] = name
         recorded.append((name, lang))
         return real_prompt(name, lang)
 
@@ -156,11 +158,12 @@ def test_smart_continue_prompts_all_use_en(monkeypatch):
     script = "Episode 2\n**2-1 Day INT Office**\nCharacters: Chen\n<action>Chen enters.</action>\nChen: Hello."
 
     def fake_query(llm, prompt, image_urls=None, model="m", safe_content=True, task_id=None, web_search=False):
-        if "new_characters" in prompt and "new_settings" in prompt:
+        name = current["name"]
+        if name == "meta_extract_sequel":
             return '{"new_characters": [], "new_settings": []}'
-        if "episode_number" in prompt and "JSON array" in prompt:
+        if name == "act_extract_sequel":
             return '[{"episode_number": 2, "act_title": "Episode 2", "content": "x"}]'
-        if "promotional-film screenwriter" in prompt or "Please optimize and revise" in prompt:
+        if name in ("smart_continue_script", "revise_script"):
             return script
         return "ok"
 
