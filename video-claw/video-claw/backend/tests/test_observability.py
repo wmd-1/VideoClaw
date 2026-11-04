@@ -283,3 +283,19 @@ def test_twenty_segment_execution_aggregation():
     assert execution["over_hard"] == 0
     assert execution["total_over_warn"] is True
     assert summary["by_stage"]["prompt_rewrite"]["input_chars_max"] == 2000
+
+
+def test_zero_warn_disables_warnings_consistently():
+    records = [{
+        "event_type": "model_call", "call_kind": "text", "stage": "s",
+        "execution_id": "e", "input_chars": 10,
+    }]
+    summary = obs.summarize_records(
+        records, input_warn_chars=0, input_hard_chars=0,
+        execution_warn_chars=-1, execution_hard_chars=0,
+    )
+    assert summary["input_warn_enabled"] is False
+    assert summary["execution_warn_enabled"] is False
+    assert summary["by_stage"]["s"]["input_over_warn"] == 0
+    assert summary["by_execution"]["e"]["over_warn"] == 0
+    assert summary["by_execution"]["e"]["total_over_warn"] is False

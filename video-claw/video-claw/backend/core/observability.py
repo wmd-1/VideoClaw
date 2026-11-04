@@ -257,7 +257,9 @@ def summarize_records(
         execution_warn_chars = _env_int("VC_OBSERVABILITY_EXECUTION_WARN_CHARS", 300000)
     if execution_hard_chars is None:
         execution_hard_chars = _env_int("VC_OBSERVABILITY_EXECUTION_HARD_CHARS", 0)
+    warn_enabled = bool(input_warn_chars and input_warn_chars > 0)
     hard_enabled = bool(input_hard_chars and input_hard_chars > 0)
+    execution_warn_enabled = bool(execution_warn_chars and execution_warn_chars > 0)
     execution_hard_enabled = bool(execution_hard_chars and execution_hard_chars > 0)
 
     def _bucket() -> Dict[str, Any]:
@@ -276,7 +278,7 @@ def summarize_records(
 
     def _add_input(bucket: Dict[str, Any], chars: int) -> None:
         bucket["input_chars"].append(chars)
-        if chars > input_warn_chars:
+        if warn_enabled and chars > input_warn_chars:
             bucket["input_over_warn"] += 1
         if hard_enabled and chars > input_hard_chars:
             bucket["input_over_hard"] += 1
@@ -346,7 +348,7 @@ def summarize_records(
             if chars is not None:
                 item["input_chars_sum"] += chars
                 item["input_chars_max"] = max(item["input_chars_max"], chars)
-                if chars > input_warn_chars:
+                if warn_enabled and chars > input_warn_chars:
                     item["over_warn"] += 1
                 if hard_enabled and chars > input_hard_chars:
                     item["over_hard"] += 1
@@ -370,7 +372,7 @@ def summarize_records(
 
     for item in by_execution.values():
         item["total_over_warn"] = bool(
-            execution_warn_chars and item["input_chars_sum"] > execution_warn_chars
+            execution_warn_enabled and item["input_chars_sum"] > execution_warn_chars
         )
         item["total_over_hard"] = bool(
             execution_hard_enabled and item["input_chars_sum"] > execution_hard_chars
@@ -378,9 +380,11 @@ def summarize_records(
 
     return {
         "input_warn_chars": input_warn_chars,
+        "input_warn_enabled": warn_enabled,
         "input_hard_chars": input_hard_chars,
         "input_hard_enabled": hard_enabled,
         "execution_warn_chars": execution_warn_chars,
+        "execution_warn_enabled": execution_warn_enabled,
         "execution_hard_chars": execution_hard_chars,
         "execution_hard_enabled": execution_hard_enabled,
         "by_stage": {key: _finalize(value) for key, value in by_stage.items()},
