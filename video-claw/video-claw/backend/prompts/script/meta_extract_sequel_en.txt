@@ -44,13 +44,16 @@ The return JSON format must match exactly:
     {{
       "name": "Full name of the new character",
       "description": "Appearance description, requirements see [DESIGN REQUIREMENTS]",
-      "role": "one of main/supporting/minor"
+      "role": "one of main/supporting/minor",
+      "species": "human / specific animal species / non-person subject type",
+      "asset_kind": "human / animal / product / logo / building / place / other"
     }}
   ],
   "new_settings": [
     {{
       "name": "New location name",
-      "description": "General setting description, requirements see [DESIGN REQUIREMENTS]"
+      "description": "General setting description, requirements see [DESIGN REQUIREMENTS]",
+      "asset_kind": "building / place / other"
     }}
   ]
 }}

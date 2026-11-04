@@ -17,9 +17,11 @@ from typing import Any, Dict, List, Optional
 from core.asset_kind import (
     ASSET_KIND_BUILDING,
     ASSET_KIND_HUMAN,
+    asset_eval_view_rule,
     asset_kind_focus,
     asset_kind_for,
     asset_kind_label,
+    asset_view_requirement,
     item_asset_kind,
 )
 from core.asset_quality import (
@@ -57,6 +59,7 @@ class CharacterDesignerAgent(AgentInterface):
         return asset_template.format(
             name=name, desc=desc, style=style,
             kind_label=asset_kind_label(kind), kind_focus=asset_kind_focus(kind),
+            view_requirement=asset_view_requirement(kind),
         )
 
     @staticmethod
@@ -68,6 +71,7 @@ class CharacterDesignerAgent(AgentInterface):
             return asset_template.format(
                 name=name, desc=desc, style=style,
                 kind_label=asset_kind_label(kind), kind_focus=asset_kind_focus(kind),
+                view_requirement=asset_view_requirement(kind),
             )
         # 加载基础场景提示词模板
         template = load_prompt('setting', 'setting', 'zh')
@@ -408,6 +412,8 @@ class CharacterDesignerAgent(AgentInterface):
                 asset_type != "characters" and kind == ASSET_KIND_BUILDING):
             return load_prompt('character', 'eval_asset', 'zh').format(
                 kind_label=asset_kind_label(kind), kind_focus=asset_kind_focus(kind),
+                view_requirement=asset_view_requirement(kind),
+                view_failure=asset_eval_view_rule(kind),
                 character_description=description,
             )
         if asset_type == 'characters':

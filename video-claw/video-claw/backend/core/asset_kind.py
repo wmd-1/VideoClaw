@@ -78,6 +78,18 @@ def asset_kind_focus(kind: str) -> str:
     return _FOCUS.get(str(kind), _FOCUS[ASSET_KIND_OTHER])
 
 
+def asset_view_requirement(kind: str) -> str:
+    if str(kind) == ASSET_KIND_LOGO:
+        return "单张正面/平铺视图，完整呈现轮廓与文字（平面标识无需侧面/背面）"
+    return "正面、侧面、背面至少 3 个稳定视角"
+
+
+def asset_eval_view_rule(kind: str) -> str:
+    if str(kind) == ASSET_KIND_LOGO:
+        return "未呈现正面/平铺标识，或标识主体被裁切、文字不可辨。"
+    return "视角不足或明显不完整，缺少正面/侧面/背面中的任意一种。"
+
+
 def item_asset_kind(item: Dict[str, Any], container: str) -> str:
     """产物条目 → kind：显式 asset_kind 优先，其次兼容 species，再按容器默认。"""
     if not isinstance(item, dict):
@@ -90,5 +102,6 @@ __all__ = [
     "ASSET_KIND_HUMAN", "ASSET_KIND_ANIMAL", "ASSET_KIND_PRODUCT",
     "ASSET_KIND_LOGO", "ASSET_KIND_BUILDING", "ASSET_KIND_PLACE", "ASSET_KIND_OTHER",
     "normalize_asset_kind", "default_asset_kind", "asset_kind_for",
-    "asset_kind_label", "asset_kind_focus", "item_asset_kind",
+    "asset_kind_label", "asset_kind_focus", "asset_view_requirement",
+    "asset_eval_view_rule", "item_asset_kind",
 ]

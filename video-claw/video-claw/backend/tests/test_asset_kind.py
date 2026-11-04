@@ -9,7 +9,9 @@ from core.asset_kind import (
     ASSET_KIND_LOGO,
     ASSET_KIND_PLACE,
     ASSET_KIND_PRODUCT,
+    asset_eval_view_rule,
     asset_kind_for,
+    asset_view_requirement,
     item_asset_kind,
     normalize_asset_kind,
 )
@@ -42,6 +44,10 @@ def test_human_keeps_four_view_and_non_human_uses_asset_template():
 
     logo = CharacterDesignerAgent._char_prompt("Logo", "圆形标识", "风格", "logo")
     assert "轮廓、比例与文字" in logo
+    assert "单张正面/平铺" in logo and "至少 3 个稳定视角" not in logo
+
+    product_views = CharacterDesignerAgent._char_prompt("产品A", "金属机身", "风格", "", "product")
+    assert "至少 3 个稳定视角" in product_views
 
     building = CharacterDesignerAgent._setting_prompt("大楼", "玻璃幕墙", "风格", "building")
     assert "资产类型：建筑" in building and "立面、结构与空间" in building
@@ -57,6 +63,11 @@ def test_eval_routes_human_vs_asset():
     assert "4 个角色视图" not in product
     building = CharacterDesignerAgent._eval_prompt_for("玻璃幕墙", "settings", "", "building")
     assert "资产类型：建筑" in building
+    logo = CharacterDesignerAgent._eval_prompt_for("圆形标识", "characters", "", "logo")
+    assert "单张正面/平铺" in logo
+    assert "缺少正面/侧面/背面" not in logo
+    assert asset_view_requirement("logo") != asset_view_requirement("product")
+    assert "平铺标识" in asset_eval_view_rule("logo")
 
 
 def test_payload_and_preview_include_asset_kind(monkeypatch):
@@ -81,6 +92,26 @@ def test_payload_and_preview_include_asset_kind(monkeypatch):
     preview_by_id = {item["id"]: item for item in preview["characters"] + preview["settings"]}
     assert preview_by_id["c1"]["asset_kind"] == "human"
     assert preview_by_id["s2"]["asset_kind"] == "building"
+
+
+def test_import_artifact_passes_asset_kind():
+    from core.script_import import build_import_artifact, merge_characters, merge_settings
+
+    merged_chars = merge_characters(
+        [], [{"name": "小猫", "species": "猫", "asset_kind": "animal"}],
+    )
+    assert merged_chars[0]["asset_kind"] == "animal"
+    merged_sets = merge_settings([{"name": "仓库", "asset_kind": "building"}])
+    assert merged_sets[0]["asset_kind"] == "building"
+
+    raw = "第1集\n第1集-第1场 日 内 仓库\n人物：小猫\n<action>小猫走进仓库。</action>"
+    artifact = build_import_artifact(
+        raw, session_id="s1",
+        inferred_characters=[{"name": "小猫", "species": "猫", "asset_kind": "animal"}],
+        inferred_settings=[{"name": "仓库", "asset_kind": "building"}],
+    )
+    assert artifact["characters"][0]["asset_kind"] == "animal"
+    assert artifact["settings"][0]["asset_kind"] == "building"
 
 
 def test_item_asset_kind_compat_species():

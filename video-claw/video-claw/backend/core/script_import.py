@@ -652,28 +652,31 @@ def merge_characters(
         if _is_excluded(name):
             continue
         extra = inferred_by_name.get(name, {})
-        merged.append(
-            {
-                "character_id": item.get("character_id") or stable_id("char", name),
-                "name": name,
-                "description": item.get("description", ""),
-                "species": item.get("species") or extra.get("species", ""),
-                "description_source": "uploaded",
-            }
-        )
+        record = {
+            "character_id": item.get("character_id") or stable_id("char", name),
+            "name": name,
+            "description": item.get("description", ""),
+            "species": item.get("species") or extra.get("species", ""),
+            "description_source": "uploaded",
+        }
+        kind = item.get("asset_kind") or extra.get("asset_kind") or ""
+        if kind:
+            record["asset_kind"] = kind
+        merged.append(record)
         used.add(name)
     for name, item in inferred_by_name.items():
         if name in used:
             continue
-        merged.append(
-            {
-                "character_id": item.get("character_id") or stable_id("char", name),
-                "name": name,
-                "description": item.get("description", ""),
-                "species": item.get("species", ""),
-                "description_source": "inferred",
-            }
-        )
+        record = {
+            "character_id": item.get("character_id") or stable_id("char", name),
+            "name": name,
+            "description": item.get("description", ""),
+            "species": item.get("species", ""),
+            "description_source": "inferred",
+        }
+        if item.get("asset_kind"):
+            record["asset_kind"] = item["asset_kind"]
+        merged.append(record)
     return merged
 
 
@@ -694,15 +697,16 @@ def merge_settings(
         if key in seen:
             continue
         seen.add(key)
-        merged.append(
-            {
-                "setting_id": item.get("setting_id") or stable_id("set", name),
-                "name": name,
-                "description": item.get("description", ""),
-                "description_source": "inferred",
-                "aliases": list(item.get("aliases") or []),
-            }
-        )
+        record = {
+            "setting_id": item.get("setting_id") or stable_id("set", name),
+            "name": name,
+            "description": item.get("description", ""),
+            "description_source": "inferred",
+            "aliases": list(item.get("aliases") or []),
+        }
+        if item.get("asset_kind"):
+            record["asset_kind"] = item["asset_kind"]
+        merged.append(record)
     return merged
 
 
