@@ -1,4 +1,4 @@
-<!-- 最后更新：2026-09-23 -->
+<!-- 最后更新：2026-11-04 -->
 
 # VideoClaw（AI 创意视频生成系统）
 
@@ -37,7 +37,8 @@
         ▼
    外部/本地模型服务：内置供应商（默认休眠，可用 .env 恢复）+ 自定义供应商（local_*：vllm / vllm-omni / sglang）
         ▼
-   backend/code/   产物：result/{script,image,video,task}；元数据：data/{sessions,tasks}
+   backend/code/   产物：result/{script,image,video,task}；元数据：PostgreSQL（会话/产物提交）；
+   媒体对象：MinIO；本地 result 作为运行时缓存
 ```
 
 - **工作流引擎**：`core/orchestrator.py` 管理六阶段状态机与产物累积（`artifacts[stage]`），每阶段执行后返回 `requires_intervention`，前端展示产物并等待用户 `continue` 或 `intervene`（修改后重生成）。
@@ -115,7 +116,7 @@ VideoClaw/
 | `post_production`      | VideoEditorAgent        | `core/agents/editor_agent.py`     | 片段拼接、字幕与成片导出                   |
 | （辅助）                 | DoctorAgent             | `core/agents/doctor_agent.py`     | 提示词诊断与改写                           |
 
-- 会话状态持久化到 `code/data/sessions/{session_id}.json`（Session ID 为毫秒级时间戳），格式见 `backend/docs/session_format.md`。
+- 会话与产物元数据持久化于 **PostgreSQL**（DB-only；不再以 JSON 文件作为恢复源）；Session ID 为毫秒级时间戳。媒体对象由 MinIO/本地 result 承载，恢复以 DB payload 为准。
 - OpenClaw 侧的停点约束（每个阶段必须展示产物并等待确认）定义在 `video-claw/SKILL.md`。
 
 ### 后端 · 模型接入层
@@ -283,6 +284,13 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 | `VC_TIMEOUT_IMAGE` / `VC_TIMEOUT_VIDEO` | backend（同上） | 生成超时（秒）：图片生成读取超时 / 视频生成 HTTP 与轮询上限，默认 3 小时（10800）；连接阶段仍为 15s 快速失败 |
 | `NEXT_PUBLIC_BACKEND_PORT` | 前端（构建期） | 浏览器直连后端的端口（SSE），需与 `.env` 的 `BACKEND_PORT` 一致；缺省 8000 |
 
+## 运行观测与上下文预算
+
+- 调用观测：`core/observability.py` 以 JSONL 记录 LLM/VLM/生图/视频调用的阶段、模型、耗时、重试、缓存命中与 `input_chars`；不记录 prompt 正文、URL 或密钥。
+- 汇总工具：`tools/observability_report.py` 输出按 stage/template/model/kind 的 P50/P95/Max、缓存命中、重试与按 `execution_id` 的输入总量 Top-N。
+- grounding 缓存：会话隔离、进程内 LRU（64/会话、256/全局、8MB、TTL 2h）；键含实际图片字节 sha256、VLM 模型与策略版本；命中不回写正文。
+- 上下文预算：模型上下文约 128k tokens；`input_chars` 是字符数，80,000 字符仅作经验告警（非安全线），hard 默认关闭；阈值见 `.env.example` 的 `VC_OBSERVABILITY_*`。
+
 ## 服务拓扑与端口
 
 | 服务         | 端口                          | 说明                                                                            |
@@ -293,26 +301,27 @@ npm run dev                   # 开发模式；生产模式为 npm run build && 
 
 ## 数据与产物
 
-Docker 下所有运行时状态落在宿主 `./data/`（迁移机器时整体拷贝即可）；本地开发直接落在 `backend/code/`：
+Docker 下配置与本地结果缓存落在宿主 `./data/`；元数据在 PostgreSQL 的 `pgdata` 卷、媒体在 MinIO 的 `miniodata` 卷。迁移时需同时迁移这些卷（或使用数据库/对象存储备份），不能只拷 `./data/`：
 
 | 宿主路径                       | 容器路径                    | 内容                                                               |
 | ------------------------------ | --------------------------- | ------------------------------------------------------------------ |
 | `./data/config/config.yaml`  | `/app/config.yaml`        | 配置（API Key、模型、生成参数）                                    |
 | `./data/code/result/`        | `/app/code/result`        | 生成产物：`script/`、`image/`、`video/`、`task/<task_id>/` |
-| `./data/code/data/sessions/` | `/app/code/data/sessions` | 主流程会话元数据`<session_id>.json`                              |
-| `./data/code/data/tasks/`    | `/app/code/data/tasks`    | Pipeline 任务元数据`<task_id>.json`                              |
+| PostgreSQL（`pgdata` volume） | `postgres:5432` | 会话、产物提交、Pipeline 任务等元数据（DB-only，恢复以 DB 为准） |
+| MinIO（`miniodata` volume） | `minio:9000` | 媒体对象（图片/视频）与预签名访问 |
 
 - **Session ID**：毫秒级时间戳；**Task ID**：`YYYYMMDD_HHMMSS_随机Hash`。
 - Pipeline 产物按任务隔离在 `result/task/<task_id>/`（分段音频 / 视频、故事板 JSON、`final.mp4` 等）；上传的媒体文件经 `/api/upload_media` 落到任务目录后被引用。
 
 ## 测试与校验
 
-- 后端：无独立单测套件；以 `GET /api/health` + `GET /api/models` 做启动冒烟，实际功能冒烟走 `/sandbox` 或 Pipeline 页面；回归验证脚本见 `tmp_verify/`（容器内 `docker exec -i video-claw-backend /app/.venv/bin/python - < <script>` 执行）。
+- 后端：`backend/tests/` 有 pytest 套件；按项目规则在既有容器内执行（容器未挂载 tests 目录时先 `docker cp video-claw/video-claw/backend/tests video-claw-backend:/tmp/vc_tests`，再 `python -m pytest /tmp/vc_tests -q`）。当前基线 **406 passed**；不要在宿主机直跑后端测试。
+- 启动冒烟：`GET /api/health` + `GET /api/models`；功能冒烟走 `/sandbox` 或 Pipeline 页面。
 - 前端：`npm run lint`（eslint）；`npm run build`（含 TypeScript 检查，同时产出 standalone 产物用于部署）。
 
 ## 说明
 
 - **单进程约束**：SSE 订阅（`pipelines/events.py`）与运行中任务状态保存在进程内存，后端必须单进程运行；不要以多 worker 方式启动。
-- **对话与产物留存**：会话与任务均为 JSON 元数据 + 磁盘产物，服务重启不丢；`DELETE /api/tasks/{id}` 会同步删除元数据与产物目录。
+- **会话与产物留存**：会话/产物元数据在 PostgreSQL，媒体在 MinIO（本地 result 为运行时缓存），服务重启不丢；`DELETE /api/tasks/{id}` 会同步删除元数据与产物目录。
 - **Docker 设计**：compose 只运行本地镜像（`pull_policy: never`，缺失即报错）；`/app` 内源码只读挂载与镜像运行时文件（`.venv` 等）共存，依赖环境始终来自镜像。
 - 展示向 README（作品集 / 演示视频）见 [docs/README.md](docs/README.md)；工程文档入口：`backend/docs/api.md`、`video-claw/SKILL.md`、`video-claw/references/`。

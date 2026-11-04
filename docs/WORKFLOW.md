@@ -1,5 +1,7 @@
 # VideoClaw 工作流详解：从灵感到成片
 
+> 最近更新：2026-11-04（同步 DB-only、grounding 缓存、评估并行与观测口径）。
+
 > 本文档详细描述主流程的完整链路：输入 → 剧本 → 角色/场景设计 → 分镜 → 参考图 →〔可选：提示词改写〕→ 视频片段 → 成片，以及每一阶段的处理流程、产物结构、用户介入点与失败兜底机制。
 >
 > 相关文档：`SKILL.md`（Agent 协作规则）、`references/workflow/*.md`（各阶段 API 操作手册）。
@@ -35,7 +37,7 @@ flowchart LR
 
 | 概念 | 说明 |
 | --- | --- |
-| **Session（会话）** | 一次完整创作的状态载体，`session_id` 为毫秒时间戳；持久化于 `data/code/data/sessions/<session_id>.json`（包含 `meta` + `artifacts` + `status`） |
+| **Session（会话）** | 一次完整创作的状态载体，`session_id` 为毫秒时间戳；元数据持久化于 **PostgreSQL**（DB-only，不再以 JSON 文件作为恢复源），媒体在 MinIO/本地 result |
 | **Artifact（阶段产物）** | `artifacts[stage]` 结构化数据，如 `characters/settings`、`episodes`、`scenes`、`clips`、`final_videos`；条目统一带 `selected`（当前选用版本）、`versions`（历史版本）、`status` |
 | **Stage 状态** | `pending`（无产物）→ `running`（执行中）→ `waiting`（有产物待用户介入）→ `completed`（确认完成）；另含 `stopped` / `error` |
 | **停点（确认制）** | 每个阶段执行结束即进入 `waiting`，必须由用户确认（`POST /api/project/{sid}/continue`）才进入下一阶段；这是保证可控创作的核心机制 |
@@ -235,7 +237,7 @@ flowchart LR
 
 - **串行逐分镜**：每个分镜以**一次 LLM 调用为正常路径**；结构校验不通过时，带具体违规清单回喂重试，**最多 2 次**；仍失败则该条目 `status=failed` 并记录违规清单与最后一次被拒输出（`rejected_output`），**不阻塞其他条目**，也不静默放行。
 - **校验器（`_validate_h3_prompt`）**：必填字段存在且顺序正确（基础三字段 / Ref2VA 六段）、时长声明与目标一致、参考标签在全部段落一致且无未定义标签、抽象词黑名单命中、正文语言为英文（对话/歌词/画面文字与引号内内容豁免）。
-- **VLM grounding（独立开关 `h3_rewrite.grounding_enable`，默认 true）**：仅 `I2VA / FL2VA / Ref2VA` 调用；对选中的参考图产出**客观画面描述**并注入改写输入，VLM 不参与写提示词。结果按「绝对路径 + 内容 hash」做会话级缓存，同图重生成不重复调用；失败或开关关闭时回退为无 grounding 的纯文本输入，**模式保持不变**，条目记 `grounding: {described: false, text_only: true}`，阶段末尾输出一条「grounding 降级 N/M 条目」汇总日志（关闭阶段的唯一途径是 `enable`）。
+- **VLM grounding（独立开关 `h3_rewrite.grounding_enable`，默认 true）**：仅 `I2VA / FL2VA / Ref2VA` 调用；对选中的参考图产出**客观画面描述**并注入改写输入，VLM 不参与写提示词。成功描述进入**会话隔离 LRU**（键含 session、实际图片字节 sha256、VLM 模型、grounding 策略版本；64/会话、256/全局、8MB、TTL 2h），同图跨执行不重复调用；空/失败仅在当前执行内负缓存。失败或开关关闭时回退为无 grounding 的纯文本输入，**模式保持不变**，条目记 `grounding: {described: false, text_only: true}`，阶段末尾输出一条「grounding 降级 N/M 条目」汇总日志（关闭阶段的唯一途径是 `enable`）。缓存命中写观测（`cache_hit=true`），不改变媒体权限校验。
 - **跨分镜连续性**：串行累积前序条目的主体与风格摘要（`continuity` 字段）。优先级为：角色/场景权威事实 > 当前分镜明确要求 > 用户修改意见 > continuity 摘要 > 模型自由补充；continuity 与权威事实冲突时忽略该条，防止前序错误沿链放大。
 - **模型选择与回退**：改写用模型 `h3_rewrite.llm_model` → 会话 `llm_model` → 全局 `Config.LLM_MODEL`；grounding 用 `h3_rewrite.vlm_model` → 会话 `vlm_model` → `Config.VLM_MODEL`。`h3_rewrite.temperature` 目前是**预留字段，未透传到模型调用**（设置页与 api.md 已标注）。
 
@@ -368,20 +370,27 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 ### 10.3 并发与稳定性
 
-- 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；
+- 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；台词/情节评估在 `enable_concurrency=true` 时并行（调用数不变），false 时串行；
 - 长时间任务支持 `stop`（`POST /api/project/{sid}/stop`）中断并保留已完成内容；
 - 生成失败的条目可单独重试；模型级失败会携带 `error_type=model_unavailable` 供前端弹窗引导。
 
 ### 10.4 数据落盘位置
 
-| 内容 | 路径（Docker 下宿主为 `./data/code/`） |
+| 内容 | 存储位置 |
 | --- | --- |
-| 会话状态（meta + artifacts + status） | `data/code/data/sessions/<session_id>.json` |
+| 会话/产物元数据（meta + artifacts + status） | PostgreSQL（DB-only；`pgdata` volume） |
 | 角色/场景/参考图 | `data/code/result/image/<sid>/Assets/…`、`Scenes/…` |
 | 视频片段与成片 | `data/code/result/video/<sid>/…` 与 `output/…` |
-| 一次性 Pipeline 任务 | `data/code/data/tasks/` + `data/code/result/task/<task_id>/` |
+| 一次性 Pipeline 任务 | PostgreSQL 元数据 + `data/code/result/task/<task_id>/` 产物 |
 
-### 10.5 与 Pipeline / 沙盒的关系
+### 10.5 观测、缓存与上下文预算
+
+- **调用观测**：`core/observability.py` 记录 LLM/VLM/生图/视频调用的 stage、template、model、耗时、重试、`cache_hit` 与 `input_chars`；JSONL 每进程每日文件、单行 ≤4KB，不记录 prompt 正文/URL/密钥。汇总见 `tools/observability_report.py`。
+- **grounding 缓存**：会话隔离 LRU，键含实际图片字节 sha256/模型/策略版本；空/失败只当次执行负缓存；会话删除清桶。
+- **上下文预算（D4 测量）**：模型上下文约 128k tokens；`input_chars` 不是 token，80,000 字符只是经验告警（非安全线），hard 默认关闭；单请求/执行总量阈值见 `.env.example` 的 `VC_OBSERVABILITY_*`。
+- **D3 分集/并行**：导入时显式集标题由规则优先，歧义才回退模型；台词/情节两条评估在 `enable_concurrency=true` 时并行，返回顺序固定。
+
+### 10.6 与 Pipeline / 沙盒的关系
 
 - **主流程**（本文档）：6 个必选阶段 + 每阶段停点确认（启用 `h3_rewrite` 时插入提示词改写，共 7 阶段），适合完整叙事视频；
 - **一次性 Pipeline**（文艺短视频 / 动作迁移 / 数字人口播）：单任务直出，无阶段停点，读取各自页面的模型选择；
