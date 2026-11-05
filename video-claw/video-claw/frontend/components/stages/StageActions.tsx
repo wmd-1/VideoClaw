@@ -24,6 +24,11 @@ interface StageActionsProps {
   hasNextStageStarted?: boolean;
   /** 是否显示"确认并继续"按钮（后续阶段已执行过时隐藏） */
   showConfirm?: boolean;
+  /**
+   * 后端阶段状态为 reconfirm：产物已完成但上游输入已变。
+   * 本地状态仍按 waiting 呈现，这里只用于把两种动作的文案区分开。
+   */
+  reconfirm?: boolean;
   isRunning: boolean;
 }
 
@@ -38,6 +43,7 @@ export default function StageActions({
   hasPendingItems = true,
   hasNextStageStarted = false,
   showConfirm = true,
+  reconfirm = false,
   isRunning
 }: StageActionsProps) {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -88,8 +94,13 @@ export default function StageActions({
 
   return (
     <div className="border-t border-gray-200 bg-white px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
-      {/* 左侧：重新生成/继续生成按钮 */}
-      <div>
+      {/* 左侧：重新生成/继续生成按钮（+ 输入已变更的提示） */}
+      <div className="flex flex-wrap items-center gap-3">
+        {showRegen && reconfirm && (
+          <span className="text-xs text-amber-700" title="上游剧本或分镜已修改：确认=接受现有结果并继续，继续生成=按新输入只补缺失项">
+            上游输入已变更，本阶段结果待重新确认
+          </span>
+        )}
         {showRegen && (
           <button
             onClick={onRegenerate}
@@ -148,6 +159,7 @@ export default function StageActions({
           <button
             onClick={onConfirm}
             disabled={isRunning}
+            title={reconfirm ? '确认 = 接受本阶段现有结果并继续（不重新生成）；要按新输入重做请点「继续生成」' : undefined}
             className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:bg-blue-300"
           >
             <CheckCircle className="w-4 h-4" />

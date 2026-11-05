@@ -66,14 +66,22 @@ interface HomePageProps {
 function stageProgressLabel(statusMap: Record<string, string> | undefined, totalStages: number): { text: string; color: string } {
   const map = statusMap || {};
   const completed = Object.keys(map).filter(k => ["completed", "session_completed"].includes(map[k]));
-  if (completed.length === 0) return { text: '未开始', color: 'text-gray-400' };
-  if (completed.length >= totalStages) return { text: '已完成', color: 'text-green-600' };
+  // reconfirm（产物已完成但上游输入已变）不计入完成数：进度回退是“需要重新确认”的真实信号，
+  // 必须同时显式标出待确认个数，避免用户把回退误解为阶段被清空（openspec: stage-view-resync）。
+  const reconfirm = Object.keys(map).filter(k => map[k] === 'reconfirm').length;
+  const suffix = reconfirm > 0 ? ` · 待确认 ${reconfirm}` : '';
+  if (completed.length === 0) {
+    return reconfirm > 0
+      ? { text: `待确认 ${reconfirm} 个阶段`, color: 'text-amber-600' }
+      : { text: '未开始', color: 'text-gray-400' };
+  }
+  if (completed.length >= totalStages) return { text: `已完成${suffix}`, color: suffix ? 'text-amber-600' : 'text-green-600' };
 
   // 对比 STAGES 获取最后一个已完成的
   const lastStageId = STAGES.filter(s => completed.includes(s.id)).pop()?.id || completed[completed.length - 1];
   const stageDef = STAGES.find(s => s.id === lastStageId);
   const name = stageDef?.shortName || lastStageId;
-  return { text: `已完成: ${name} (${completed.length}/${totalStages})`, color: 'text-blue-600' };
+  return { text: `已完成: ${name} (${completed.length}/${totalStages})${suffix}`, color: suffix ? 'text-amber-600' : 'text-blue-600' };
 }
 
 export default function HomePage({ onStartProject, onResumeProject, onDeleteSession, history }: HomePageProps) {

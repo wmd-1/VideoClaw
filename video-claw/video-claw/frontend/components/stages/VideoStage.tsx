@@ -639,7 +639,7 @@ function ClipRow({
 }
 
 /* ─── 主组件 ─── */
-export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, artifacts }: StageViewProps) {
+export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, artifacts }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as VideoStageArtifact;
   // 提取剧集标题映射
   const episodeTitleMap = React.useMemo(() => {
@@ -785,6 +785,8 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
       );
       onUpdateArtifact({ clips: updatedClips });
     }
+    // 写入即同步：人工正文变更会改变其它阶段读到的新鲜度，回写状态表而不只改本阶段
+    onArtifactMutated?.(data?.status_map);
     return savedClip as ClipItem | undefined;
   };
 
@@ -1016,6 +1018,7 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
         status={state.status}
         onConfirm={onConfirm}
         showConfirm={showConfirm}
+        reconfirm={state.reconfirm}
         onRegenerate={onRegenerate}
         stageId="video_generation"
         hasPendingItems={hasPendingItems}

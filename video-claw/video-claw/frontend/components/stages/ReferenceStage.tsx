@@ -376,7 +376,7 @@ function SceneRow({
 }
 
 /* ─── 主组件 ─── */
-export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage }: StageViewProps) {
+export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as ReferenceStageArtifact;
   const [editDescs, setEditDescs] = useState<Record<string, string>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
@@ -503,6 +503,9 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
           );
           onUpdateArtifact({ scenes: updatedScenes });
         }
+        // 写入即同步：回写响应携带的阶段状态表（只改提示词不动其它阶段产物）
+        const saved = await response.json().catch(() => null);
+        onArtifactMutated?.(saved?.status_map);
       }
     } catch (error) {
       console.error('保存提示词失败:', error);
@@ -546,6 +549,8 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
       if (uploaded?.scenes) {
         onUpdateArtifact?.({ scenes: uploaded.scenes });
       }
+      // 写入即同步：上传后的阶段状态表回写到所有阶段
+      onArtifactMutated?.(result.status_map);
       setSelectedVersions(prev => ({ ...prev, [sceneId]: result.path }));
     } catch (error) {
       console.error('上传图片失败:', error);
@@ -685,6 +690,7 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
         status={state.status}
         onConfirm={onConfirm}
         showConfirm={showConfirm}
+        reconfirm={state.reconfirm}
         onRegenerate={onRegenerate}
         stageId="reference_generation"
         hasPendingItems={hasPendingItems}

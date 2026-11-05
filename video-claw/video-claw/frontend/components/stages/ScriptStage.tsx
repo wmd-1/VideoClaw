@@ -203,7 +203,7 @@ function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
   );
 }
 
-export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onStatusMap, showConfirm, isRunning, hasPendingItems, hasNextStageStarted }: StageViewProps) {
+export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, staleStoryboardEpisodes, staleFinalVideos, onRegenerateStoryboardEpisodes }: StageViewProps) {
   const data = (state.artifact || {}) as ScriptData;
 
   const isLoglinePhase = data.phase === 'logline_selection' || data.phase === 'logline_confirm' || data.phase === 'mode_selection';
@@ -234,6 +234,14 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const [revisionScope, setRevisionScope] = useState<'all' | 'episode'>('all');
   const [revisionEpisode, setRevisionEpisode] = useState<number | null>(null);
   const [showApplyConfirm, setShowApplyConfirm] = useState(false);
+  /**
+   * 集级/成片过期提示全部取 `stageStates` 派生的 props（openspec: stage-view-resync）：
+   * 保存与确认都会走一次 `resyncSessionView({ refreshArtifacts: true })` 重算它们。
+   * 不再另存一份本地累加列表：否则“确认已接受旧结果”后本地残留的集号会让提示与
+   * 重跑按钮继续显示，误导用户重复付费。
+   */
+  const staleEpisodes = Array.from(new Set(staleStoryboardEpisodes || [])).sort((a, b) => a - b);
+  const finalVideosStale = Boolean(staleFinalVideos);
 
   const handleSmartContinueConfirm = useCallback(() => {
     onIntervene({
@@ -259,7 +267,11 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
       body: JSON.stringify(patch),
     });
     if (!response.ok) throw new Error('保存剧本修改失败');
-    return response.json();
+    const result = await response.json();
+    // 写入即同步（openspec: stage-view-resync）：剧本变更会重建阶段 2 条目并标下游为待重新确认，
+    // 因此除了回写状态表，还要重取受影响阶段产物，不让用户靠刷新页面才能看到结果。
+    onArtifactMutated?.(result?.status_map, { refreshArtifacts: true });
+    return result;
   };
 
   const revision = data.pending_revision;
@@ -285,10 +297,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const cancelRevision = async () => {
     try {
-      const result = await patchScriptArtifact({ pending_revision: null });
+      await patchScriptArtifact({ pending_revision: null });
       onUpdateArtifact?.({ pending_revision: undefined });
-      // PATCH 已返回重新计算后的状态表：立即回写，避免本地停在 waiting 等下一轮轮询
-      if (result?.status_map) onStatusMap?.(result.status_map);
+      // 状态表回写已由 patchScriptArtifact 统一完成（写入即同步，不等下一轮轮询）
       setShowRevisionPanel(false);
       setShowApplyConfirm(false);
     } catch (error) {
@@ -328,7 +339,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const deleteCharacter = async (index: number) => {
     const target = data.characters?.[index];
-    if (!target || !window.confirm(`确认删除角色「${target.name || index + 1}」吗？`)) return;
+    if (!target) return;
+    const confirmText = `确认删除角色「${target.name || index + 1}」吗？\n\n该条目将从角色/场景阶段产物中移除（已生成的图片/视频文件不会被删除，只移除引用）。`;
+    if (!window.confirm(confirmText)) return;
     try {
       const nextCharacters = (data.characters || []).filter((_, itemIndex) => itemIndex !== index);
       const result = await patchScriptArtifact({ characters: nextCharacters });
@@ -357,7 +370,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const deleteSetting = async (index: number) => {
     const target = data.settings?.[index];
-    if (!target || !window.confirm(`确认删除场景「${target.name || index + 1}」吗？`)) return;
+    if (!target) return;
+    const confirmText = `确认删除场景「${target.name || index + 1}」吗？\n\n该条目将从角色/场景阶段产物中移除（已生成的图片/视频文件不会被删除，只移除引用）。`;
+    if (!window.confirm(confirmText)) return;
     try {
       const nextSettings = (data.settings || []).filter((_, itemIndex) => itemIndex !== index);
       const result = await patchScriptArtifact({ settings: nextSettings });
@@ -1222,6 +1237,32 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 </button>
               </div>
             </div>
+            {/* 正文变更后的下游过期提示：只提示，由用户显式点「重跑本集分镜」才会调用模型 */}
+            {(staleEpisodes.length > 0 || finalVideosStale) && (
+              <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-1">
+                {staleEpisodes.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-amber-700">第 {staleEpisodes.join('、')} 集正文已修改，该集分镜仍是旧内容。</span>
+                    {staleEpisodes.map(number => (
+                      <button
+                        key={number}
+                        type="button"
+                        onClick={() => onRegenerateStoryboardEpisodes?.([number])}
+                        disabled={isRunning}
+                        title={`将重新调用模型生成第 ${number} 集分镜，其他集不受影响`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        重跑第 {number} 集分镜（会调用模型）
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {finalVideosStale && (
+                  <p className="text-xs text-amber-700">最终成片可能已过期：成片文件与选择均保留，可到「后期制作」重新导出。</p>
+                )}
+              </div>
+            )}
             <div className="space-y-6">
               {data.episodes.map((ep, i) => {
                 const episodeNumber = getEpisodeNumber(ep, i);
@@ -1437,6 +1478,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           status={state.status}
           onConfirm={onConfirm}
           showConfirm={showConfirm}
+          reconfirm={state.reconfirm}
           onRegenerate={onRegenerate}
           stageId="script_generation"
           hasPendingItems={hasPendingItems}

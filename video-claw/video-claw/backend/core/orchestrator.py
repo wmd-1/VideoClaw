@@ -353,6 +353,14 @@ class WorkflowState:
 # _mutate 的变更函数返回此哨兵表示“无需提交”
 _NO_COMMIT = object()
 
+# 阶段状态“待重新确认”：产物已完成但输入已变（openspec: script-manual-edit-resync）。
+# 不复用 waiting 是因为 `_recalculate_all_statuses` 不跳过 waiting：下一次上传/保存选择
+# 就会把标记冲回 completed；也不新增布尔字段，避开快照读写与各消费方加分支。
+STATUS_RECONFIRM = "reconfirm"
+
+# 标记时写入 stage_progress 的过期原因（UI 元数据，阶段执行时被整体覆盖清除）
+STALE_REASON_SCRIPT = "script_structure_changed"
+
 # 执行期间用户可编辑、结束合并时优先保留的条目字段（全量路径）
 _USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt", "manual_prompt")
 
@@ -1048,10 +1056,12 @@ class WorkflowEngine:
         return changed
 
     def _rebuild_stage_items_from_script(self, state: WorkflowState) -> bool:
-        """剧本修订应用后，按新角色/场景集合全量重建阶段 2 条目。
+        """剧本变更后（应用修订或手动编辑），按新角色/场景集合重建阶段 2 条目。
 
-        只在阶段 2 已存在产物时执行；名称归一化后复用旧条目的 id 与资产，
-        新条目沿用剧本侧 character_id/setting_id，消失的条目移出产物。
+        只在阶段 2 已存在产物时执行；条目匹配先按主键、主键未命中再按归一化名称，
+        因此剧本页改名不会退化成“删旧+加新”而丢掉已生成资产；新条目沿用剧本侧
+        character_id/setting_id（缺失时按与种子化同源的名称派生并回写剧本产物），
+        消失的条目移出产物（磁盘文件不动）。
         """
         stage_key = WorkflowStage.CHARACTER_DESIGN.value
         artifact = state.artifacts.get(stage_key)
@@ -1067,16 +1077,30 @@ class WorkflowEngine:
             ("settings", "setting_id"),
         ):
             source_items = script_art.get(list_key)
+            if list_key not in script_art:
+                # 剧本产物本身不带这一维度（如旧会话只有 characters）：不拿空集合去清对应条目
+                continue
+            if source_items is None:
+                # 显式 null 等价“清空该维度”：与结构指纹对 None 按 [] 计的口径保持一致，
+                # 否则指纹判为变更而重建跳过，阶段 2 会留下剧本已删的条目
+                source_items = []
             if not isinstance(source_items, list):
                 continue
             existing_items = artifact.get(list_key)
             if not isinstance(existing_items, list):
                 existing_items = []
+            existing_by_id = {
+                str(item.get("id")): item
+                for item in existing_items
+                if isinstance(item, dict) and item.get("id")
+            }
             existing_by_name = {
                 script_revision.normalize_name(item.get("name")): item
                 for item in existing_items
                 if isinstance(item, dict) and item.get("name")
             }
+            prefix = "char" if list_key == "characters" else "set"
+            consumed: set = set()
             rebuilt = []
             for item in source_items:
                 if not isinstance(item, dict):
@@ -1084,14 +1108,19 @@ class WorkflowEngine:
                 name = str(item.get("name", "")).strip()
                 if not name:
                     continue
-                previous = existing_by_name.get(script_revision.normalize_name(name)) or {}
-                item_id = item.get(source_id_key) or previous.get("id") or ""
-                # 同名条目必须复用旧 ID，避免已生成资产失去引用
-                if previous.get("id"):
-                    item_id = previous["id"]
+                # 主键优先：剧本条目已带主键且与阶段 2 同 id 时直接命中（改名保资产）；
+                # 未命中再按名称兜底（旧会话条目可能完全没有主键）。
+                own_id = str(item.get(source_id_key) or "").strip()
+                previous = existing_by_id.get(own_id) if own_id else None
+                if previous is None:
+                    previous = existing_by_name.get(script_revision.normalize_name(name)) or {}
+                item_id = str(previous.get("id") or own_id or "")
                 if not item_id:
-                    prefix = "char" if list_key == "characters" else "set"
+                    item_id = script_revision.item_id(item, source_id_key, prefix)
+                if not item_id or item_id in consumed:
+                    # 派生碰撞或同名多条目：退回随机主键，保证一条目一主键
                     item_id = f"{prefix}_{uuid.uuid4().hex[:6]}"
+                consumed.add(item_id)
                 if item.get(source_id_key) != item_id:
                     item[source_id_key] = item_id
                     changed = True
@@ -1108,6 +1137,12 @@ class WorkflowEngine:
                     rebuilt_item["species"] = item.get(
                         "species", previous.get("species", "")
                     )
+                # 资产路由字段跟随剧本条目重派生（species 优先）：否则用户改物种后
+                # 阶段 2 仍按旧主体类型出图
+                rebuilt_item["asset_kind"] = asset_kind_for(
+                    item.get("species") or item.get("asset_kind") or rebuilt_item.get("species"),
+                    container=list_key,
+                )
                 rebuilt.append(rebuilt_item)
 
             if rebuilt != existing_items:
@@ -1122,6 +1157,252 @@ class WorkflowEngine:
                 len(artifact.get("settings") or []),
             )
         return changed
+
+    @staticmethod
+    def _reconfirm_stage_keys(*, from_stage: WorkflowStage) -> List[str]:
+        """参与待重新确认标记的阶段区间：启用序列中 `from_stage` 起、到后期制作之前。
+
+        按 `get_stage_order()` 取，因此可选注入阶段（prompt_rewrite）启用时自然参与标记，
+        禁用时不产生任何键；MUST NOT 用固定“阶段 3/4/5”编号硬编码。
+        """
+        order = get_stage_order()
+        try:
+            start = order.index(from_stage)
+        except ValueError:
+            return []
+        keys: List[str] = []
+        for stage in order[start:]:
+            if stage in (WorkflowStage.POST_PRODUCTION, WorkflowStage.INIT, WorkflowStage.COMPLETED):
+                continue
+            keys.append(stage.value)
+        return keys
+
+    def _mark_downstream_reconfirm(
+        self,
+        state: WorkflowState,
+        stage_keys: List[str],
+        stale_episodes: Optional[List[int]] = None,
+        *,
+        baseline: Optional[Dict[str, str]] = None,
+    ) -> bool:
+        """把已执行/已失败的下游阶段标为待重新确认，并记录集级过期详情。
+
+        只改 `status` 与 `stage_progress`（UI 元数据）：MUST NOT 触碰任何阶段的产物内容、
+        `selected`/`versions`，也 MUST NOT 删磁盘文件。
+
+        `baseline` MUST 是**本次重算之前**的阶段状态快照：`_recalculate_all_statuses` 会把
+        `stopped`/`waiting` 按产物完整性算成 `completed`，若拿重算后的值作判据会把本该保持
+        原状的阶段（尤其用户停住的 `stopped`）误标为待重新确认。标记同时要求“变更前已执行且
+        重算后仍为已执行”：`completed` → 重算为 `waiting`（条目被同步重置）的阶段不抢标记，
+        交给 `waiting` 自己表达“缺产物”；`running`/`pending`/`stopped` 不参不标。
+
+        详情取并集写入：多次保存（如先改正文再改角色）MUST NOT 把已记录的过期集冲掉。
+        """
+        changed = False
+        markable = ("completed", "session_completed", "error")
+        pending_action = ("waiting", STATUS_RECONFIRM)
+        incoming = {int(n) for n in (stale_episodes or [])}
+        for key in stage_keys:
+            before = (baseline or {}).get(key, state.status.get(key))
+            now = state.status.get(key)
+            mark = before in markable and now in markable
+            if mark:
+                state.status[key] = STATUS_RECONFIRM
+                logger.info("[reconfirm] %s 因剧本结构变更标为待重新确认（原 %s）", key, before)
+            elif before not in pending_action and now not in pending_action:
+                continue
+            existing = state.stage_progress.get(key)
+            progress = dict(existing) if isinstance(existing, dict) else {}
+            merged = incoming | {n for n in (progress.get("stale_episodes") or []) if isinstance(n, int)}
+            progress["stale_episodes"] = sorted(merged)
+            progress["stale_reason"] = STALE_REASON_SCRIPT
+            progress["stale_at"] = time.time()
+            state.stage_progress[key] = progress
+            changed = True
+        return changed
+
+    def _mark_final_videos_stale(self, state: WorkflowState) -> bool:
+        """成片只提示不失效：已有 final_videos 时写 stale 详情，不改阶段状态。"""
+        key = WorkflowStage.POST_PRODUCTION.value
+        artifact = state.artifacts.get(key)
+        final_videos = artifact.get("final_videos") if isinstance(artifact, dict) else None
+        if not final_videos:
+            return False
+        existing = state.stage_progress.get(key)
+        progress = dict(existing) if isinstance(existing, dict) else {}
+        progress["stale"] = True
+        progress["stale_reason"] = STALE_REASON_SCRIPT
+        progress["stale_at"] = time.time()
+        state.stage_progress[key] = progress
+        return True
+
+    def _sync_script_structure(
+        self, state: WorkflowState, before: Optional[Dict[str, Any]], *,
+        force_cast_sync: bool = False,
+        baseline: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """剧本结构变更的统一收尾：重建阶段 2 条目 + 分级标记下游 + 成片提示。
+
+        应用修订与手动编辑 MUST 走本入口，两条路径的判定与标记口径完全一致。返回可直接
+        并入响应的过期信息（未发生变更时为空 dict）。
+
+        调用点 MUST 排在 `_recalculate_all_statuses` 之后：否则本方法写的标记会立即被
+        “产物完整即 completed”的重算冲回。`before` 为 None（尚无剧本产物）时不动作：
+        首次写入不存“相对旧输入已变”的语义。
+        """
+        after = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
+        if not isinstance(after, dict) or before is None:
+            return {}
+
+        changed_cast = script_revision.structure_fingerprint(before, scope="cast") != \
+            script_revision.structure_fingerprint(after, scope="cast")
+        changed_body = script_revision.structure_fingerprint(before, scope="body") != \
+            script_revision.structure_fingerprint(after, scope="body")
+        if changed_cast or force_cast_sync:
+            # 1) 同步：阶段 2 条目集合按新剧本重建（无产物时不创建，由种子化负责）。
+            # force_cast_sync：请求体带了 characters/settings 时即使内容未变也跑一次，
+            # 用于给旧会话的缺主键条目补回同源主键（只补键、不标下游）。
+            self._rebuild_stage_items_from_script(state)
+        if not (changed_cast or changed_body):
+            return {}
+        # 2) 先取重算前的状态基线（调用方传入的更能代表“变更前现场”：`stopped`/`waiting` 会
+        # 被上游的重算算成 `completed`，拿它作判据会误标），再重算：新增 pending 条目会让
+        # 阶段 2 自然变 waiting（不标 reconfirm）
+        baseline = dict(baseline or state.status)
+        self._recalculate_all_statuses(state)
+        # 3) 标记：角色/场景变更从阶段 2 起；只改正文从分镜起（条目集合未变，阶段 2 不标）
+        from_stage = (
+            WorkflowStage.CHARACTER_DESIGN
+            if changed_cast
+            else WorkflowStage.STORYBOARD
+        )
+        changed_episodes = script_revision.diff_episode_numbers(
+            before.get("episodes"), after.get("episodes")
+        )
+        stale_storyboards = script_revision.stale_storyboards(
+            changed_episodes, state.artifacts.get(WorkflowStage.STORYBOARD.value)
+        )
+        self._mark_downstream_reconfirm(
+            state,
+            self._reconfirm_stage_keys(from_stage=from_stage),
+            stale_storyboards if changed_body else [],
+            baseline=baseline,
+        )
+        # 4) 成片：只写提示，不改状态、不清空、不重跑
+        self._mark_final_videos_stale(state)
+        # 5) 归位停点：stop_session 按 current_stage 找运行阶段，有 running 时 MUST 保持原值
+        if not any(value == "running" for value in state.status.values()):
+            state.current_stage = WorkflowStage.SCRIPT_GENERATION
+
+        post_art = state.artifacts.get(WorkflowStage.POST_PRODUCTION.value)
+        return {
+            "stale_storyboards": stale_storyboards,
+            "stale_final_videos": bool(
+                isinstance(post_art, dict) and post_art.get("final_videos")
+            ),
+        }
+
+    @staticmethod
+    def _rerun_episode_numbers(intervention: Optional[Dict[str, Any]]) -> Set[int]:
+        """分镜显式重跑的集号集合（非法值忽略）。"""
+        if not isinstance(intervention, dict):
+            return set()
+        values = intervention.get("regenerate_episodes")
+        if not isinstance(values, list):
+            return set()
+        numbers: Set[int] = set()
+        for value in values:
+            try:
+                numbers.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        return numbers
+
+    @staticmethod
+    def _storyboard_segments_by_episode(artifact: Any) -> Dict[int, Set[str]]:
+        """分镜产物 → {episode_number: {segment_id}}。"""
+        result: Dict[int, Set[str]] = {}
+        if not isinstance(artifact, dict):
+            return result
+        for episode in artifact.get("episodes") or []:
+            if not isinstance(episode, dict):
+                continue
+            try:
+                number = int(episode.get("episode_number"))
+            except (TypeError, ValueError):
+                continue
+            ids = {
+                str(seg.get("segment_id"))
+                for seg in (episode.get("segments") or [])
+                if isinstance(seg, dict) and seg.get("segment_id")
+            }
+            result.setdefault(number, set()).update(ids)
+        return result
+
+    def _prune_downstream_items_for_episodes(
+        self,
+        state: WorkflowState,
+        episodes: Set[int],
+        previous_storyboard: Any,
+        payload: Any,
+        *,
+        baseline: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """分镜重跑后的下游收尾：移除孤儿条目引用 + 标待重新确认 + 成片提示。
+
+        只移除产物中的引用（参考图 scenes / 改写 items / 视频 clips），MUST NOT 删磁盘文件；
+        仍存在 segment 的 `selected`/`versions` 原样保留。孤儿判定以“重跑集的旧 segment
+        − 新分镜全集”为准，因此条目缺 `episode` 字段时同样能按 segment_id 命中。
+        """
+        if not isinstance(payload, dict):
+            # 拿不到新分镜结果时不能“全集都算孤儿”：宁可本次不清理，也不能误删条目引用
+            logger.warning("[reconfirm] 分镜重跑收尾跳过：新产物形状非法（%r）", type(payload).__name__)
+            return {"orphan_ids": [], "removed": {}}
+        old_by_ep = self._storyboard_segments_by_episode(previous_storyboard)
+        new_by_ep = self._storyboard_segments_by_episode(payload)
+        # 只信已有产物的集：把不存在的集号写进过期详情会误导用户
+        known_episodes = set(old_by_ep) | set(new_by_ep)
+        episodes = episodes & known_episodes
+        all_new_ids: Set[str] = {seg_id for ids in new_by_ep.values() for seg_id in ids}
+        orphan_ids: Set[str] = set()
+        for number in episodes:
+            orphan_ids |= old_by_ep.get(number, set()) - all_new_ids
+
+        removed: Dict[str, int] = {}
+        if orphan_ids:
+            containers = (
+                (WorkflowStage.REFERENCE_GENERATION, "scenes"),
+                (WorkflowStage.PROMPT_REWRITE, "items"),
+                (WorkflowStage.VIDEO_GENERATION, "clips"),
+            )
+            for stage, list_key in containers:
+                # 提示词改写被禁用时：不创建该键，也不参与清理
+                if stage not in get_stage_order():
+                    continue
+                key = stage.value
+                artifact = state.artifacts.get(key)
+                items = artifact.get(list_key) if isinstance(artifact, dict) else None
+                if not isinstance(items, list):
+                    continue
+                kept = [
+                    item for item in items
+                    if not (isinstance(item, dict) and str(item.get("id") or "") in orphan_ids)
+                ]
+                if len(kept) != len(items):
+                    removed[key] = len(items) - len(kept)
+                    artifact[list_key] = kept
+                    state.artifacts[key] = artifact
+
+        self._mark_downstream_reconfirm(
+            state,
+            self._reconfirm_stage_keys(from_stage=WorkflowStage.REFERENCE_GENERATION),
+            sorted(episodes),
+            baseline=baseline,
+        )
+        self._mark_final_videos_stale(state)
+        if removed:
+            logger.info("[reconfirm] 分镜重跑集 %s 清理失效条目：%s（磁盘文件保留）", sorted(episodes), removed)
+        return {"orphan_ids": sorted(orphan_ids), "removed": removed}
 
     def persist_session_snapshot(self, session_id: str) -> Dict[str, Any]:
         """Return the latest committed status map (every change is already committed when made)."""
@@ -1431,8 +1712,9 @@ class WorkflowEngine:
                 continue
             s_val = stage.value
             # 如果当前阶段正在运行，不自动覆盖其为 completed/waiting (除非它目前是空)
+            # reconfirm 同等对待：“产物已完成但输入已变”是显式标记，不得被任何写入的重算冲回
             current_s_status = state.status.get(s_val, "pending")
-            if current_s_status == "running" or current_s_status == "error":
+            if current_s_status in ("running", "error", STATUS_RECONFIRM):
                 continue
 
             art = state.artifacts.get(s_val)
@@ -2125,8 +2407,16 @@ class WorkflowEngine:
 
         def apply(after: WorkflowState) -> None:
             nonlocal payload
+            before_script = None
             if stage == WorkflowStage.SCRIPT_GENERATION:
                 payload = self._drop_injected_params(after.artifacts.get(stage_key), payload)
+                # 应用修订后的下游同步与手动 PATCH 走同一收尾：快照 MUST 在产物被覆写前取
+                existing_script = after.artifacts.get(stage_key)
+                before_script = (
+                    script_revision.structure_snapshot(existing_script)
+                    if isinstance(existing_script, dict)
+                    else None
+                )
                 if requires_intervention:
                     # 【续写/修订预览状态】预览只占用预览层，不替换正文（R08）
                     preview = payload.get("pending_revision") if isinstance(payload, dict) else None
@@ -2147,8 +2437,6 @@ class WorkflowEngine:
                     for key in workflow_store.PREVIEW_KEYS:
                         clean_art.pop(key, None)
                     after.artifacts[stage_key] = clean_art
-                    if result.get("revision_applied"):
-                        self._rebuild_stage_items_from_script(after)
                     source_episode_count = result.get("source_episode_count")
                     if source_episode_count is not None:
                         try:
@@ -2176,12 +2464,32 @@ class WorkflowEngine:
             # 重新计算所有阶段的状态（基于 artifacts 里的数据完整性）
             if not run.background and after.status.get(stage_key) == "running":
                 after.status[stage_key] = "pending"
+            # 重算前的状态基线：下游阶段里 `stopped`/`waiting` 不得因本次重跑被误标
+            status_baseline = dict(after.status)
             self._recalculate_all_statuses(after)
             if result.get("stage_completed") and not requires_intervention:
                 if after.status.get(stage_key) != "waiting":
                     after.status[stage_key] = "completed"
             elif requires_intervention:
                 after.status[stage_key] = "waiting"
+            # 剧本结构变更（应用修订）：同样在重算与收尾赋值之后才标记，否则被冲回 completed；
+            # baseline MUST 与手动路径一样传重算前的快照，否则两条路径对 `stopped`/`waiting`
+            # 的处理会不一致（修订路径会误标）
+            if stage == WorkflowStage.SCRIPT_GENERATION and result.get("revision_applied"):
+                self._sync_script_structure(after, before_script, baseline=status_baseline)
+            # 分镜显式重跑：清理该集已成孤儿的下游条目引用，并把参考图/改写/视频标为待重新确认。
+            # “旧 segments”以执行开始时的快照为准：运行中的 assets_preview 会先把已提交
+            # 产物刷成新集，拿收尾时的实时 artifact 判孤儿会落空。
+            if stage == WorkflowStage.STORYBOARD:
+                rerun = self._rerun_episode_numbers(run.intervention)
+                if rerun:
+                    previous_storyboard = run.start_artifacts.get(stage_key)
+                    self._prune_downstream_items_for_episodes(
+                        after, rerun,
+                        previous_storyboard if isinstance(previous_storyboard, dict) else {},
+                        payload,
+                        baseline=status_baseline,
+                    )
             waiting = after.status.get(stage_key) == "waiting"
             after.stage_progress[stage_key] = {
                 "phase": stage_key,
@@ -2311,10 +2619,10 @@ class WorkflowEngine:
                     items.append(copy.deepcopy(current))
         return merged
 
-    async def continue_workflow(self, session_id: str) -> Dict:
-        return await asyncio.to_thread(self._continue_workflow, session_id)
+    async def continue_workflow(self, session_id: str, stage: Optional[str] = None) -> Dict:
+        return await asyncio.to_thread(self._continue_workflow, session_id, stage)
 
-    def _continue_workflow(self, session_id: str) -> Dict:
+    def _continue_workflow(self, session_id: str, stage: Optional[str] = None) -> Dict:
         if self.get_state(session_id) is None:
             return {
                 "status": "error",
@@ -2325,24 +2633,50 @@ class WorkflowEngine:
         response: Dict[str, Any] = {}
 
         def apply(after: WorkflowState) -> Any:
-            logger.info(f"[continue_workflow] session={session_id}, current_stage={after.current_stage}, status={after.status}")
             current_stage_str = after.current_stage.value if hasattr(after.current_stage, "value") else str(after.current_stage)
+            # 可选 stage：从哪个阶段点确认就只确认哪个阶段，不被归位后的 current_stage 误伤；
+            # 非法/不在启用序列时回退 current_stage（旧客户端兼容）
+            target_str = current_stage_str
+            if isinstance(stage, str) and stage:
+                enabled = [s.value for s in get_stage_order()]
+                if stage in enabled:
+                    target_str = stage
+                else:
+                    logger.warning("[continue_workflow] 非法 stage=%r，回退 current_stage=%r", stage, current_stage_str)
+            logger.info(f"[continue_workflow] session={session_id}, target_stage={target_str}, current_stage={current_stage_str}, status={after.status}")
             # 在继续之前，先重新扫描一次状态，确保最新的选择已被计入
             self._recalculate_all_statuses(after)
-            current_status = after.status.get(current_stage_str)
+            current_status = after.status.get(target_str)
             # 如果当前状态是 running，说明阶段还在执行中，不能继续
             if current_status == "running":
                 response.update({
                     "status": "waiting",
-                    "openclaw": f"当前阶段（{current_stage_str}）还在执行中，请等待完成后再调用 /continue。",
-                    "message": f"当前阶段（{current_stage_str}）还在执行中，请等待完成后再调用 /continue。",
+                    "openclaw": f"当前阶段（{target_str}）还在执行中，请等待完成后再调用 /continue。",
+                    "message": f"当前阶段（{target_str}）还在执行中，请等待完成后再调用 /continue。",
                     "current_status": "running",
                 })
                 return _NO_COMMIT
-            # waiting 或 completed：用户确认后直接进入下一阶段（只改状态，不把未完成工作稿强存为正式快照）
-            if current_status in ("waiting", "completed"):
-                after.status[current_stage_str] = "completed"
-                next_stage = self._get_next_stage(after.current_stage)
+            # waiting/completed/reconfirm：用户确认后直接进入下一阶段
+            # reconfirm 的语义是“接受现有产物并继续”：不重跑、不清空产物
+            if current_status in ("waiting", "completed", "session_completed", STATUS_RECONFIRM):
+                after.status[target_str] = "completed"
+                # 确认 = 接受该阶段现有结果：无论原状态是什么都清掉它自己的过期详情，
+                # 其它阶段的标记不动
+                progress = after.stage_progress.get(target_str)
+                if isinstance(progress, dict) and any(
+                    key in progress for key in ("stale", "stale_episodes", "stale_reason", "stale_at")
+                ):
+                    after.stage_progress[target_str] = {
+                        key: value for key, value in progress.items()
+                        if key not in ("stale", "stale_episodes", "stale_reason", "stale_at")
+                    }
+                try:
+                    target_stage = WorkflowStage(target_str)
+                except ValueError:
+                    target_stage = after.current_stage
+                if isinstance(stage, str) and stage and not any(v == "running" for v in after.status.values()):
+                    after.current_stage = target_stage
+                next_stage = self._get_next_stage(target_stage)
                 if not next_stage:
                     response.update({"status": "completed", "session_id": session_id})
                 else:
@@ -2358,8 +2692,9 @@ class WorkflowEngine:
             return _NO_COMMIT
 
         state, _ = self._mutate(session_id, apply)
-        if response.get("status") in ("completed", "ready"):
-            response["status_map"] = copy.deepcopy(state.status)
+        # 所有分支都回到会话当前的状态表（包括 running/error 的 `_NO_COMMIT`）：
+        # 前端需要据此同步全阶段视图，否则拒绝继续时界面会停在旧状态
+        response["status_map"] = copy.deepcopy(state.status)
         if response.get("status") == "completed":
             media_refs.cleanup_session_refs(session_id)
         return response
@@ -2368,17 +2703,43 @@ class WorkflowEngine:
 
     def update_artifact(self, session_id: str, stage: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Apply a user edit (plus cross-stage sync) and commit it in one transaction."""
+        sync_info: Dict[str, Any] = {}
+
         def apply(after: WorkflowState) -> None:
+            # 变更前快照 MUST 在就地合并之前取（_apply_artifact_update 直接改 state 里的产物）；
+            # 尚无剧本产物时传 None，首次写入不算“相对旧输入已变”
+            previous_art = (
+                after.artifacts.get(stage)
+                if stage == WorkflowStage.SCRIPT_GENERATION.value
+                else None
+            )
+            before_script = (
+                script_revision.structure_snapshot(previous_art)
+                if isinstance(previous_art, dict)
+                else None
+            )
+            # 阶段状态基线同样要在任何重算之前取
+            status_baseline = dict(after.status)
             self._apply_artifact_update(after, stage, copy.deepcopy(body) if isinstance(body, dict) else {})
             self._recalculate_all_statuses(after)
+            # 下游同步与标记 MUST 排在重算之后，否则标记会被“产物完整即 completed”冲回
+            touched_cast = isinstance(body, dict) and bool({"characters", "settings"} & set(body))
+            sync_info.update(self._sync_script_structure(
+                after, before_script, force_cast_sync=touched_cast, baseline=status_baseline,
+            ) or {})
 
         state, _ = self._mutate(session_id, apply, publish_stage=stage)
         view = self._view_dict(state)
-        return {
+        response: Dict[str, Any] = {
             "status": "ok",
             "status_map": copy.deepcopy(view["status"]),
             "artifact": copy.deepcopy(view["artifacts"].get(stage)),
         }
+        if stage == WorkflowStage.SCRIPT_GENERATION.value:
+            # 形状稳定：未发生结构变更时也返回空列表/False，前端无需区分键存在性
+            response["stale_storyboards"] = list(sync_info.get("stale_storyboards") or [])
+            response["stale_final_videos"] = bool(sync_info.get("stale_final_videos"))
+        return response
 
     @staticmethod
     def _stamp_manual_prompt(state: Any, merged: Dict[str, Any], seg_id: str) -> None:

@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .base_agent import AgentInterface
 
@@ -1613,6 +1613,28 @@ class StoryboardAgent(AgentInterface):
             valid_episodes.append(episode_payload)
         return valid_episodes
 
+    @staticmethod
+    def _as_episode_number(value: Any) -> Optional[int]:
+        """集号归一：非法值返回 None（重跑集合不参与匹配，不抛错）。"""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _rerun_episode_numbers(intervention: Optional[Dict]) -> Set[int]:
+        """显式重跑集号（openspec: script-manual-edit-resync）。
+
+        分镜正文手改后 `ready_eps` 会跳过已有 segments 的集，用户无法靠「继续生成」重做
+        该集；因此剧本页提供显式「重跑第 N 集分镜」，经 `/intervene` 以 `regenerate_episodes`
+        传入。非法集号静默忽略（不阻断本次执行）。
+        """
+        values = (intervention or {}).get("regenerate_episodes")
+        if not isinstance(values, list):
+            return set()
+        numbers = {StoryboardAgent._as_episode_number(value) for value in values}
+        return {number for number in numbers if number is not None}
+
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
         input_data = self._merge_session_params(input_data)
         sid = input_data.get("session_id")
@@ -1656,8 +1678,15 @@ class StoryboardAgent(AgentInterface):
         # 建立已生成的 segments 索引
         ready_eps = {e["episode_number"] for e in existing_story_eps if e.get("segments")}
         
-        # 确定需要处理的集数：如果该集还没有 segments，则需要生成
-        episodes_to_proc = [ep for ep in episodes if ep.get("episode_number") not in ready_eps]
+        # 确定需要处理的集数：该集还没有 segments，或该集被显式要求重跑
+        rerun_eps = self._rerun_episode_numbers(intervention)
+        episodes_to_proc = [
+            ep for ep in episodes
+            if ep.get("episode_number") not in ready_eps
+            or self._as_episode_number(ep.get("episode_number")) in rerun_eps
+        ]
+        if rerun_eps:
+            logger.info("[Storyboard] 显式重跑集：%s", sorted(rerun_eps))
         
         if not episodes_to_proc:
             logger.info("[Storyboard] All episodes already have storyboard segments. Skipping generation.")

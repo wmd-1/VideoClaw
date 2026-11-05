@@ -58,6 +58,57 @@ def content_fingerprint(artifact: Dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def structure_fingerprint(artifact: Dict[str, Any], *, scope: str = "all") -> str:
+    """结构指纹：只覆盖用户可编辑的内容，剔除服务端派生字段。
+
+    `content_fingerprint` 的语义保持不变（修订预览与 `pending_revision` 失效的口径），
+    但它把 `episodes`/`characters`/`settings` 整份序列化：服务端会往这些条目里回写
+    `character_id`/`setting_id`/`asset_kind` 与 `line_start`/`line_end`，于是“回填主键后
+    原样再保存”也会被判定为内容变化。下游同步与待重新确认标记只关心“用户改了什么”，
+    因此另用本函数。
+
+    scope: `all`=三者合计；`cast`=角色/场景集合；`body`=分集正文与集号集合。
+    传其他值直接报错，避免“静默哈希空内容”让所有保存都被判为变更或都不变更。
+    """
+    if scope not in ("all", "cast", "body"):
+        raise ValueError(f"unknown structure_fingerprint scope: {scope!r}")
+    item_dropped = {"character_id", "setting_id", "asset_kind"}
+    episode_dropped = {"line_start", "line_end"}
+
+    def _clean(items: Any, dropped: Iterable[str]) -> List[dict]:
+        cleaned: List[dict] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            cleaned.append({key: value for key, value in item.items() if key not in dropped})
+        return cleaned
+
+    scopes: Dict[str, Any] = {}
+    if scope in ("all", "body"):
+        scopes["episodes"] = _clean(artifact.get("episodes"), episode_dropped)
+    if scope in ("all", "cast"):
+        scopes["characters"] = _clean(artifact.get("characters"), item_dropped)
+        scopes["settings"] = _clean(artifact.get("settings"), item_dropped)
+    encoded = json.dumps(scopes, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def structure_snapshot(artifact: Any) -> Dict[str, Any]:
+    """变更前快照：只留结构指纹覆盖的字段，供事后比对与集级差异计算。
+
+    调用方必须在产物被就地改写**之前**取本快照（`_apply_artifact_update` 是就地合并）。
+    """
+    if not isinstance(artifact, dict):
+        return {}
+    return copy.deepcopy(
+        {
+            "episodes": artifact.get("episodes") or [],
+            "characters": artifact.get("characters") or [],
+            "settings": artifact.get("settings") or [],
+        }
+    )
+
+
 def diff_episode_numbers(old_episodes: Any, new_episodes: Any) -> List[int]:
     """返回正文发生变化的集号（含新增/缺失集）。"""
     old_map = _episode_map(old_episodes)

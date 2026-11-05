@@ -411,7 +411,8 @@ export default function StoryboardStage({
         onEdit={!isEditing ? startEdit : undefined}
         onSave={isEditing ? handleSave : undefined}
         onRegenerate={onRegenerate} 
-        showConfirm={showConfirm} 
+        showConfirm={showConfirm}
+        reconfirm={state.reconfirm}
         isRunning={isRunning} 
         hasPendingItems={hasPendingItems} 
         hasNextStageStarted={hasNextStageStarted}

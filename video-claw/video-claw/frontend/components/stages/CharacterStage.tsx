@@ -344,7 +344,7 @@ function AssetRow({
 }
 
 /* ─── 主组件 ─── */
-export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, flaggedItems, onNavigateStage }: StageViewProps) {
+export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, flaggedItems, onNavigateStage }: StageViewProps) {
   const characters: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.characters || [];
   const settingsData: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.settings || [];
 
@@ -424,6 +424,8 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
           settings: artifact.settings || [],
         });
       }
+      // 写入即同步：把上传后的阶段状态表回写到所有阶段（顶栏图标/按钮不再停在旧值）
+      onArtifactMutated?.(result.status_map);
       if (artifact?.characters) {
         const char = artifact.characters.find((item: AssetVersion) => item.id === id);
         if (char?.selected) setSelectedChars(prev => ({ ...prev, [id]: char.selected }));
@@ -588,6 +590,7 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
         status={state.status}
         onConfirm={onConfirm}
         showConfirm={showConfirm}
+        reconfirm={state.reconfirm}
         onRegenerate={onRegenerate}
         stageId="character_design"
         hasPendingItems={hasPendingItems}

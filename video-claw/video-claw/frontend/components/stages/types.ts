@@ -22,6 +22,15 @@ export interface StageState {
   lastRun?: ExecutionPreview | null;
   /** 本阶段因必需输入不可用而失败时的可定位清单（仅 error 态有效） */
   missingInputs?: MissingInput[] | null;
+  /**
+   * 后端状态为 `reconfirm`（产物已完成但输入已变，openspec: script-manual-edit-resync）。
+   * 本地 status 仍映射为 'waiting'（不改 StageStatus 联合类型），本位仅用于文案区分。
+   */
+  reconfirm?: boolean;
+  /** 本阶段产物可能因上游变更而过期的集号（分镜/参考图/视频；刷新后由 stage_progress 恢复） */
+  staleEpisodes?: number[];
+  /** 后期阶段专用：成片可能已过期（阶段状态不变，只提示） */
+  stale?: boolean;
 }
 
 /** 条目卡片上的缺失标记：由失败阶段的 missingInputs 投影到来源/消费阶段 */
@@ -38,9 +47,19 @@ export interface StageViewProps {
   onIntervene: (modifications: Record<string, unknown>) => void;
   onRegenerate: () => void;
   onUpdateArtifact?: (patch: Record<string, unknown>) => void;
-  /** 把轻量 PATCH 返回的服务端状态表回写全局（如取消修订预览） */
-  onStatusMap?: (statusMap: Record<string, StageStatus>) => void;
+  /**
+   * 写入成功后的服务端事实回写（openspec: stage-view-resync）：
+   * 把响应携带的状态表回写到**所有**阶段视图；`refreshArtifacts` 为真时再取一次
+   * 只读快照，重取受本次写入影响的阶段产物（剧本写入需要）。
+   */
+  onArtifactMutated?: (statusMap?: Record<string, string>, opts?: { refreshArtifacts?: boolean }) => void;
   onSaveSelections?: (selections: Record<string, unknown>) => Promise<void>;
+  /** 分镜阶段因剧本正文变更而过期的集号（刷新后仍从 stage_progress 恢复） */
+  staleStoryboardEpisodes?: number[];
+  /** 成片可能已过期（后期阶段状态不变，仅提示） */
+  staleFinalVideos?: boolean;
+  /** 显式重跑指定集的分镜（只能由用户点击触发，保存剧本不会自动调用） */
+  onRegenerateStoryboardEpisodes?: (episodes: number[]) => void;
   /** 是否显示"确认并继续"按钮（后续阶段已执行过时为 false） */
   showConfirm?: boolean;
   isRunning: boolean;
