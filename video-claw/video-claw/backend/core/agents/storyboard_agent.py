@@ -25,6 +25,8 @@ class StoryboardAgent(AgentInterface):
         super().__init__(name="Storyboard")
 
     MIN_SHOT_DURATION = 2
+    MIN_UNIT_DURATION = 2
+    MAX_UNIT_DURATION = 15
     MIN_SEGMENT_DURATION = 5
     MAX_SEGMENT_DURATION = 15
     OPENING_SHOT_TYPES = {"中景", "全景"}
@@ -251,6 +253,24 @@ class StoryboardAgent(AgentInterface):
         return speaker, tone, dialogue
 
     @classmethod
+    def _annotation_duration(
+        cls, annotation: Optional[dict], text: str = "", is_dialogue: bool = False
+    ) -> Optional[int]:
+        """导入质检给出的行级建议时长优先；对话/旁白取与字数估算的较大者，避免压短。"""
+        if not isinstance(annotation, dict):
+            return None
+        try:
+            seconds = int(float(annotation.get("duration")))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        seconds = max(cls.MIN_UNIT_DURATION, min(cls.MAX_UNIT_DURATION, seconds))
+        # 台词/旁白必须保证足够表达时间，时长只可上调不可因建议被压短；
+        # 旁白传入的 is_dialogue 为 False，必须显式按字数估算，否则下限会退化成 2 秒
+        if str(annotation.get("type") or "") in ("dialogue", "narration"):
+            return max(seconds, cls._duration_for_script_unit(text, True))
+        return seconds
+
+    @classmethod
     def _duration_for_script_unit(cls, text: str, is_dialogue: bool) -> int:
         if not is_dialogue:
             return 2
@@ -287,6 +307,8 @@ class StoryboardAgent(AgentInterface):
         raw_lines = script_text.replace("\r\n", "\n").split("\n")
 
         alias_map = cls._alias_map(settings)
+        # 画面描述行不单独成镜头：它的停留建议合并到同场景下一个动作/台词
+        pending_scene_duration = 0
 
         # 导入标注是全局行号：只有标注未越界时整体启用，否则回退正则
         annotation_by_line: Dict[int, dict] = {}
@@ -347,6 +369,7 @@ class StoryboardAgent(AgentInterface):
                     if span_setting and span_setting != current_location:
                         current_location = span_setting
                         scene_key += 1
+                        pending_scene_duration = 0
                         scene_characters = cls._match_characters(line, character_names)
             if annotation and annotation.get("type") in {
                 "heading",
@@ -356,6 +379,8 @@ class StoryboardAgent(AgentInterface):
                 "end_card",
             }:
                 if annotation.get("type") == "heading":
+                    # 场景标题即边界：上一场的画面描述停留不得泄漏到新场景
+                    pending_scene_duration = 0
                     span = span_by_line.get(global_line) if use_annotations else None
                     # scene_spans 缺失或未覆盖该标题时，回退既有场景头解析
                     if not span:
@@ -374,7 +399,7 @@ class StoryboardAgent(AgentInterface):
                 annotated_lines.append(line)
                 continue
             if annotation and annotation.get("type") == "placeholder":
-                duration = 2
+                duration = cls._annotation_duration(annotation) or 2
                 unit_id = f"U{len(units) + 1:03d}"
                 units.append(
                     {
@@ -408,6 +433,7 @@ class StoryboardAgent(AgentInterface):
             header_parts = cls._parse_scene_header_parts(stripped, setting_names)
             if header_parts:
                 scene_key += 1
+                pending_scene_duration = 0
                 current_location = cls._canonical_location(
                     header_parts.get("location", current_location), alias_map
                 )
@@ -439,13 +465,24 @@ class StoryboardAgent(AgentInterface):
             if is_narration:
                 # 旁白不是对白：即使带冒号也不能进入 dialogue 分支
                 dialogue = None
+            if annotation and annotation.get("type") == "scene_desc":
+                scene_desc_duration = cls._annotation_duration(annotation, line, False)
+                if scene_desc_duration:
+                    pending_scene_duration = max(pending_scene_duration, scene_desc_duration)
+                annotated_lines.append(line)
+                continue
             if not dialogue and not is_action and not is_narration:
                 annotated_lines.append(line)
                 continue
 
             unit_id = f"U{len(units) + 1:03d}"
             is_dialogue = dialogue is not None
-            duration = cls._duration_for_script_unit(line, is_dialogue)
+            duration = cls._annotation_duration(annotation, line, is_dialogue)
+            if duration is None:
+                duration = cls._duration_for_script_unit(line, is_dialogue)
+            if pending_scene_duration:
+                duration = max(duration, pending_scene_duration)
+                pending_scene_duration = 0
             # 旁白不自动创建可见人物（即使正文出现了人名）
             matched_chars = [] if is_narration else cls._match_characters(line, character_names)
             unit_chars = matched_chars[:]
@@ -596,6 +633,76 @@ class StoryboardAgent(AgentInterface):
         ]
 
     @classmethod
+    def _review_context(
+        cls, script_data: dict, script_meta: dict
+    ) -> Tuple[List[dict], Optional[int]]:
+        """返回可分镜消费的质检问题与建议总时长。
+
+        - 正文修改后（stale）旧行号与旧时长都不可信，一律不注入；
+        - 长文质检截断时问题清单仍可用，但总时长只代表节选，不得折算成每集目标。
+        """
+        review = script_data.get("import_review") if isinstance(script_data, dict) else None
+        if not isinstance(review, dict) or review.get("stale"):
+            return [], None
+        issues = review.get("issues") if isinstance(review.get("issues"), list) else []
+        coverage = review.get("coverage") if isinstance(review.get("coverage"), dict) else {}
+        if coverage.get("truncated"):
+            return issues, None
+        return issues, (script_meta or {}).get("suggested_total_seconds")
+
+    @classmethod
+    def _episode_suggested_seconds(cls, script_context: dict) -> Optional[int]:
+        """把全篇建议总时长折算成本集参考值；无建议时返回 None。"""
+        try:
+            suggested = int(script_context.get("suggested_total_seconds") or 0)
+        except (TypeError, ValueError):
+            suggested = 0
+        if suggested <= 0:
+            return None
+        try:
+            episode_count = max(1, int(script_context.get("episode_count") or 1))
+        except (TypeError, ValueError):
+            episode_count = 1
+        return max(5, int(round(suggested / episode_count)))
+
+    @classmethod
+    def _build_planning_hint(cls, script_context: dict) -> str:
+        """把导入质检的建议时长与问题清单转成分镜规划提示。"""
+        parts: List[str] = []
+        episode_seconds = cls._episode_suggested_seconds(script_context)
+        if episode_seconds:
+            parts.append(
+                f"本集建议总时长约 {episode_seconds} 秒（按内容完整与节奏舒适优先，可上下浮动）；"
+                f"请在 5-15 秒片段约束内合理规划片段数量，不要为凑时长删减或压缩内容。"
+            )
+        issues = script_context.get("review_issues")
+        line_start = script_context.get("line_start")
+        line_end = script_context.get("line_end")
+        coords_ready = isinstance(line_start, int) and isinstance(line_end, int)
+        # 坐标缺失时 fail-closed：宁可不用问题清单，也不把别集/全局行号注入
+        if isinstance(issues, list) and issues and coords_ready:
+            hints: List[str] = []
+            for issue in issues:
+                if not isinstance(issue, dict):
+                    continue
+                line_no = issue.get("line")
+                # 多集时只注入本集行范围内的问题，避免把别集问题带进来
+                if isinstance(line_no, int) and not (line_start <= line_no <= line_end):
+                    continue
+                problem = str(issue.get("problem") or "").strip()
+                if not problem:
+                    continue
+                suggestion = str(issue.get("suggestion") or "").strip()
+                # 单集正文没有行号标注，hint 不携带全局行号，避免跨集误映射
+                suffix = f"（建议：{suggestion}）" if suggestion else ""
+                hints.append(f"- {problem}{suffix}")
+                if len(hints) >= 6:
+                    break
+            if hints:
+                parts.append("剧本质检要点（分段与镜头设计时请规避）：\n" + "\n".join(hints))
+        return "\n".join(parts) if parts else "无额外约束。"
+
+    @classmethod
     def _build_segmentation_prompt(
         cls,
         ep_n: int,
@@ -604,6 +711,7 @@ class StoryboardAgent(AgentInterface):
         characters: List[dict],
         settings: List[dict],
         retry_error: str = "",
+        planning_hint: str = "",
     ) -> str:
         template = _get_storyboard_prompt("segment_plan", "zh")
         retry_feedback = ""
@@ -618,6 +726,7 @@ class StoryboardAgent(AgentInterface):
             asset_characters=json.dumps(characters, ensure_ascii=False),
             asset_settings=json.dumps(settings, ensure_ascii=False),
             retry_feedback=retry_feedback,
+            planning_hint=planning_hint or "无额外约束。",
         )
 
     @classmethod
@@ -628,6 +737,7 @@ class StoryboardAgent(AgentInterface):
         plan: dict,
         style: str,
         retry_error: str = "",
+        planning_hint: str = "",
     ) -> str:
         items_payload = cls._scene_item_payload(plan.get("items", []))
         segment_total = sum(int(item.get("duration") or 0) for item in plan.get("items", []))
@@ -651,6 +761,7 @@ class StoryboardAgent(AgentInterface):
             items=json.dumps(items_payload, ensure_ascii=False),
             style=style,
             retry_feedback=retry_feedback,
+            planning_hint=planning_hint or "无额外约束。",
         )
 
     async def _query_json_array_with_retries(
@@ -965,6 +1076,7 @@ class StoryboardAgent(AgentInterface):
         settings: List[dict],
         llm_model: str,
         sid: str,
+        planning_hint: str = "",
     ) -> List[dict]:
         last_error: Optional[Exception] = None
         for attempt in range(3):
@@ -976,6 +1088,7 @@ class StoryboardAgent(AgentInterface):
                     characters,
                     settings,
                     retry_error=str(last_error) if last_error else "",
+                    planning_hint=planning_hint,
                 )
                 raw_plan = await self._query_json_array_with_retries(
                     prompt,
@@ -1000,6 +1113,7 @@ class StoryboardAgent(AgentInterface):
         style: str,
         llm_model: str,
         sid: str,
+        planning_hint: str = "",
     ) -> dict:
         last_error: Optional[Exception] = None
         for attempt in range(3):
@@ -1010,6 +1124,7 @@ class StoryboardAgent(AgentInterface):
                     plan,
                     style,
                     retry_error=str(last_error) if last_error else "",
+                    planning_hint=planning_hint,
                 )
                 raw_design = await self._query_json_object_with_retries(
                     prompt,
@@ -1043,8 +1158,9 @@ class StoryboardAgent(AgentInterface):
         target_seconds: Any,
         ep_n: int,
         progress_note: Optional[Callable[[str], None]] = None,
+        advisory: bool = False,
     ) -> List[dict]:
-        """按目标时长缩放单元时长；单单元不低于 2 秒，触发下限后只提示不硬删。"""
+        """按目标时长缩放单元时长；advisory 时只提示，不牺牲内容与节奏。"""
         try:
             target = int(target_seconds or 0)
         except (TypeError, ValueError):
@@ -1053,6 +1169,12 @@ class StoryboardAgent(AgentInterface):
             return units
         total = sum(int(unit.get("duration") or 0) for unit in units)
         if total <= target * 1.2:
+            return units
+        if advisory:
+            if progress_note:
+                progress_note(
+                    f"第 {ep_n} 集按内容需要约 {total}s，超出原剧本时长 {target}s，按叙事完整优先保留"
+                )
             return units
         ratio = target / total if total else 1
         for unit in units:
@@ -1090,13 +1212,28 @@ class StoryboardAgent(AgentInterface):
         if not units:
             raise Exception(f"第 {ep_n} 集未能识别出动作或台词")
         self._apply_duration_budget(
-            units, context.get("target_duration_seconds"), ep_n, progress_note
+            units,
+            context.get("target_duration_seconds"),
+            ep_n,
+            progress_note,
+            advisory=bool(context.get("duration_budget_advisory")),
         )
 
         logger.info("[Storyboard] Episode %s annotated %d script units", ep_n, len(units))
         if progress_note:
             progress_note(f"第 {ep_n} 集已完成时长标注，正在划分片段")
-        plans = await self._plan_episode_segments(ep_n, ep_t, annotated_script, units, characters, settings, llm_model, sid)
+        planning_hint = self._build_planning_hint(context)
+        plans = await self._plan_episode_segments(
+            ep_n,
+            ep_t,
+            annotated_script,
+            units,
+            characters,
+            settings,
+            llm_model,
+            sid,
+            planning_hint=planning_hint,
+        )
         if not plans:
             raise Exception(f"第 {ep_n} 集片段规划失败")
 
@@ -1104,7 +1241,9 @@ class StoryboardAgent(AgentInterface):
         if progress_note:
             progress_note(f"第 {ep_n} 集已规划 {len(plans)} 个片段，正在设计分镜")
         tasks = [
-            self._design_one_segment(ep_n, ep_t, plan, style, llm_model, sid)
+            self._design_one_segment(
+                ep_n, ep_t, plan, style, llm_model, sid, planning_hint=planning_hint
+            )
             for plan in plans
         ]
         segments = await asyncio.gather(*tasks)
@@ -1464,11 +1603,14 @@ class StoryboardAgent(AgentInterface):
                     "shots": valid_shots
                 })
             
-            valid_episodes.append({
+            episode_payload = {
                 "episode_number": ep.get("episode_number", len(valid_episodes) + 1),
                 "episode_title": ep.get("episode_title", ""),
-                "segments": valid_segments
-            })
+                "segments": valid_segments,
+            }
+            if ep.get("suggested_total_seconds") is not None:
+                episode_payload["suggested_total_seconds"] = ep["suggested_total_seconds"]
+            valid_episodes.append(episode_payload)
         return valid_episodes
 
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
@@ -1540,12 +1682,20 @@ class StoryboardAgent(AgentInterface):
             ep_c = ep.get("content", "")
             script_meta = script_data.get("meta") if isinstance(script_data.get("meta"), dict) else {}
             baseline_text = str(script_meta.get("original_text") or "")
+            review_issues, suggested_total_seconds = self._review_context(script_data, script_meta)
             script_context = {
                 "annotations": script_data.get("line_annotations"),
                 "scene_spans": script_data.get("scene_spans"),
                 "line_start": ep.get("line_start"),
+                "line_end": ep.get("line_end"),
                 "baseline_line_count": len(baseline_text.split("\n")) if baseline_text else None,
                 "target_duration_seconds": script_meta.get("target_duration_seconds"),
+                # 导入剧本的目标时长只作提示，不压缩已按台词规划的单元时长
+                "duration_budget_advisory": script_meta.get("duration_budget") == "advisory",
+                # 质检建议只软引导分段规划；stale/截断时上游已返回空值
+                "suggested_total_seconds": suggested_total_seconds,
+                "episode_count": len(episodes),
+                "review_issues": review_issues,
             }
             report_storyboard_note(f"正在处理第 {ep_n} 集分镜")
             segments = await self._design_episode_storyboard(
@@ -1564,7 +1714,8 @@ class StoryboardAgent(AgentInterface):
             return {
                 "episode_number": ep_n,
                 "episode_title": ep_t,
-                "segments": segments
+                "segments": segments,
+                "suggested_total_seconds": self._episode_suggested_seconds(script_context),
             }
 
         # 核心：支持流式推送增量产物，让前端能看到实时进度

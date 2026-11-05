@@ -204,6 +204,7 @@ async def start_project(req: ProjectStartRequest, user: CurrentUser = Depends(ge
     }
     if script_source == "upload":
         meta["file_path"] = req.file_path
+        meta["run_quality_check"] = bool(req.run_quality_check)
     from core.language import resolve_language
 
     if req.language:

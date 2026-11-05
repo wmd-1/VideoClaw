@@ -507,6 +507,8 @@ export async function startProject(params: {
   file_path?: string;
   /** 剧本来源：idea=按灵感生成；upload=保真导入上传剧本 */
   script_source?: 'idea' | 'upload';
+  /** 导入剧本时是否执行质检；默认关闭，长文会自动触发 */
+  run_quality_check?: boolean;
   style?: string;
   video_ratio?: string;
   video_resolution?: string;

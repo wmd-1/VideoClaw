@@ -720,6 +720,50 @@ class ScriptWriterAgent(AgentInterface):
         except Exception:
             logger.warning("[ScriptImport] 元信息提取失败，使用默认值", exc_info=True)
 
+        # 文生视频质检：默认关闭；长文自动触发或用户勾选，只建议不改正文
+        requested_review = bool(
+            session_meta.get("run_quality_check") or input_data.get("run_quality_check")
+        )
+        auto_review = len(raw_text) >= script_import.IMPORT_REVIEW_AUTO_MIN_CHARS
+        review_mode = "manual" if requested_review else ("auto" if auto_review else "off")
+        review_coverage = {"covered_lines": 0, "total_lines": 0, "truncated": False}
+        review_data: Dict[str, Any] = {}
+        if review_mode != "off":
+            self._report_progress("剧本导入", "正在检查剧本节奏...", 80)
+            try:
+                chunks: List[str] = []
+                used = 0
+                for index, line in enumerate(lines):
+                    if not line.strip():
+                        continue
+                    item = f"{index}: {line}"
+                    if used + len(item) + 1 > 60000:
+                        break
+                    chunks.append(item)
+                    used += len(item) + 1
+                total_lines = sum(1 for line in lines if line.strip())
+                review_coverage = {
+                    "covered_lines": len(chunks),
+                    "total_lines": total_lines,
+                    "truncated": len(chunks) < total_lines,
+                }
+                if review_coverage["truncated"]:
+                    logger.warning(
+                        "[ScriptImport] 剧本 %d 字符，质检仅覆盖前 %d/%d 行",
+                        len(raw_text),
+                        len(chunks),
+                        total_lines,
+                    )
+                if chunks:
+                    prompt = _get_script_prompt("import_review", lang).format(
+                        numbered_script="\n".join(chunks)
+                    )
+                    parsed = self._extract_json_from_text(await _call(prompt))
+                    if isinstance(parsed, dict):
+                        review_data = parsed
+            except Exception:
+                logger.warning("[ScriptImport] 剧本质检失败，跳过质检建议", exc_info=True)
+
         inferred_characters = meta_data.get("characters") if isinstance(meta_data.get("characters"), list) else []
         meta_settings = meta_data.get("settings") if isinstance(meta_data.get("settings"), list) else []
         existing_names = {
@@ -753,6 +797,24 @@ class ScriptWriterAgent(AgentInterface):
             inferred_settings=inferred_settings,
             setting_by_heading_line=heading_mapping,
         )
+        import_review, reviewed_annotations = None, artifact.get("line_annotations") or []
+        try:
+            import_review, reviewed_annotations = script_import.apply_import_review(
+                review_data, artifact.get("line_annotations") or []
+            )
+        except Exception:
+            logger.warning("[ScriptImport] 质检结果处理失败，跳过质检建议", exc_info=True)
+        meta = artifact.setdefault("meta", {})
+        # 导入剧本以内容完整与节奏舒适优先：原文目标时长只作提示，不再硬压分镜
+        meta["duration_budget"] = "advisory"
+        meta["import_review_mode"] = review_mode
+        if import_review:
+            import_review["mode"] = review_mode
+            import_review["coverage"] = review_coverage
+            artifact["import_review"] = import_review
+            artifact["line_annotations"] = reviewed_annotations
+            if import_review.get("suggested_total_seconds"):
+                meta["suggested_total_seconds"] = import_review["suggested_total_seconds"]
         artifact.pop("source_episode_count", None)
         self._save_result(artifact, sid, is_zh)
         self._report_progress("剧本导入", "剧本解析完成", 100)

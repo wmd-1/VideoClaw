@@ -89,6 +89,32 @@ interface PendingRevision {
   episode?: ScriptEpisode;
 }
 
+interface ImportReviewIssue {
+  line?: number;
+  type?: string;
+  severity?: string;
+  problem?: string;
+  suggestion?: string;
+}
+
+interface ImportReview {
+  summary?: string;
+  issues?: ImportReviewIssue[];
+  unit_durations?: { line: number; seconds: number }[];
+  suggested_total_seconds?: number | null;
+  duration_reason?: string;
+  /** manual=用户勾选；auto=长文自动触发 */
+  mode?: string;
+  /** 质检实际覆盖的行范围（长文会截断） */
+  coverage?: {
+    covered_lines?: number;
+    total_lines?: number;
+    truncated?: boolean;
+  };
+  /** 正文被修改后旧结论不再可信 */
+  stale?: boolean;
+}
+
 interface ScriptData {
   title?: string;
   logline?: string;
@@ -100,10 +126,16 @@ interface ScriptData {
   overall_style?: string;
   mood?: string;
   session_id?: string;
+  /** 导入质检：问题清单与时长建议（仅导入路径） */
+  import_review?: ImportReview;
   /** 导入路径元信息（生成路径可缺省） */
   meta?: {
     source_format?: string;
     target_duration_seconds?: number | null;
+    suggested_total_seconds?: number | null;
+    duration_budget?: string;
+    /** off=未质检；manual=手动勾选；auto=长文自动 */
+    import_review_mode?: string;
     original_text?: string;
     explicit_cast?: boolean;
     [key: string]: unknown;
@@ -126,6 +158,19 @@ interface ScriptData {
   pending_revision?: PendingRevision;
   [key: string]: unknown;
 }
+
+const REVIEW_SEVERITY: Record<string, { label: string; className: string }> = {
+  high: { label: '高', className: 'bg-red-100 text-red-700' },
+  medium: { label: '中', className: 'bg-amber-100 text-amber-700' },
+  low: { label: '低', className: 'bg-gray-100 text-gray-600' },
+};
+
+const REVIEW_TYPE_LABEL: Record<string, string> = {
+  content: '内容',
+  order: '时序',
+  timing: '时长',
+  pacing: '节奏',
+};
 
 /* ─── Logline 六要素展示卡 ─── */
 function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
@@ -506,10 +551,89 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             </p>
             {(data.episodes || []).some(ep => (ep.content || '').split('\n').filter(Boolean).length > 60) && (
               <p className="text-xs text-amber-600">
-                部分集行数较多；分镜阶段会按目标时长压缩，不会裁剪原文。
+                部分集行数较多；分镜阶段按内容完整优先保留，不再为原剧本时长压缩正文。
+              </p>
+            )}
+            {data.meta?.import_review_mode === 'off' && (
+              <p className="text-xs text-gray-400">
+                本次未执行节奏/时长质检（导入时勾选，长文会自动质检）。
               </p>
             )}
           </div>
+        )}
+
+        {/* 导入质检：问题清单与时长建议（不修改正文） */}
+        {data.import_review && (
+          <section className="mb-4 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Sparkles className="w-4 h-4 text-sky-600" />
+              <h3 className="text-sm font-semibold text-sky-800">剧本质检</h3>
+              {data.import_review.stale && (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">
+                  正文已修改，建议可能过期
+                </span>
+              )}
+              {data.import_review.mode === 'manual' && (
+                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] text-sky-700">
+                  手动触发
+                </span>
+              )}
+              {data.import_review.mode === 'auto' && (
+                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] text-sky-700">
+                  长文自动质检
+                </span>
+              )}
+              {data.import_review.coverage?.truncated && (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">
+                  仅覆盖前 {data.import_review.coverage.covered_lines}/
+                  {data.import_review.coverage.total_lines} 行
+                </span>
+              )}
+              {typeof data.import_review.suggested_total_seconds === 'number' && !data.import_review.stale && (
+                <span className="text-xs text-sky-700">
+                  建议总时长 {data.import_review.suggested_total_seconds} 秒
+                  {data.meta?.target_duration_seconds
+                    ? `（原文 ${data.meta.target_duration_seconds} 秒）`
+                    : ''}
+                </span>
+              )}
+            </div>
+            {data.import_review.summary && (
+              <p className="text-sm leading-relaxed text-gray-700">{data.import_review.summary}</p>
+            )}
+            {data.import_review.duration_reason && (
+              <p className="mt-1 text-xs text-gray-500">时长依据：{data.import_review.duration_reason}</p>
+            )}
+            {!!data.import_review.issues?.length && !data.import_review.stale && (
+              <ul className="mt-3 space-y-1.5">
+                {data.import_review.issues.map((issue, index) => {
+                  const severity = REVIEW_SEVERITY[issue.severity || 'medium'] || REVIEW_SEVERITY.medium;
+                  return (
+                    <li key={`${issue.line}-${index}`} className="text-xs leading-relaxed text-gray-600">
+                      <span className={`mr-1.5 inline-block rounded px-1.5 py-0.5 ${severity.className}`}>
+                        {severity.label}
+                      </span>
+                      {typeof issue.line === 'number' && (
+                        <span className="mr-1 text-gray-400">第 {issue.line + 1} 行</span>
+                      )}
+                      <span className="mr-1 text-gray-500">
+                        [{REVIEW_TYPE_LABEL[issue.type || 'pacing'] || '节奏'}]
+                      </span>
+                      {issue.problem}
+                      {issue.suggestion && <span className="text-gray-500"> → {issue.suggestion}</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {!!data.import_review.unit_durations?.length && (
+              <p className="mt-2 text-[11px] text-sky-700">
+                {data.import_review.stale
+                  ? '正文已修改，原时长建议已失效，分镜将按新正文重新估算。'
+                  : `已按建议为 ${data.import_review.unit_durations.length} 行动作/台词规划时长，分镜阶段直接采用。`}
+              </p>
+            )}
+          </section>
         )}
 
         {/* 运行中 - 进度条 & 已选 Logline & 增量生成结果 */}

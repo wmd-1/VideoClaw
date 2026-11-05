@@ -196,6 +196,8 @@ def _rebuild_import_annotations(artifact: Dict[str, Any], lines: List[str]) -> N
     annotations = script_import.deterministic_annotations(lines)
     artifact["line_annotations"] = annotations
     artifact["scene_spans"] = _rebuild_scene_spans(artifact, lines, candidates, annotations)
+    # 正文已变，旧的质检行号与时长建议不再可信：保留结论但标记过期
+    script_import.mark_import_review_stale(artifact)
     meta = artifact.get("meta")
     if not isinstance(meta, dict):
         meta = {}

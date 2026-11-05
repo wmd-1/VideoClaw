@@ -33,6 +33,8 @@ interface Episode {
   episode_number: number;
   episode_title: string;
   segments: Segment[];
+  /** 导入质检给出的本集建议总时长（无质检时缺省） */
+  suggested_total_seconds?: number | null;
 }
 
 // ─── 样式常量 ───
@@ -276,6 +278,11 @@ export default function StoryboardStage({
                       <span className="inline-flex items-center gap-1 text-[11px] text-violet-600 font-medium bg-violet-50 px-2.5 py-1 rounded-full border border-violet-100 italic">
                         <Clock className="w-3 h-3" /> 总计 {epTotalTime}s
                       </span>
+                      {typeof episode.suggested_total_seconds === 'number' && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-sky-600 font-medium bg-sky-50 px-2.5 py-1 rounded-full border border-sky-100 italic">
+                          <Clock className="w-3 h-3" /> 建议 {episode.suggested_total_seconds}s
+                        </span>
+                      )}
                     </div>
                   </div>
 

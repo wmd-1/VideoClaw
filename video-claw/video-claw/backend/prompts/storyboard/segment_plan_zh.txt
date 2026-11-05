@@ -17,6 +17,8 @@
 4. unit_ids 必须完整覆盖输入中的每一个动作/台词，顺序不能改变，不能重复，不能遗漏。
 5. 不要输出动作原文、台词原文、items 或其他字段，只输出 segment_number、location、unit_ids。
 
+{planning_hint}
+
 {retry_feedback}
 
 已有角色列表：

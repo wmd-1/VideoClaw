@@ -407,4 +407,8 @@ def apply_preview_to_artifact(
         if isinstance(episode, dict):
             episode.pop("line_start", None)
             episode.pop("line_end", None)
+    # AI 修订与手工编辑共用同一失效语义：旧质检结论与建议总时长不可再消费
+    from core import script_import
+
+    script_import.mark_import_review_stale(updated)
     return updated

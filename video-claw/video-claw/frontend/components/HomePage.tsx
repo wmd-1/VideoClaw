@@ -24,6 +24,8 @@ export interface ProjectParams {
   file_path?: string; // 上传的文件路径 (由后端返回的文件名)
   /** 剧本来源：idea=按灵感生成；upload=保真导入上传剧本 */
   script_source?: 'idea' | 'upload';
+  /** 导入剧本时是否执行质检；默认关闭，长文会自动触发 */
+  run_quality_check?: boolean;
   style: string;
   video_ratio: string;
   video_resolution: string;
@@ -102,6 +104,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const [uploading, setUploading] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<{name: string, path: string} | null>(null);
   const [creationMode, setCreationMode] = useState<'idea' | 'upload'>('idea');
+  const [qualityCheck, setQualityCheck] = useState(false);
 
   // 管理模式状态
   const [manageMode, setManageMode] = useState(false);
@@ -237,6 +240,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       idea,
       file_path: uploadedFile?.path, // 如果上传了文件，传给后端
       script_source: creationMode,
+      run_quality_check: creationMode === 'upload' ? qualityCheck : undefined,
       style: selectedStyle,
       video_ratio: selectedRatio,
       video_resolution: selectedResolution,
@@ -365,8 +369,17 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
               }}
             />
           ) : (
-            <div className="min-h-[100px] flex items-center text-sm text-gray-500">
-              上传 Word / TXT / MD / PDF 剧本，系统将按原文保真解析为结构化剧本，并自动提取角色与场景。
+            <div className="min-h-[100px] flex flex-col justify-center gap-3 text-sm text-gray-500">
+              <span>上传 Word / TXT / MD / PDF 剧本，系统将按原文保真解析为结构化剧本，并自动提取角色与场景。</span>
+              <label className="inline-flex w-fit cursor-pointer items-center gap-2 text-xs text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={qualityCheck}
+                  onChange={e => setQualityCheck(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-blue-500 focus:ring-blue-400"
+                />
+                导入后质检节奏与时长（长文会自动质检）
+              </label>
             </div>
           )}
 

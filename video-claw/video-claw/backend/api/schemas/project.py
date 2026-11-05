@@ -10,6 +10,8 @@ class ProjectStartRequest(BaseModel):
     file_path: Optional[str] = None
     # 剧本来源：idea=按灵感生成（默认）；upload=保真导入上传剧本
     script_source: Optional[str] = "idea"
+    # 导入剧本时是否执行质检；默认关闭，长文（>=2 万字符）会自动触发
+    run_quality_check: Optional[bool] = False
     # 显式语言（zh/en）；缺省时由会话在首次阶段执行前统一推断并落库
     language: Optional[str] = None
     style: Optional[str] = None

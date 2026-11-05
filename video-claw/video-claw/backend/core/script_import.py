@@ -775,3 +775,152 @@ def build_import_artifact(
         "scene_spans": spans,
         "source_episode_count": len(episodes),
     }
+
+
+# ─────────────── 导入质检（只建议，不改正文） ───────────────
+
+MIN_UNIT_DURATION = 2
+MAX_UNIT_DURATION = 15
+# 导入质检默认关闭：长文自动触发或用户在导入时显式勾选，避免短剧本多一次大模型调用
+IMPORT_REVIEW_AUTO_MIN_CHARS = 20000
+# 画面描述行不单独成镜头，但它的停留建议会合并到同场景的下一个动作/台词
+_DURATION_TYPES = {"action", "dialogue", "narration", "scene_desc", "placeholder"}
+_MAX_REVIEW_ISSUES = 20
+_MAX_REVIEW_DURATIONS = 200
+_MAX_REVIEW_SECONDS = 7200
+_REVIEW_ISSUE_TYPES = {"content", "order", "timing", "pacing"}
+_REVIEW_SEVERITIES = {"high", "medium", "low"}
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    """只接受正整数；0、负数、非数字及非有限值（Infinity/NaN）一律视为无效建议。"""
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number > 0 else None
+
+
+def _review_text(value: Any, limit: int = 200) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def apply_import_review(
+    review: Any,
+    annotations: List[dict],
+) -> Tuple[Optional[Dict[str, Any]], List[dict]]:
+    """规范化质检结果，并把建议时长合并到行标注。
+
+    - 只接受原文中真实存在的行号，虚构行号一律丢弃；
+    - 建议时长夹取到 2-15 秒，且只落到动作/台词/旁白行；
+    - 不产生正文改写，因此不破坏保真导入契约。
+    """
+    if not isinstance(review, dict):
+        return None, list(annotations or [])
+
+    line_types: Dict[int, str] = {}
+    for item in annotations or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            line_no = int(item.get("line"))
+        except (TypeError, ValueError):
+            continue
+        line_types[line_no] = str(item.get("type") or "")
+
+    issues: List[dict] = []
+    raw_issues = review.get("issues")
+    if isinstance(raw_issues, list):
+        for item in raw_issues:
+            if not isinstance(item, dict) or len(issues) >= _MAX_REVIEW_ISSUES:
+                continue
+            try:
+                line_no = int(item.get("line"))
+            except (TypeError, ValueError):
+                continue
+            if line_no not in line_types:
+                continue
+            problem = _review_text(item.get("problem"))
+            if not problem:
+                continue
+            issue_type = str(item.get("type") or "").strip().lower()
+            severity = str(item.get("severity") or "").strip().lower()
+            issues.append(
+                {
+                    "line": line_no,
+                    "type": issue_type if issue_type in _REVIEW_ISSUE_TYPES else "pacing",
+                    "severity": severity if severity in _REVIEW_SEVERITIES else "medium",
+                    "problem": problem,
+                    "suggestion": _review_text(item.get("suggestion")),
+                }
+            )
+
+    duration_by_line: Dict[int, int] = {}
+    raw_durations = review.get("unit_durations")
+    if isinstance(raw_durations, list):
+        for item in raw_durations:
+            if not isinstance(item, dict) or len(duration_by_line) >= _MAX_REVIEW_DURATIONS:
+                continue
+            try:
+                line_no = int(item.get("line"))
+            except (TypeError, ValueError):
+                continue
+            if line_types.get(line_no) not in _DURATION_TYPES:
+                continue
+            seconds = _positive_int(item.get("seconds"))
+            if seconds is not None:
+                duration_by_line[line_no] = max(
+                    MIN_UNIT_DURATION, min(MAX_UNIT_DURATION, seconds)
+                )
+
+    suggested_total = _positive_int(review.get("suggested_total_seconds"))
+    if suggested_total is not None:
+        suggested_total = max(MIN_UNIT_DURATION, min(_MAX_REVIEW_SECONDS, suggested_total))
+
+    normalized = {
+        "summary": _review_text(review.get("summary")),
+        "issues": issues,
+        "unit_durations": [
+            {"line": line_no, "seconds": seconds}
+            for line_no, seconds in sorted(duration_by_line.items())
+        ],
+        "suggested_total_seconds": suggested_total,
+        "duration_reason": _review_text(review.get("duration_reason")),
+        "source": "llm",
+    }
+
+    if not any(
+        (
+            normalized["summary"],
+            normalized["issues"],
+            normalized["unit_durations"],
+            normalized["suggested_total_seconds"],
+        )
+    ):
+        return None, list(annotations or [])
+
+    updated: List[dict] = []
+    for item in annotations or []:
+        if isinstance(item, dict):
+            try:
+                line_no = int(item.get("line"))
+            except (TypeError, ValueError):
+                line_no = -1
+            seconds = duration_by_line.get(line_no)
+            if seconds is not None:
+                updated.append({**item, "duration": seconds})
+                continue
+        updated.append(item)
+    return normalized, updated
+
+
+def mark_import_review_stale(artifact: Any) -> None:
+    """正文变更后让质检结论与建议总时长同时失效（手工编辑与 AI 修订共用）。"""
+    if not isinstance(artifact, dict):
+        return
+    review = artifact.get("import_review")
+    if isinstance(review, dict):
+        review["stale"] = True
+    meta = artifact.get("meta")
+    if isinstance(meta, dict):
+        meta.pop("suggested_total_seconds", None)
