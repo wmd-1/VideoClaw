@@ -134,8 +134,8 @@ class FakeSteps:
         monkeypatch.setattr(StoryboardAgent, "_query_json_object_with_retries", self._fake_object_query)
         if self.estimate is not None:
             monkeypatch.setattr(
-                StoryboardAgent, "_build_segments_by_regex",
-                staticmethod(lambda ep_n, script_text, characters, settings: [{} for _ in range(self.estimate)]),
+                StoryboardAgent, "_estimate_segment_count",
+                classmethod(lambda cls, ep_n, script_text, characters, settings: self.estimate),
             )
         return self
 
@@ -230,7 +230,7 @@ def test_progress_moves_before_first_episode_milestone(monkeypatch):
 
 
 def test_incremental_weight_growth_keeps_progress_monotonic(monkeypatch):
-    """T4：初始权重按估算登记（估算 8），规划返回真实片段数 2 后分母只增不减，进度不倒退。"""
+    """T4：初始权重按估算登记（估算 8），规划返回真实片段数 2 后双向修正，进度不倒退。"""
     steps = FakeSteps(segments=2, estimate=8)
     recorder, _ = _run_agent(monkeypatch, steps, ep_count=1)
 
@@ -338,29 +338,119 @@ def test_ledger_is_single_source_and_monotonic():
 
 
 def test_ledger_throttles_heartbeat_events():
-    """T6b：心跳事件受两道约束——间隔不足 min_interval 不发，percent 未变也不发。"""
+    """T6b：心跳只受节流窗口约束——窗口内不发，窗口后即使 percent 不变也要发。"""
     seen: List[tuple] = []
     clock = _Clock()
     ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)),
                      clock=clock, min_interval=4.0)
-    # 单步只值 int(85/100)=0 个百分点：当前量程上界仅比 percent 高几档，便于观察两个分支
+    # 单步只值 int(85/100)=0 个百分点：档位推不动，只能靠消息续命
     ledger.add_total(100)
 
-    assert ledger.beat("模型正在设计分镜，请稍候...") is True, "首个心跳应发出"
-    assert ledger.beat("模型正在设计分镜，请稍候...") is False, "时钟未前进时不得重复发送（节流）"
+    assert ledger.beat("正在设计分镜") is True, "首个心跳应发出"
+    assert ledger.beat("正在设计分镜") is False, "时钟未前进时不得重复发送（节流）"
     clock.advance(4.0)
-    assert ledger.beat("模型正在设计分镜，请稍候...") is True, "节流窗口过后应继续推进"
-    assert seen[-1][1] > seen[-2][1], f"心跳必须严格推进 percent：{seen}"
+    assert ledger.beat("正在设计分镜") is True, "节流窗口过后即使 percent 不变也要发"
+    assert ledger.percent == FLOOR_PERCENT, f"量程内无预算时不得预支档位：{ledger.percent}"
 
+    emitted = len(seen)
     for _ in range(30):
         clock.advance(4.0)
-        ledger.beat("模型正在设计分镜，请稍候...")
-    assert ledger.percent == FLOOR_PERCENT, f"应逐步逼近但不得越过当前量程上界：{ledger.percent}"
-    emitted = len(seen)
-    clock.advance(4.0)
-    assert ledger.beat("模型正在设计分镜，请稍候...") is False, "percent 未变时不得发送事件"
-    assert len(seen) == emitted
+        assert ledger.beat("正在设计分镜") is True, "长调用期间不得静默"
+    assert len(seen) == emitted + 30
+    # 超过 WAIT_HINT_AFTER 后消息自带等待时长，文本仍在变（前两条为尚未到阈值的原样消息）
+    assert any("已等待" in message for message, _ in seen[2:])
+    assert seen[-1][0] != seen[-2][0], "心跳消息必须随等待时长变化"
     assert all(isinstance(percent, int) for _, percent in seen)
+
+
+def _drive_beats(total: int, done: int, *, ticks: int = 75, interval: float = 8.0,
+                min_interval: float = 4.0):
+    """用生产类 + 虚拟时钟按生产比例驱动心跳：8s tick × 75 次 = 600 秒长调用。"""
+    clock = _Clock()
+    events: List[tuple] = []
+    ledger = _ledger(lambda message, percent, data=None: events.append((clock.now, percent, message)),
+                     clock=clock, min_interval=min_interval)
+    ledger.add_total(total)
+    ledger.done = done
+    ledger.note("上一个里程碑")           # 把档位推到已完成工作量应有的值
+    for _ in range(ticks):
+        clock.advance(interval)
+        ledger.beat("正在检查人物站位连续性")
+    return ledger, events
+
+
+def test_heartbeat_never_goes_silent_during_long_call():
+    """T5d：真实比例（8s tick，600 秒）的长调用不得静默，审核复现过 560/592 秒静默。"""
+    for total, done, name in ((18, 17, "单集最后一步"), (54, 51, "三集并发最后几步")):
+        ledger, events = _drive_beats(total, done)
+        percents = [percent for _, percent, _ in events]
+        assert len(events) >= 70, f"{name}：600 秒长调用中心跳事件过少（静默）：{len(events)}"
+        gaps = [b[0] - a[0] for a, b in zip(events, events[1:]) if a[1] == b[1]]
+        assert max(gaps) <= 8.0 * 1.5, f"{name}：最大静默 {max(gaps):.0f}s 超阀"
+        assert percents == sorted(percents), f"{name}：进度倒退：{percents}"
+        assert all(isinstance(percent, int) for percent in percents)
+
+
+def test_heartbeat_does_not_prespend_finished_step():
+    """T5e：最后一步未完成时，心跳不得把进度推到该步完成后的 95%（审核复现过 40s 到 95）。"""
+    ledger, events = _drive_beats(18, 17)
+    percents = [percent for _, percent, _ in events]
+    band, ceiling = ledger._band(), ledger._beat_ceiling()
+    assert band == 95 - 5 and ceiling == 92, f"量程应只预支一半：band={band} ceiling={ceiling}"
+    assert max(percents) <= ceiling, f"心跳越过了预支上限：{max(percents)} > {ceiling}"
+    assert RUN_CAP not in percents, f"未完成任务却摸到 {RUN_CAP}%：{percents}"
+
+
+def test_overestimate_is_clawed_back_without_finish_jump():
+    """T5f：估算偏大（K̂=28、真实 2）时分母要收回，收尾档到 95、finish 跳变 ≤ 6 点。
+
+    调用顺序与生产一致：规划返回后先 add_total(差值) 修正分母，再报「已规划」里程碑。
+    """
+    seen: List[tuple] = []
+    ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
+
+    ledger.add_total(2 + 28)          # 初始权重：规划 1 + 估算 28 + 连续性 1
+    ledger.add_total(2 - 28)          # 真实片段数已知：差值为负
+    assert ledger.total == 1 + 2 + 1, f"分母未收回：{ledger.total}"
+    ledger.complete(1, "已规划片段")
+    planned = seen[-1][1]
+    ledger.complete(1, "片段 1")
+    ledger.complete(1, "片段 2")
+    ledger.complete(1, "连续性检查")
+    last_running = seen[-1][1]
+    ledger.finish()
+
+    assert planned > FLOOR_PERCENT, f"修正后的规划里程碑应反映真实工作量：{planned}"
+    assert last_running == RUN_CAP, f"收尾档位被虚高分母拉低：{last_running}"
+    assert 100 - last_running <= 6, f"收尾跳变过大：{last_running} → 100"
+
+
+def test_growth_keeps_progress_moving_not_frozen():
+    """T5g：分母增长时保住已挣得比例，下一个完成步必须继续推进而不被夹逼冻住。"""
+    seen: List[tuple] = []
+    ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
+
+    ledger.add_total(2 + 2)           # 估算只有 2 个片段
+    ledger.complete(1, "已规划片段")
+    planned = seen[-1][1]
+    ledger.add_total(16 - 2)          # 真实 16 个片段：分母放大
+    ledger.complete(1, "片段 1")
+    first_segment = seen[-1][1]
+
+    assert first_segment > planned, (
+        f"分母增长后进度被单调夹逼冻住：规划时 {planned}，首个片段完成时仍 {first_segment}"
+    )
+
+    # 走到分母用尽为止（本场景 85/18 > 1，每步至少应动 1 个百分点）
+    frozen = 0
+    previous = first_segment
+    while ledger.done < ledger.total:
+        ledger.complete(1, "片段")
+        if seen[-1][1] == previous:
+            frozen += 1
+        previous = seen[-1][1]
+    assert frozen == 0, f"逐片段完成仍有 {frozen} 步原地不动"
+    assert previous == RUN_CAP, f"收尾档位未到封顶：{previous}"
 
 
 def test_ledger_running_cap_and_finish():
@@ -474,6 +564,26 @@ def test_heartbeat_abandons_task_on_outer_cancellation():
 
     asyncio.run(scenario())
     assert cancelled["hit"] is True, "内部任务未被取消"
+
+
+# ─────────────── T11b：片段数估算器的口径 ───────────────
+
+
+def test_segment_estimator_matches_deterministic_packing():
+    """T11b：估算与兜底打包同源（不调模型）、长剧本贴近真实分段数、异常正文不抛错。"""
+    content = _episode_script(1, 24)["episodes"][0]["content"]
+    script = _episode_script(1, 24)
+    characters, settings_list = script["characters"], script["settings"]
+
+    _, units = StoryboardAgent._annotate_episode_script(content, characters, settings_list)
+    baseline = len(StoryboardAgent._fallback_segment_plan(1, units))
+    assert StoryboardAgent._estimate_segment_count(1, content, characters, settings_list) == baseline
+
+    # 真实剧本规模下不得像正则拆分那样报成 1 段（那是分母估小、finish 大跳的根源）
+    assert StoryboardAgent._estimate_segment_count(1, content, characters, settings_list) > 1
+
+    assert StoryboardAgent._estimate_segment_count(1, "", characters, settings_list) == 1
+    assert StoryboardAgent._estimate_segment_count(1, "没有场景也没有台词的一整块文本", [], []) >= 1
 
 
 # ─────────────── T12：编排器漏斗层（API 级）取证 ───────────────

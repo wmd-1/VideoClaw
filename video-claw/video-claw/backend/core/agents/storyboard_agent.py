@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -29,11 +30,15 @@ def _get_storyboard_prompt(name: str, lang: str = "zh") -> str:
 
 
 class _StoryboardProgress:
-    """分镜阶段的唯一进度源：工作量加权 + 单调夹逼 + 运行期整数封顶 95 + 心跳节流。
+    """分镜阶段的唯一进度源：工作量加权 + 单调夹逼 + 运行期整数封顶 95 + 心跳续命。
 
     记账单位 = 一次模型调用步（片段规划 1、每个片段设计 1、站位连续性检查 1）。
-    权重按「增量式」登记：先用纯文本拆分路径估算每集片段数把分母做准，规划返回
-    真实片段数后再补齐差值；分母只增不减，配合 percent 单调夹逼，任何时刻都不倒退。
+    权重按「增量式」登记：先用纯文本拆分路径估算每集片段数把分母做准，规划返回真实
+    片段数后按差值**双向**修正——估算偏大要收回分母（否则收尾档位低于真实进度、finish
+    大跳），估算偏小要放大分母并保住已挣得的比例（否则单调夹逼会把进度冻在原地）。
+
+    心跳只允许预支「下一步量程」的一部分，并在量程耗尽后继续按节流间隔更新消息（附
+    已等待时长）；长调用期间不得静默，也不得提前显示完成档。
 
     percent 只在这里计算并发送，调用方 MUST NOT 自行换算档位（原「按已完成集数推进」
     的第二进度源就是进度条钉在 10% 的根因：所有集并发跑，完成时刻挤在末尾）。
@@ -43,6 +48,8 @@ class _StoryboardProgress:
     FLOOR_PERCENT = 10     # 运行期下限（沿用原值）
     RUN_CAP = 95           # 运行期整数封顶，最后的 100 只由 finish 报
     RUN_SPAN = RUN_CAP - FLOOR_PERCENT
+    HEARTBEAT_SPEND = 0.5  # 心跳最多预支下一步量程的一半，不提前摸到完成档
+    WAIT_HINT_AFTER = 20.0  # 超过这个时长后，心跳消息附「已等待」计时，保证文字仍在动
 
     def __init__(self, report: Callable[..., None], *, min_interval: float = 0.0,
                  clock: Callable[[], float] = time.monotonic):
@@ -55,17 +62,24 @@ class _StoryboardProgress:
         self.percent = self.START_PERCENT
         self._last_tick_at: Optional[float] = None
         self._last_message: Optional[str] = None
+        self._step_started_at = clock()
 
     # ─────────── 记账 ───────────
 
     def add_total(self, count: int) -> None:
-        """增量登记新发现的模型调用步；分母只增不减（估算偏高时不回退 percent）。"""
+        """双向修正分母：只增不减会同时造成「收尾大跳」与「进度停滞」，两头都得管。"""
         try:
             growth = int(count)
         except (TypeError, ValueError):
             return
-        if growth > 0:
-            self.total += growth
+        if growth == 0:
+            return
+        earned = (self.done / self.total) if self.total > 0 else 0.0
+        # 分母不得缩到已完成步数以下：至少留一步未完成，免得把没做完的事报成做完
+        self.total = max(self.done + 1, self.total + growth)
+        if growth > 0 and earned > 0:
+            # 发现更多工作时保住已挣得的比例，否则 percent 单调夹逼会把进度冻住若干步
+            self.done = max(self.done, min(self.total, math.ceil(earned * self.total)))
 
     def complete(self, count: int = 1, message: str = "", data: Optional[dict] = None) -> int:
         """登记已完成的调用步；带消息时按新档位立即上报（里程碑不节流）。"""
@@ -92,27 +106,32 @@ class _StoryboardProgress:
         return self._emit(message, 100)
 
     def beat(self, message: str, suggested: Optional[float] = None) -> bool:
-        """心跳上报：把建议档位落到自己的量程内；无可推进量或落在节流窗口内则不发。"""
-        ceiling = max(self._band(), self._next_band())
-        if suggested is None:
-            target = heartbeat_ascent(float(self.percent), float(ceiling))
-        else:
-            target = float(suggested)
-        target = min(max(target, float(self.percent)), float(ceiling), float(self.RUN_CAP))
-        if int(target) <= self.percent:
-            return False
+        """心跳上报：只受节流窗口约束，percent 不变也照发（消息带已等待时长）。"""
         now = self._clock()
         if self._min_interval > 0 and self._last_tick_at is not None \
                 and now - self._last_tick_at < self._min_interval:
             return False
         self._last_tick_at = now
-        self._emit(message, int(target))
+
+        # 心跳与里程碑共用同一运行期下限，避免两套口径（否则会出现心跳低于里程碑档位）
+        base = max(float(self.percent), float(self._target()))
+        ceiling = max(base, float(self._beat_ceiling()))
+        if suggested is None:
+            target = heartbeat_ascent(base, ceiling)
+        else:
+            target = float(suggested)
+        target = int(min(max(target, base), ceiling, float(self.RUN_CAP)))
+
+        waited = now - self._step_started_at
+        text = message if waited < self.WAIT_HINT_AFTER \
+            else f"{message}，已等待 {self._format_wait(waited)}"
+        self._emit(text, target, repeat=True)
         return True
 
     def heartbeat_window(self) -> Tuple[float, float]:
-        """给 `_await_with_heartbeat` 的量程：当前档位 → 下一步完成应到的档位。"""
-        ceiling = max(self._band(), self._next_band())
-        return float(self.percent), float(max(self.percent, ceiling))
+        """给 `_await_with_heartbeat` 的量程：当前档位 → 本步允许预支到的档位。"""
+        base = max(float(self.percent), float(self._target()))
+        return base, max(base, float(self._beat_ceiling()))
 
     # ─────────── 内部 ───────────
 
@@ -122,24 +141,39 @@ class _StoryboardProgress:
         return min(self.RUN_CAP, self.FLOOR_PERCENT + int(self.RUN_SPAN * self.done / self.total))
 
     def _next_band(self) -> int:
-        """当前等待中的那一步完成后应到的档位：心跳 MUST NOT 越过未完成的工作。"""
+        """当前等待中的那一步完成后应到的档位。"""
         if self.total <= 0:
             return self.FLOOR_PERCENT
         pending = min(self.done + 1, self.total)
         return min(self.RUN_CAP, self.FLOOR_PERCENT + int(self.RUN_SPAN * pending / self.total))
 
+    def _beat_ceiling(self) -> int:
+        """心跳可预支的上限：只吃掉下一步量程的一半，最后一步也不会提前显示 95%。"""
+        band = self._band()
+        return band + int((self._next_band() - band) * self.HEARTBEAT_SPEND)
+
     def _target(self) -> int:
         return max(self.FLOOR_PERCENT, self._band())
 
-    def _emit(self, message: str, percent: int, data: Optional[dict] = None) -> int:
+    @staticmethod
+    def _format_wait(seconds: float) -> str:
+        whole = int(seconds)
+        if whole < 60:
+            return f"{whole} 秒"
+        return f"{whole // 60} 分 {whole % 60:02d} 秒"
+
+    def _emit(self, message: str, percent: int, data: Optional[dict] = None,
+              repeat: bool = False) -> int:
         # 单一进度源的三条不变量：整数、只前进、运行期不越过 95（100 只来自 finish）。
         resolved = int(max(self.percent, min(100, int(percent))))
         if resolved > self.RUN_CAP and 100 != resolved:
             resolved = self.RUN_CAP
-        if data is None and resolved == self.percent and message == self._last_message:
-            return self.percent
+        if not repeat and data is None and resolved == self.percent and message == self._last_message:
+            return self.percent      # 里程碑的重复上报去重（心跳走 repeat=True，不受此限）
         self.percent = resolved
         self._last_message = message
+        if not repeat:
+            self._step_started_at = self._clock()   # 只有真实工作量事件才重置等待计时
         self._report(message, resolved, data)
         return resolved
 
@@ -1184,7 +1218,7 @@ class StoryboardAgent(AgentInterface):
                     label=f"第 {ep_n} 集人物站位连续性检查",
                     max_retries=1,
                 )
-                review = await (heartbeat(query, f"第 {ep_n} 集正在检查人物站位连续性，请稍候...")
+                review = await (heartbeat(query, f"第 {ep_n} 集正在检查人物站位连续性，模型仍在返回")
                                 if heartbeat else query)
                 applied = self._apply_staging_continuity_patches(segments, review)
                 issues = review.get("issues") if isinstance(review, dict) else []
@@ -1390,7 +1424,7 @@ class StoryboardAgent(AgentInterface):
                 sid,
                 planning_hint=planning_hint,
             ),
-            f"第 {ep_n} 集正在划分片段，请稍候...",
+            f"第 {ep_n} 集正在划分片段，模型仍在返回",
         )
         if not plans:
             raise Exception(f"第 {ep_n} 集片段规划失败")
@@ -1419,7 +1453,7 @@ class StoryboardAgent(AgentInterface):
         for finished in asyncio.as_completed(tasks):
             plan_index, segment = await _heartbeat(
                 finished,
-                f"第 {ep_n} 集分镜设计中（已返回 {len(designed)}/{len(plans)}），请稍候...",
+                f"第 {ep_n} 集分镜设计中（已返回 {len(designed)}/{len(plans)}），模型仍在返回",
             )
             designed.append((int(segment.get("segment_number") or 0), plan_index, segment))
             if progress is not None:
@@ -1534,13 +1568,19 @@ class StoryboardAgent(AgentInterface):
     def _estimate_segment_count(
         cls, ep_n: int, script_text: str, characters: List[dict], settings: List[dict]
     ) -> int:
-        """进度权重用的片段数估算：走已有的纯文本拆分路径，不调模型。
+        """进度权重用的片段数估算：标注 + 确定性打包，全程不调模型。
 
-        该路径本身与模型输出同构（Segment -> Shots），拿它的条数当分母初值可以把
-        “真实片段数”的误差压小；估算失败只影响进度精度，不得影响执行，因此异常一律兜底为 1。
+        口径与 `_plan_episode_segments` 的兜底路径同源（同一份单元拆分 + 同一套 15s 打包规则），
+        所以在模型返回之前就能给出贴近真实片段数的分母。7 个已跑过模型的历史会话实测：
+        本估算平均偏差 -0.4 个片段（范围 -7…+4，3 次命中），而沿用正则拆分是
+        平均 -6.1（范围 -16…+5）——分母估小会把收尾档位拉到 95 以下、给 finish 留下大跳，
+        故不用后者。估算只影响进度精度，任何异常一律兜底为 1，不得影响本轮执行。
         """
         try:
-            count = len(cls._build_segments_by_regex(ep_n, script_text, characters, settings))
+            _, units = cls._annotate_episode_script(script_text, characters, settings)
+            if not units:
+                return 1
+            count = len(cls._fallback_segment_plan(ep_n, units))
         except Exception as exc:  # noqa: BLE001 - 估算不参与产物构造，不得抹掉本轮执行
             logger.warning("[Storyboard] Episode %s segment estimate failed: %s", ep_n, exc)
             count = 0
