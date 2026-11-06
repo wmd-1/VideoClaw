@@ -781,7 +781,11 @@ export default function WorkflowPanel() {
       // 恢复项目参数：会话级生成配置统一从 meta 中读取，兼容少量旧扁平字段。
       const meta: SessionMeta = status.meta || {};
       const s: SessionMeta = Object.keys(meta).length > 0 ? meta : (status as unknown as SessionMeta);
-      if (s.idea || s.user_textbox_input) {
+      // 水合闸门不能用 idea / user_textbox_input 是否为空做代理判据：上传剧本创建的会话
+      // 这两个字段就是空串（正文在 file_path 里），会让 projectParams 停在 null、顶栏
+      // "生成配置"（含模型选择与参考图上限提示）整块消失。改为"meta 有键就水合"，
+      // 旧扁平会话无 meta 时仍走原来的 idea 判据。
+      if (Object.keys(meta).length > 0 || s.idea || s.user_textbox_input) {
         // Legacy session compatibility: old sessions only stored one video_model, so hydrate it as the first-frame model.
         const restoredFirstFrameVideoModel = s.video_first_frame_model || s.video_model || '';
         commitSessionView(token, {
