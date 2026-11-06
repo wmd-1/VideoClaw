@@ -361,8 +361,11 @@ STATUS_RECONFIRM = "reconfirm"
 # 标记时写入 stage_progress 的过期原因（UI 元数据，阶段执行时被整体覆盖清除）
 STALE_REASON_SCRIPT = "script_structure_changed"
 
-# 执行期间用户可编辑、结束合并时优先保留的条目字段（全量路径）
-_USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt", "manual_prompt")
+# 执行期间用户可编辑、结束合并与运行中展示层均优先保留的条目字段。
+# `status` 同样在内：执行期间上传会把条目改判 done，不收尾保护则会被本轮 payload 标回 failed
+# （有图却显示失败+重试，诱导不必要的模型调用；openspec: running-stage-write-visibility D9）。
+_USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt", "manual_prompt",
+                     "status")
 
 # 后台单条重生成时按阶段保护的用户手改字段（A1b/B2）。
 # 只纳入“存在用户编辑入口且保留用户值不使下游语义失真”的字段：
@@ -678,7 +681,8 @@ class WorkflowEngine:
     def _overlay(self, session_id: str, stage: str) -> Dict[str, Any]:
         with self._state_lock:
             return self._overlays.setdefault(session_id, {}).setdefault(
-                stage, {"progress": None, "preview": None, "items": {}}
+                stage, {"progress": None, "preview": None, "items": {},
+                        "base": None, "baseline_fields": None}
             )
 
     def _clear_overlay(self, session_id: str, stage: str) -> None:
@@ -695,8 +699,8 @@ class WorkflowEngine:
         """单条目事件合入产物副本（运行覆盖层与后台重生成提交共用同一口径）。
 
         `baseline_fields` 为执行开始时的字段快照（`{container: {id: {field: value}}}`）：
-        提供时，执行期间被改过的 `selected` 保留当前值；不提供（如运行中覆盖层）
-        则以本次结果为准。
+        提供时，执行期间被改过的 `selected` 保留当前值；不提供（旧数据/降级路径）
+        则以本次结果为准。运行中覆盖层与后台重生成均传同一份基线（design D5）。
         """
         item_type = asset_update.get("type")
         item_id = asset_update.get("id")
@@ -735,6 +739,70 @@ class WorkflowEngine:
                 new_item[key] = copy.deepcopy(asset_update[key])
         items.append(new_item)
 
+    @staticmethod
+    def _merge_overlay_preview(stage: str, committed: Dict[str, Any], preview: Any,
+                               base: Optional[Dict[str, Any]]) -> Any:
+        """运行中预览合入已提交视图：执行期间的用户写入不得被预览旧值遮蔽（design D3）。
+
+        字段与条目集合的判定口径与收尾层 `_prefer_user_edits` 保持一致：
+        - 已提交值偏离基线 ⇒ 执行期间用户写入 ⇒ 取已提交值；
+        - 基线缺该字段 ⇒ 仅当已提交值非 None 才算用户新增（同收尾层，避免把
+          `species: null` 这类键带进对外产物）；`_field_edited_by_user` 在基线缺字段时
+          返回 False，因此不能只调它；
+        - 与基线一致 ⇒ 保留预览值，运行中的 pending/running 实时进度不回退。
+        只处理 `ITEM_CONTAINERS` 列出的条目容器；`storyboard` 的剧集/片段不属条目容器
+        （预览带 persist 与已提交同源，字段比较分不清谁新，design D4）。
+        预览已经 `map_media` + `strip_internal`，与已提交视图同为 public_path 形态，可直接比较；
+        派生字段（`needs_regeneration`/`prompt_source`）由 `_view_dict` 末尾 annotate 重算，不搬运。
+        """
+        if not isinstance(preview, dict):
+            return copy.deepcopy(preview)
+        merged = copy.deepcopy(preview)
+        if not isinstance(base, dict):
+            # 无基线（旧数据/降级路径）：无法判定手改，维持改动前的"预览整体呈现"
+            return merged
+        committed = committed if isinstance(committed, dict) else {}
+        for container in workflow_store.ITEM_CONTAINERS.get(stage, ()):
+            preview_items = merged.get(container)
+            committed_items = committed.get(container)
+            if not isinstance(preview_items, list) or not isinstance(committed_items, list):
+                continue
+            base_by_id = {
+                item.get("id"): item for item in base.get(container) or []
+                if isinstance(item, dict) and item.get("id")
+            }
+            committed_by_id = {
+                item.get("id"): item for item in committed_items
+                if isinstance(item, dict) and item.get("id")
+            }
+            for item in preview_items:
+                if not isinstance(item, dict):
+                    continue
+                current = committed_by_id.get(item.get("id"))
+                if not isinstance(current, dict):
+                    continue
+                original = base_by_id.get(item.get("id")) or {}
+                for field in _USER_EDIT_FIELDS:
+                    if field not in current:
+                        continue
+                    if field not in original:
+                        if current[field] is not None:
+                            item[field] = copy.deepcopy(current[field])
+                    elif WorkflowEngine._field_edited_by_user(current, original, field):
+                        item[field] = copy.deepcopy(current[field])
+                merged_versions = WorkflowEngine._merge_asset_versions(
+                    current.get("versions"), item.get("versions"),
+                )
+                if merged_versions or "versions" in item:
+                    item["versions"] = merged_versions
+            # 执行期间新写入的条目（committed 有、预览无、基线也无）MUST 可见；
+            # 基线有而预览无 = 本轮主动排除，MUST NOT 回填（同 _prefer_user_edits 判据）
+            present = {item.get("id") for item in preview_items if isinstance(item, dict)}
+            for item_id, current in committed_by_id.items():
+                if item_id not in present and item_id not in base_by_id:
+                    preview_items.append(copy.deepcopy(current))
+        return merged
+
     def _view_dict(self, state: WorkflowState, annotate: bool = True) -> Dict[str, Any]:
         data = state.to_dict()
         with self._state_lock:
@@ -743,14 +811,20 @@ class WorkflowEngine:
         for stage, overlay in overlays.items():
             if overlay.get("progress"):
                 data["stage_progress"][stage] = overlay["progress"]
-            artifact = overlay.get("preview")
-            if artifact is None and overlay.get("items"):
-                artifact = copy.deepcopy(data["artifacts"].get(stage) or {})
+            committed = copy.deepcopy(data["artifacts"].get(stage) or {})
+            preview = overlay.get("preview")
+            if preview is not None:
+                artifact = self._merge_overlay_preview(stage, committed, preview, overlay.get("base"))
+            elif overlay.get("items"):
+                artifact = committed
+            else:
+                artifact = None
             if artifact is not None:
-                # 运行中覆盖层不带基线：先显示本轮结果，收尾由 _prefer_user_edits /
-                # 基线保护回正（用户手改不会因此在落库时丢，但运行中可能短暂看到新图）。
-                for update in overlay.get("items", {}).values():
-                    self._merge_asset_update(artifact, update)
+                # 预览与条目事件都按执行开始基线合入：执行期间的用户写入即时可见，
+                # 且不会被晚到的本轮结果顶掉（design D3/D5；落库口径仍由收尾层保证）。
+                if isinstance(artifact, dict):
+                    for update in overlay.get("items", {}).values():
+                        self._merge_asset_update(artifact, update, overlay.get("baseline_fields"))
                 data["artifacts"][stage] = artifact
         if error and not data.get("error"):
             data["error"] = error
@@ -2304,6 +2378,15 @@ class WorkflowEngine:
         overlay = self._overlay(sid, stage_key)
         with self._state_lock:
             overlay["progress"] = progress
+            # 运行中覆盖层的基线：本轮执行开始时的已提交快照，预览与条目事件共用（design D2）。
+            # 只在本阶段覆盖层首次触达时登记：每份预览重取基线会让"上一次预览之后的用户写入"
+            # 因与基线相等而被判为"无变化"，遮蔽会重新出现。
+            # 字段基线走 `_stage_baseline(run)`（同一执行内只算一次并缓存在 run 上），与后台重生成
+            # 事件合入共用同一份，不重复计算。
+            if overlay.get("base") is None:
+                base = copy.deepcopy(run.start_artifacts.get(stage_key))
+                overlay["base"] = base if isinstance(base, dict) else {}
+                overlay["baseline_fields"] = self._stage_baseline(run)
 
         forwarded = data
         if isinstance(data, dict) and run.publisher is not None:
@@ -2580,7 +2663,7 @@ class WorkflowEngine:
     def _prefer_user_edits(stage: str, base: Any, latest: Any, payload: Any) -> Any:
         """执行期间用户对同条目的修改胜出：晚到的模型结果只补充版本，不覆盖用户字段。
 
-        注意：这是**全量路径**的保护，字段集合为 `_USER_EDIT_FIELDS`（6 个）。
+        注意：这是**全量路径**的保护，字段集合为 `_USER_EDIT_FIELDS`（含条目完成状态 `status`）。
         后台单条重生成不走这里，只保护 `_BACKGROUND_PROTECTED_FIELDS[stage]`
         （当前仅 `character_design.description`）；两者的差异是有意保留的，改动前
         先确认下游语义（name 是匹配键、species 决定路由）。

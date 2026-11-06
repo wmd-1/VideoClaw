@@ -380,6 +380,12 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 | 上传自定义素材 | `POST .../artifact/{stage}/upload_image` | 第 2 阶段角色/场景图、第 4 阶段参考图 |
 | 部分重做 | `POST /api/project/{sid}/intervene` | 指定条目重生成、单集重拼等（`modifications` 按阶段定义） |
 
+阶段执行期间的写入可见性（openspec: `running-stage-read-model`）：
+
+- 某阶段正在执行时，对该阶段条目的写入（上传图片、选版本、改描述）MUST 在写响应、`GET /artifact`、`GET /status` 三处立即反映；运行中展示层（条目清单预览、条目事件）不得遮蔽执行期间已提交的用户写入。该约束只作用于“正在执行的阶段自身的产物”，不跳阶段生效。
+- 分镜设计（`storyboard`）阶段的剧集/片段是结构化文本产物，不属条目容器，不在上述约束范围内。
+- 前端闸门按条目判定：某条目正在为本条调图时，该行的「上传照片」置灰并提示“本条生成中...”；同阶段其他条目、已完成/失败/等待中的条目仍可上传。闸门只是避免无效动作，不替代上述可见性保证。
+
 ### 10.3 并发与稳定性
 
 - 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；台词/情节评估在 `enable_concurrency=true` 时并行（成功路径调用数不变；并行失败可能多一次调用），false 时串行；

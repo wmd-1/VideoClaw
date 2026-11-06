@@ -284,18 +284,27 @@ function SceneRow({
               {isFailed ? '点击重试' : hasImage ? '重新生成' : '生成'}
             </button>
           )}
-          <label className={`ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            isUploading
-              ? 'text-gray-400 bg-gray-100 cursor-wait'
-              : 'text-gray-600 bg-gray-100 hover:bg-gray-200 cursor-pointer'
-          }`}>
+          {/* 上传闸门按条目判定（openspec: running-stage-write-visibility D7）：
+              本条正在调图时置灰（避免在注定要等的行上做无效动作）；
+              同片段的其他行与已完成/失败行仍可用，运行中的写入可见性由后端读模型保证。 */}
+          <label
+            className={`ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              isUploading
+                ? 'text-gray-400 bg-gray-100 cursor-wait'
+                : isRunning
+                  ? 'text-gray-400 bg-gray-100 cursor-not-allowed'
+                  : 'text-gray-600 bg-gray-100 hover:bg-gray-200 cursor-pointer'
+            }`}
+            aria-disabled={isRunning || undefined}
+            title={isRunning ? '本片段正在生成图片，完成后可上传自有图片' : undefined}
+          >
             {isUploading ? <Loader className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-            {isUploading ? '上传中...' : '上传照片'}
+            {isUploading ? '上传中...' : isRunning ? '本条生成中...' : '上传照片'}
             <input
               type="file"
               accept="image/*"
               className="hidden"
-              disabled={isUploading}
+              disabled={isUploading || isRunning}
               onChange={e => {
                 const file = e.target.files?.[0];
                 e.currentTarget.value = '';
