@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen-Image-2.1 model card — offline copy</title>
+<meta name="description" content="Offline copy of https://huggingface.co/Qwen/Qwen-Image-2.1">
+<style>
+/* --- base.css --- */
+/* ============================================================ tokens */
+:root {
+  --brand: #2563eb;
+  --output-accent: var(--brand);
+  --bg: #ffffff;
+  --bg-raised: #fbfbfc;
+  --well: #f6f7f9;
+  --code-bg: #f8f9fb;
+  --text: #212226;
+  --text-strong: #0d0e11;
+  --muted: #6c6f77;
+  --line: #e6e7ea;
+  --line-strong: #d3d5da;
+  --shadow: 0 1px 2px rgba(16, 18, 22, .05), 0 8px 24px -12px rgba(16, 18, 22, .12);
+  --topbar-h: 60px;
+  --radius: 10px;
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --note: #2563eb; --note-bg: #eff5ff;
+  --warn: #b45309; --warn-bg: #fff8ec;
+  --info: #0e7490; --info-bg: #ecfbff;
+  --tip: #15803d;  --tip-bg: #effcf3;
+  --tok-comment: #8a8f98; --tok-key: #a626a4; --tok-str: #0a7d43;
+  --tok-num: #b3541c; --tok-fn: #2c6bce; --tok-var: #9c3b3b; --tok-meta: #6b7280;
+}
+html[data-theme="dark"] {
+  --bg: #0d0e11;
+  --bg-raised: #14161a;
+  --well: #17191e;
+  --code-bg: #101216;
+  --text: #dcdde1;
+  --text-strong: #f4f5f7;
+  --muted: #8b8f99;
+  --line: #26282e;
+  --line-strong: #33363d;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -14px rgba(0, 0, 0, .7);
+  --note-bg: #101a2e; --warn-bg: #221a0d; --info-bg: #0c1e24; --tip-bg: #0f1f14;
+  --note: #7aa2f7; --warn: #e0a34a; --info: #56c2d6; --tip: #7dd89b;
+  --tok-comment: #6f747d; --tok-key: #c678dd; --tok-str: #98c379;
+  --tok-num: #d19a66; --tok-fn: #61afef; --tok-var: #e06c75; --tok-meta: #8b8f99;
+}
+
+/* ============================================================ base */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 15px; line-height: 1.7;
+  font-feature-settings: "cv02", "cv03";
+  -webkit-font-smoothing: antialiased;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--brand); color: #fff; padding: 8px 14px; border-radius: 0 0 8px 0;
+}
+.skip:focus { left: 0; }
+::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+
+/* ============================================================ topbar */
+.topbar {
+  position: sticky; top: 0; z-index: 40; height: var(--topbar-h);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-inner {
+  height: 100%; max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: flex; align-items: center; gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.brand-title {
+  font-weight: 600; font-size: 14.5px; color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.filter {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px;
+  background: var(--well); border: 1px solid var(--line); border-radius: 8px; color: var(--muted);
+}
+.filter svg { width: 14px; height: 14px; flex: none; }
+.filter input { border: 0; background: none; outline: none; font: inherit; font-size: 13px; color: var(--text); width: 150px; }
+.filter kbd {
+  font: 600 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 3px 5px; background: var(--bg);
+}
+.tool {
+  font: inherit; font-size: 13px; color: var(--muted); background: var(--well);
+  border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 11px; cursor: pointer;
+  display: inline-flex; align-items: center; text-decoration: none;
+}
+.tool:hover { color: var(--text-strong); border-color: var(--line-strong); }
+.tool svg { width: 16px; height: 16px; }
+#theme-toggle .ico-moon { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-sun { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-moon { display: block; }
+@media (max-width: 860px) { .filter, #toc-toggle { display: none; } }
+
+/* ============================================================ layout */
+.shell {
+  max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 40px;
+  align-items: start;
+}
+.sidebar { position: sticky; top: var(--topbar-h); max-height: calc(100vh - var(--topbar-h)); overflow: auto; padding: 28px 0 40px; scrollbar-width: thin; }
+.main { min-width: 0; padding-bottom: 24px; }
+.toc-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+.toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--line); }
+.toc li { margin: 0; }
+.toc a {
+  display: block; padding: 5px 0 5px 13px; margin-left: -1px; font-size: 13px; line-height: 1.45;
+  color: var(--muted); text-decoration: none; border-left: 2px solid transparent;
+}
+.toc a:hover { color: var(--text-strong); }
+.toc a.is-active { color: var(--brand); border-left-color: var(--brand); font-weight: 500; }
+.toc-l3 a { padding-left: 26px; font-size: 12.5px; }
+.toc-l4 a { padding-left: 38px; font-size: 12.5px; }
+body.toc-open .sidebar { display: block; }
+@media (max-width: 1100px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: fixed; inset: var(--topbar-h) auto 0 0; width: 280px; background: var(--bg-raised); border-right: 1px solid var(--line); padding: 20px 16px; transform: translateX(-100%); transition: transform .18s ease; z-index: 30; }
+  body.toc-open .sidebar { transform: none; box-shadow: var(--shadow); }
+}
+@media (min-width: 1101px) { .sidebar { display: block; } }
+
+/* ============================================================ prose */
+.prose { max-width: 780px; margin: 0 auto; padding: 30px 0 8px; }
+.prose > *:first-child { margin-top: 0; }
+.prose h1, .prose h2, .prose h3, .prose h4 { color: var(--text-strong); font-weight: 600; scroll-margin-top: calc(var(--topbar-h) + 18px); }
+.prose h1 { font-size: 31px; line-height: 1.25; letter-spacing: -.02em; margin: 0 0 10px; }
+.prose h2 { font-size: 22px; line-height: 1.35; margin: 46px 0 14px; padding-top: 20px; border-top: 1px solid var(--line); }
+.prose h3 { font-size: 17.5px; margin: 32px 0 10px; }
+.prose h4 { font-size: 15.5px; margin: 26px 0 8px; }
+.prose .heading { position: relative; }
+.heading-anchor { position: absolute; left: -22px; top: .18em; width: 16px; color: var(--muted); opacity: 0; transition: opacity .12s; }
+.heading-anchor svg { width: 15px; height: 15px; }
+.heading:hover .heading-anchor, .heading-anchor:focus { opacity: 1; }
+.prose p, .prose ul, .prose ol, .prose blockquote { margin: 14px 0; }
+.prose > h1 + blockquote {
+  font-size: 17px; line-height: 1.6; color: var(--muted); border: 0; padding: 0; margin: 0 0 26px; background: none;
+}
+.prose ul, .prose ol { padding-left: 24px; }
+.prose li { margin: 6px 0; }
+.prose li::marker { color: var(--muted); }
+.prose strong { color: var(--text-strong); font-weight: 600; }
+.prose em { font-style: italic; }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+.prose blockquote { border-left: 2px solid var(--line-strong); padding-left: 15px; color: var(--muted); }
+.prose :not(pre) > code {
+  font-family: var(--mono); font-size: .855em; background: var(--well);
+  border: 1px solid var(--line); border-radius: 5px; padding: .1em .35em; color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+html[data-theme="dark"] .prose :not(pre) > code { background: #1b1e24; border-color: #2a2d34; }
+.prose a.link { color: var(--brand); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+.prose a.link:hover { border-bottom-color: var(--brand); }
+.prose a.external svg { width: .78em; height: .78em; display: inline-block; vertical-align: baseline; margin-left: 2px; }
+.prose img { max-width: 100%; border-radius: var(--radius); border: 1px solid var(--line); }
+.prose details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 14px 0; background: var(--bg-raised); }
+.prose summary { cursor: pointer; font-weight: 500; color: var(--text-strong); }
+.tablewrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: var(--radius); scrollbar-width: thin; }
+/* :where() keeps these at zero specificity so a doc's own stylesheet (SGLang ships
+   table rules in its Mintlify custom.css) still wins where it defines them. */
+:where(.prose) table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+:where(.prose) thead th { text-align: left; font-weight: 600; color: var(--text-strong); background: var(--well); padding: 9px 13px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+:where(.prose) tbody td { padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+:where(.prose) tbody tr:last-child td { border-bottom: 0; }
+:where(.prose) tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--well) 45%, transparent); }
+
+/* ============================================================ tabs */
+.tabs { margin: 22px 0; }
+.tablist { display: flex; gap: 2px; list-style: none; margin: 0; padding: 0 0 0 2px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.tab-btn {
+  font: inherit; font-size: 13.5px; white-space: nowrap; cursor: pointer;
+  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 8px 13px; color: var(--muted); border-radius: 6px 6px 0 0;
+}
+.tab-btn:hover { color: var(--text-strong); background: var(--well); }
+.tab-btn.is-active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 500; }
+.tab-panel { padding: 4px 0 0; }
+.tab-panel > .prose-inner > *:first-child { margin-top: 14px; }
+
+/* ============================================================ callouts */
+.callout { display: grid; grid-template-columns: 22px 1fr; gap: 0 11px; margin: 20px 0; padding: 14px 16px; border-radius: var(--radius); border: 1px solid var(--line); border-left: 3px solid var(--tone, var(--note)); background: var(--tone-bg, var(--note-bg)); }
+.callout-head { grid-column: 2; display: flex; align-items: center; gap: 7px; }
+.callout-icon { grid-row: span 2; width: 20px; height: 20px; color: var(--tone, var(--note)); }
+.callout-icon svg { width: 20px; height: 20px; }
+.callout-title { font-weight: 600; font-size: 13.5px; color: var(--tone, var(--note)); }
+.callout-body { grid-column: 2; font-size: 14px; color: var(--text); }
+.callout-body > *:first-child { margin-top: 6px; }
+.callout-body > *:last-child { margin-bottom: 0; }
+.callout-warning { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.callout-info { --tone: var(--info); --tone-bg: var(--info-bg); }
+.callout-tip { --tone: var(--tip); --tone-bg: var(--tip-bg); }
+
+/* ============================================================ code blocks */
+.codeblock { margin: 18px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--code-bg); overflow: hidden; }
+.codebar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 13px; background: var(--well); border-bottom: 1px solid var(--line); }
+.codelang { font: 500 11.5px/1 var(--mono); letter-spacing: .02em; color: var(--muted); }
+.codehint { font: 500 10.5px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); opacity: .7; }
+.copy-btn { margin-left: auto; width: 26px; height: 26px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.copy-btn:hover { color: var(--text-strong); background: color-mix(in srgb, var(--line) 55%, transparent); }
+.copy-btn svg { width: 15px; height: 15px; }
+.codeblock pre { margin: 0; padding: 14px 16px; overflow-x: auto; background: none; scrollbar-width: thin; }
+.codeblock code, .codeblock pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.65; }
+.codeblock pre { color: var(--text-strong); }
+pre code { display: block; }
+/* highlight.js tokens */
+.hljs-comment, .hljs-quote { color: var(--tok-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: var(--tok-key); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: var(--tok-str); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--tok-num); }
+.hljs-title, .hljs-function, .hljs-title.function_, .hljs-section { color: var(--tok-fn); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-selector-attr { color: var(--tok-var); }
+.hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tok-fn); }
+.hljs-meta, .hljs-meta .hljs-keyword { color: var(--tok-meta); }
+.hljs-deletion { color: var(--tok-var); }
+.hljs-name, .hljs-tag { color: var(--tok-key); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+/* ============================================================ footer */
+.page-footer { max-width: 780px; margin: 40px auto 0; padding: 18px 0 60px; border-top: 1px solid var(--line); }
+.page-footer p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.page-footer a { color: var(--brand); text-decoration: none; }
+
+/* ============================================================ print */
+@media print {
+  .topbar, .sidebar, .copy-btn, .heading-anchor { display: none !important; }
+  .shell { display: block; padding: 0; }
+  .prose { max-width: none; }
+  .tab-panel[hidden] { display: block !important; }
+  .tabs { break-inside: avoid; }
+  body { background: #fff; color: #000; }
+}
+
+</style>
+<style>:root{--brand:#5b4bd6;--output-accent:#5b4bd6}</style>
+
+<style>
+/* --- offline-copy additions (refresh 2026-11-04) --- */
+.panels-expand {
+  font: inherit; font-size: 12.5px; margin: 0 0 10px; padding: 4px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--bg-raised);
+  color: var(--muted); cursor: pointer;
+}
+.panels-expand:hover { color: var(--text-strong); background: var(--well); }
+.tab-panel[data-panel-title]::before { content: none; }
+body[data-all-panels="on"] .tab-panel[hidden] { display: block !important; }
+body[data-all-panels="on"] .tab-panel[data-panel-title]::before {
+  content: attr(data-panel-title); display: block; font-size: 12.5px; font-weight: 600;
+  color: var(--brand); letter-spacing: .02em; margin: 12px 0 -4px;
+}
+.copy-btn.is-copied::after { content: '✓'; margin-left: 4px; color: var(--tip); }
+.snapshot-note { border-left: 3px solid var(--warn); }
+</style>
+</head>
+
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-badge">Qwen (HF mirror)</span>
+      <span class="brand-title">Qwen-Image-2.1 — 官方模型卡</span>
+    </div>
+    <div class="topbar-tools">
+      <label class="filter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="tocfilter" type="search" placeholder="Filter sections" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+      <button class="tool" id="toc-toggle" type="button" aria-expanded="false">Sections</button>
+      <button class="tool" id="theme-toggle" type="button" aria-label="Toggle dark mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path class="ico-sun" d="M12 4.5V3m0 18v-1.5M6 12a6 6 0 1 0 12 0 6 6 0 0 0-12 0Zm-1.4-4.9L3.2 5.7m16.1 14.9-1.4-1.4M4.5 12H3m18 0h-1.5M5.7 18.4l1.4-1.4M17 7l1.4-1.4"/><path class="ico-moon" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg></button>
+      <a class="tool tool-link" href="https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3" target="_blank" rel="noreferrer noopener">View live</a>
+    </div>
+  </div>
+</header>
+<div class="shell">
+  <aside class="sidebar"><nav class="toc" id="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul>
+      <li class="toc-l2"><a href="#introduction" data-target="introduction">Introduction</a></li>
+      <li class="toc-l2"><a href="#quick-start" data-target="quick-start">Quick Start</a></li>
+      <li class="toc-l3"><a href="#installation" data-target="installation">Installation</a></li>
+      <li class="toc-l3"><a href="#text-to-image" data-target="text-to-image">Text-to-Image</a></li>
+      <li class="toc-l3"><a href="#image-editing" data-target="image-editing">Image Editing</a></li>
+      <li class="toc-l3"><a href="#transparent-image-generation-rgba" data-target="transparent-image-generation-rgba">Transparent Image Generation (RGBA)</a></li>
+      <li class="toc-l3"><a href="#supported-aspect-ratios" data-target="supported-aspect-ratios">Supported Aspect Ratios</a></li>
+      <li class="toc-l3"><a href="#memory-optimization" data-target="memory-optimization">Memory Optimization</a></li>
+      <li class="toc-l2"><a href="#showcase" data-target="showcase">Showcase</a></li>
+      <li class="toc-l2"><a href="#license" data-target="license">License</a></li>
+      <li class="toc-l2"><a href="#feedback" data-target="feedback">Feedback</a></li>
+</ul></nav></aside>
+  <main class="main">
+    <article class="prose" id="content">
+
+<div class="callout callout-info snapshot-note"><div class="callout-head"><span class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"></path></svg></span><span class="callout-title">Offline copy</span></div><div class="callout-body"><p>Captured 2026-11-06 from <a class="link external" href="https://huggingface.co/Qwen/Qwen-Image-2.1" target="_blank" rel="noreferrer noopener">https://huggingface.co/Qwen/Qwen-Image-2.1</a>.</p></div></div>
+
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">YAML</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-yaml"><code><span class="hljs-attr">license</span>: other
+<span class="hljs-attr">license_name</span>: qwen-research
+<span class="hljs-attr">license_link</span>: LICENSE
+<span class="hljs-attr">pipeline_tag</span>: text-to-image
+<span class="hljs-attr">tags</span>:
+  - diffusers
+  - qwen
+  - image-generation
+  - image-editing
+  - rgba</code></pre></figure>
+<blockquote>
+<p>（上为模型卡 YAML front matter，原样保留）</p>
+</blockquote>
+<blockquote>
+<p><strong>本地存档说明（非上游内容）</strong>：Saved from https://huggingface.co/Qwen/Qwen-Image-2.1 (raw <code>README.md</code>) on 2026-11-06。huggingface.co 在本环境直连超时，正文取自镜像 <code>https://hf-mirror.com/Qwen/Qwen-Image-2.1/raw/main/README.md</code>， 与 HF 仓库同一文件。因镜像 raw 接口本次返回在工具内联而非落盘文件，本文件为逐段转录； 已用镜像模型页 <code>https://hf-mirror.com/Qwen/Qwen-Image-2.1</code> 二次核对，Introduction / Quick Start / RGBA / Supported Aspect Ratios / Memory Optimization / Showcase / License / Feedback 各节文字与代码 块内容均一致。除本段说明外未作改写。配套部署侧文档见同目录 <code>vLLM-Omni-Recipe-Qwen-Image-2.1.md</code>。 与 vLLM-Omni 文档的口径差异（本地核对，供选型时注意）：模型卡写 <strong>支持最多 10 张参考图</strong>，而 vLLM-Omni 实现上限为 <strong>4 张、第 5 张返回 400</strong>；模型卡推荐 <code>num_inference_steps=40</code>，vLLM-Omni 服务端默认 50； 模型卡分辨率预设最大到 2752×1536 / 2048×2048，未给出 4K（3840×2160）档位；模型卡的 diffusers 示例 不传 <code>true_cfg_scale</code>（走默认），与部署侧“默认值 1.0 / 4.0”的两份口径冲突无关。</p>
+</blockquote>
+<p align="center">
+    <img src="https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/image2.1/logo.png" width="400"/>
+</p>
+<p align="center">
+    🤖 <a href="https://modelscope.cn/models/Qwen/Qwen-Image-2.1">ModelScope</a>&nbsp;&nbsp;|
+    &nbsp;&nbsp;🤗 <a href="https://huggingface.co/Qwen/Qwen-Image-2.1">HuggingFace</a>&nbsp;&nbsp;|
+    &nbsp;&nbsp;📑 <a href="https://qwen.ai/blog?id=qwen-image-2.1">Blog</a>&nbsp;&nbsp;|
+    &nbsp;&nbsp;🖥️ <a href="https://huggingface.co/spaces/Qwen/Qwen-Image-2.1">Demo</a>&nbsp;&nbsp;|
+    &nbsp;&nbsp;🫨 <a href="https://discord.gg/BEYSk3pkSu">Discord</a>&nbsp;&nbsp;|
+    &nbsp;&nbsp;💬 <a href="https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/assets/qr.png">WeChat</a>
+</p>
+<h2 id="introduction" class="heading"><a class="heading-anchor" href="#introduction" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Introduction</span></h2>
+<p>We are excited to open-source <strong>Qwen-Image-2.1</strong>, a unified text-to-image generation and image editing model in the Qwen family. With just <strong>7B parameters in its visual generation component</strong> (32 Single-Stream DiT layers), Qwen-Image-2.1 balances generation quality, inference efficiency, and versatility.</p>
+<p>Four key improvements define this release:</p>
+<ul><li><strong>Compact and Efficient</strong> — A lightweight architecture with mixed-granularity attention and prefix KV cache reuse delivers strong image quality at low computational cost.</li><li><strong>Native Transparency, Unified Creation and Editing</strong> — Generate regular or transparent (RGBA) images from text, edit transparent layers, and extract subjects from photographs—all in one model.</li><li><strong>Versatile Editing</strong> — Support up to <strong>10 reference images</strong>, specify local edits via circles, painted annotations, or separate masks, and preserve identity for people and products.</li><li><strong>Realistic Textures and Refined Aesthetics</strong> — Improved typography, portrait lighting, and fine details for more visually compelling results.</li></ul>
+<p align="center">
+    <img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-01.png" width="100%"/>
+</p>
+<p>For more details, see the <a class="link external" href="https://github.com/QwenLM/Qwen-Image-2.1" target="_blank" rel="noreferrer noopener">GitHub repo</a> and <a class="link external" href="https://qwen.ai/blog?id=qwen-image-2.1" target="_blank" rel="noreferrer noopener">Blog</a>.</p>
+<h2 id="quick-start" class="heading"><a class="heading-anchor" href="#quick-start" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Quick Start</span></h2>
+<h3 id="installation" class="heading"><a class="heading-anchor" href="#installation" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Installation</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">pip</span> install torch&gt;=2.4.0
+<span class="hljs-built_in">pip</span> install transformers&gt;=5.17
+<span class="hljs-built_in">pip</span> install git+https://github.com/huggingface/diffusers
+<span class="hljs-built_in">pip</span> install accelerate pillow</code></pre></figure>
+<h3 id="text-to-image" class="heading"><a class="heading-anchor" href="#text-to-image" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Text-to-Image</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code><span class="hljs-keyword">import</span> torch
+<span class="hljs-keyword">from</span> diffusers <span class="hljs-keyword">import</span> QwenImage21Pipeline
+
+pipe = QwenImage21Pipeline.from_pretrained(
+    <span class="hljs-string">"Qwen/Qwen-Image-2.1"</span>, torch_dtype=torch.bfloat16
+).to(<span class="hljs-string">"cuda"</span>)
+
+image = pipe(
+    prompt=<span class="hljs-string">"A neon shop sign that reads \"QWEN IMAGE 2.1\", rainy night, reflections on wet pavement"</span>,
+    width=<span class="hljs-number">2048</span>, height=<span class="hljs-number">2048</span>,
+    num_inference_steps=<span class="hljs-number">40</span>,
+    generator=torch.Generator(<span class="hljs-string">"cuda"</span>).manual_seed(<span class="hljs-number">42</span>),
+).images[<span class="hljs-number">0</span>]
+
+image.save(<span class="hljs-string">"t2i_example.png"</span>)</code></pre></figure>
+<h3 id="image-editing" class="heading"><a class="heading-anchor" href="#image-editing" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Image Editing</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code><span class="hljs-keyword">import</span> torch
+<span class="hljs-keyword">from</span> PIL <span class="hljs-keyword">import</span> Image
+<span class="hljs-keyword">from</span> diffusers <span class="hljs-keyword">import</span> QwenImage21Pipeline
+
+pipe = QwenImage21Pipeline.from_pretrained(
+    <span class="hljs-string">"Qwen/Qwen-Image-2.1"</span>, torch_dtype=torch.bfloat16
+).to(<span class="hljs-string">"cuda"</span>)
+
+input_image = Image.open(<span class="hljs-string">"input.png"</span>)
+
+image = pipe(
+    prompt=<span class="hljs-string">"Change the background to a sunset beach"</span>,
+    image=input_image,
+    num_inference_steps=<span class="hljs-number">40</span>,
+    generator=torch.Generator(<span class="hljs-string">"cuda"</span>).manual_seed(<span class="hljs-number">42</span>),
+).images[<span class="hljs-number">0</span>]
+
+image.save(<span class="hljs-string">"edit_example.png"</span>)</code></pre></figure>
+<h3 id="transparent-image-generation-rgba" class="heading"><a class="heading-anchor" href="#transparent-image-generation-rgba" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Transparent Image Generation (RGBA)</span></h3>
+<p>Use the recommended prompt format for transparent images:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code>image = pipe(
+    prompt=<span class="hljs-string">"This is an RGBA image with transparency. A cute cartoon dragon sticker. The image has alpha channel and the background is transparent."</span>,
+    width=<span class="hljs-number">2048</span>, height=<span class="hljs-number">2048</span>,
+    num_inference_steps=<span class="hljs-number">40</span>,
+    generator=torch.Generator(<span class="hljs-string">"cuda"</span>).manual_seed(<span class="hljs-number">42</span>),
+).images[<span class="hljs-number">0</span>]
+
+image.save(<span class="hljs-string">"transparent_example.png"</span>)</code></pre></figure>
+<h3 id="supported-aspect-ratios" class="heading"><a class="heading-anchor" href="#supported-aspect-ratios" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Supported Aspect Ratios</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code>aspect_ratios = {
+    <span class="hljs-string">"1:1"</span>:  (<span class="hljs-number">2048</span>, <span class="hljs-number">2048</span>),
+    <span class="hljs-string">"4:3"</span>:  (<span class="hljs-number">2400</span>, <span class="hljs-number">1792</span>),
+    <span class="hljs-string">"3:4"</span>:  (<span class="hljs-number">1792</span>, <span class="hljs-number">2400</span>),
+    <span class="hljs-string">"3:2"</span>:  (<span class="hljs-number">2528</span>, <span class="hljs-number">1696</span>),
+    <span class="hljs-string">"2:3"</span>:  (<span class="hljs-number">1696</span>, <span class="hljs-number">2528</span>),
+    <span class="hljs-string">"16:9"</span>: (<span class="hljs-number">2752</span>, <span class="hljs-number">1536</span>),
+    <span class="hljs-string">"9:16"</span>: (<span class="hljs-number">1536</span>, <span class="hljs-number">2752</span>),
+}</code></pre></figure>
+<h3 id="memory-optimization" class="heading"><a class="heading-anchor" href="#memory-optimization" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Memory Optimization</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code>pipe = QwenImage21Pipeline.from_pretrained(
+    <span class="hljs-string">"Qwen/Qwen-Image-2.1"</span>, torch_dtype=torch.bfloat16
+)
+pipe.enable_model_cpu_offload()</code></pre></figure>
+<h2 id="showcase" class="heading"><a class="heading-anchor" href="#showcase" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Showcase</span></h2>
+<p align="center">
+<img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-04.png" width="30%"/>
+<img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-05.png" width="30%"/>
+<img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-06.png" width="30%"/>
+</p>
+<p align="center"><em>Native transparent image generation</em></p>
+<p align="center">
+<img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-15.png" width="100%"/>
+</p>
+<p align="center"><em>Group photograph generated from six portrait references</em></p>
+<p align="center">
+<img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-43.png" width="48%"/>
+<img src="https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen-Image/image2.1/images/example-44.png" width="48%"/>
+</p>
+<p align="center"><em>Text rendering</em></p>
+<h2 id="license" class="heading"><a class="heading-anchor" href="#license" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>License</span></h2>
+<p>This model is licensed under the <a class="link external" href="./LICENSE" target="_blank" rel="noreferrer noopener">Qwen Research License Agreement</a>.</p>
+<h2 id="feedback" class="heading"><a class="heading-anchor" href="#feedback" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Feedback</span></h2>
+<p>Having issues with Qwen-Image-2.1? Our official feedback form connects you directly with the Qwen Image research team. Share your prompts, images, or workflows to help us investigate and improve.</p>
+<p><a class="link external" href="https://alidocs.dingtalk.com/notable/share/form/v01WgZOZA5DaVQPeqLX_dv19yqvsgs3oebp3pcjys_1qX0QQ0?source=link" target="_blank" rel="noreferrer noopener"><strong>Submit Feedback →</strong></a></p>
+</article>
+    <footer class="page-footer">
+      <p>Offline copy saved 2026-11-06 from the official Hugging Face model card <a class="link" href="https://huggingface.co/Qwen/Qwen-Image-2.1" target="_blank" rel="noreferrer noopener">https://huggingface.co/Qwen/Qwen-Image-2.1</a> (raw README.md, taken through hf-mirror.com because huggingface.co timed out from this host).</p>
+    </footer>
+  </main>
+</div>
+
+<script>window.__DOC__={"slug": "qwen-image-21-base_card", "origin": "vllm-omni", "title": "Qwen-Image-2.1 — 官方模型卡"};</script>
+
+
+<script>
+(function () {
+  var rootEl = document.documentElement;
+  var THEME_KEY = 'qdoc:theme';
+  var toggleBtn = document.getElementById('theme-toggle');
+  function applyTheme(t) {
+    rootEl.setAttribute('data-theme', t);
+    if (rootEl.classList) rootEl.classList.toggle('dark', t === 'dark');
+    if (toggleBtn) toggleBtn.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+  var saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+  applyTheme(saved || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  if (toggleBtn) toggleBtn.addEventListener('click', function () {
+    var next = rootEl.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  });
+
+  var toc = document.getElementById('toc');
+  var filter = document.getElementById('tocfilter');
+  var links = toc ? Array.prototype.slice.call(toc.querySelectorAll('a')) : [];
+  if (filter) {
+    filter.addEventListener('input', function () {
+      var q = filter.value.trim().toLowerCase();
+      links.forEach(function (a) { a.parentNode.hidden = !!q && a.textContent.toLowerCase().indexOf(q) < 0; });
+    });
+    document.addEventListener('keydown', function (e) {
+      var tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (e.key === '/' && document.activeElement !== filter && tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); filter.focus(); }
+      else if (e.key === 'Escape' && document.activeElement === filter) { filter.value = ''; filter.dispatchEvent(new Event('input')); filter.blur(); }
+    });
+  }
+
+  var tocToggle = document.getElementById('toc-toggle');
+  if (tocToggle && toc) tocToggle.addEventListener('click', function () {
+    var open = document.body.classList.toggle('toc-open');
+    tocToggle.setAttribute('aria-expanded', String(open));
+  });
+
+  /* active section tracking against the outline */
+  var watched = Array.prototype.slice.call(document.querySelectorAll('#content h2[id], #content h3[id]'));
+  if (toc && watched.length && 'IntersectionObserver' in window) {
+    var ratios = {};
+    var observer = new IntersectionObserver(function () {
+      watched.forEach(function (h) {
+        var box = h.getBoundingClientRect();
+        ratios[h.id] = box.top < 140 && box.bottom > 0 ? 2 : (box.top >= 0 ? 1 : 0);
+      });
+      var best = null, bestScore = -1;
+      watched.forEach(function (h) { var s = ratios[h.id]; if (s > bestScore) { bestScore = s; best = h.id; } });
+      if (!best) return;
+      links.forEach(function (a) { a.classList.toggle('is-active', a.getAttribute('data-target') === best); });
+    }, { rootMargin: '-90px 0px -55% 0px', threshold: [0, 0.5, 1] });
+    watched.forEach(function (h) { observer.observe(h); });
+    window.addEventListener('scroll', function () { observer.observe(watched[0]); }, { passive: true });
+  }
+
+  /* deep link on load: scroll after hydration swaps panels in */
+  if (location.hash) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target) setTimeout(function () { target.scrollIntoView({ block: 'start' }); }, 60);
+  }
+})();
+</script>
+
+
+
+<script>
+(function () {
+  /* tab groups: the upstream bundle that used to drive them is not carried over,
+     so switching is implemented here; "expand" shows every panel at once. */
+  document.querySelectorAll('.tabs').forEach(function (group) {
+    var buttons = Array.prototype.slice.call(group.querySelectorAll('.tab-btn'));
+    var panels = Array.prototype.slice.call(group.querySelectorAll('.tab-panel'));
+    buttons.forEach(function (btn, idx) {
+      btn.addEventListener('click', function () {
+        buttons.forEach(function (b, i) {
+          var on = i === idx;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-selected', String(on));
+          b.tabIndex = on ? 0 : -1;
+        });
+        panels.forEach(function (p, i) {
+          if (i === idx) { p.removeAttribute('hidden'); } else { p.setAttribute('hidden', ''); }
+        });
+      });
+    });
+  });
+  var expand = document.createElement('button');
+  expand.type = 'button';
+  expand.className = 'panels-expand';
+  expand.textContent = '展开所有面板 / show all panels';
+  expand.addEventListener('click', function () {
+    var on = document.body.getAttribute('data-all-panels') === 'on';
+    document.body.setAttribute('data-all-panels', on ? 'off' : 'on');
+    expand.textContent = on ? '展开所有面板 / show all panels' : '收起非当前面板 / show active panel';
+  });
+  var first = document.querySelector('.tabs');
+  if (first && first.parentNode) first.parentNode.insertBefore(expand, first);
+  /* copy buttons for code blocks */
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.closest('.codeblock');
+      var code = pre ? pre.querySelector('code') : null;
+      if (!code || !navigator.clipboard) return;
+      navigator.clipboard.writeText(code.innerText).then(function () {
+        btn.classList.add('is-copied');
+        setTimeout(function () { btn.classList.remove('is-copied'); }, 1200);
+      });
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

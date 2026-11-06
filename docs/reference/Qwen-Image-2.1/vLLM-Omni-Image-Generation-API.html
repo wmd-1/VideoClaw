@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM-Omni Image Generation API — offline copy</title>
+<meta name="description" content="Offline copy of https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/image_generation_api/">
+<style>
+/* --- base.css --- */
+/* ============================================================ tokens */
+:root {
+  --brand: #2563eb;
+  --output-accent: var(--brand);
+  --bg: #ffffff;
+  --bg-raised: #fbfbfc;
+  --well: #f6f7f9;
+  --code-bg: #f8f9fb;
+  --text: #212226;
+  --text-strong: #0d0e11;
+  --muted: #6c6f77;
+  --line: #e6e7ea;
+  --line-strong: #d3d5da;
+  --shadow: 0 1px 2px rgba(16, 18, 22, .05), 0 8px 24px -12px rgba(16, 18, 22, .12);
+  --topbar-h: 60px;
+  --radius: 10px;
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --note: #2563eb; --note-bg: #eff5ff;
+  --warn: #b45309; --warn-bg: #fff8ec;
+  --info: #0e7490; --info-bg: #ecfbff;
+  --tip: #15803d;  --tip-bg: #effcf3;
+  --tok-comment: #8a8f98; --tok-key: #a626a4; --tok-str: #0a7d43;
+  --tok-num: #b3541c; --tok-fn: #2c6bce; --tok-var: #9c3b3b; --tok-meta: #6b7280;
+}
+html[data-theme="dark"] {
+  --bg: #0d0e11;
+  --bg-raised: #14161a;
+  --well: #17191e;
+  --code-bg: #101216;
+  --text: #dcdde1;
+  --text-strong: #f4f5f7;
+  --muted: #8b8f99;
+  --line: #26282e;
+  --line-strong: #33363d;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -14px rgba(0, 0, 0, .7);
+  --note-bg: #101a2e; --warn-bg: #221a0d; --info-bg: #0c1e24; --tip-bg: #0f1f14;
+  --note: #7aa2f7; --warn: #e0a34a; --info: #56c2d6; --tip: #7dd89b;
+  --tok-comment: #6f747d; --tok-key: #c678dd; --tok-str: #98c379;
+  --tok-num: #d19a66; --tok-fn: #61afef; --tok-var: #e06c75; --tok-meta: #8b8f99;
+}
+
+/* ============================================================ base */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 15px; line-height: 1.7;
+  font-feature-settings: "cv02", "cv03";
+  -webkit-font-smoothing: antialiased;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--brand); color: #fff; padding: 8px 14px; border-radius: 0 0 8px 0;
+}
+.skip:focus { left: 0; }
+::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+
+/* ============================================================ topbar */
+.topbar {
+  position: sticky; top: 0; z-index: 40; height: var(--topbar-h);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-inner {
+  height: 100%; max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: flex; align-items: center; gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.brand-title {
+  font-weight: 600; font-size: 14.5px; color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.filter {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px;
+  background: var(--well); border: 1px solid var(--line); border-radius: 8px; color: var(--muted);
+}
+.filter svg { width: 14px; height: 14px; flex: none; }
+.filter input { border: 0; background: none; outline: none; font: inherit; font-size: 13px; color: var(--text); width: 150px; }
+.filter kbd {
+  font: 600 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 3px 5px; background: var(--bg);
+}
+.tool {
+  font: inherit; font-size: 13px; color: var(--muted); background: var(--well);
+  border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 11px; cursor: pointer;
+  display: inline-flex; align-items: center; text-decoration: none;
+}
+.tool:hover { color: var(--text-strong); border-color: var(--line-strong); }
+.tool svg { width: 16px; height: 16px; }
+#theme-toggle .ico-moon { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-sun { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-moon { display: block; }
+@media (max-width: 860px) { .filter, #toc-toggle { display: none; } }
+
+/* ============================================================ layout */
+.shell {
+  max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 40px;
+  align-items: start;
+}
+.sidebar { position: sticky; top: var(--topbar-h); max-height: calc(100vh - var(--topbar-h)); overflow: auto; padding: 28px 0 40px; scrollbar-width: thin; }
+.main { min-width: 0; padding-bottom: 24px; }
+.toc-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+.toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--line); }
+.toc li { margin: 0; }
+.toc a {
+  display: block; padding: 5px 0 5px 13px; margin-left: -1px; font-size: 13px; line-height: 1.45;
+  color: var(--muted); text-decoration: none; border-left: 2px solid transparent;
+}
+.toc a:hover { color: var(--text-strong); }
+.toc a.is-active { color: var(--brand); border-left-color: var(--brand); font-weight: 500; }
+.toc-l3 a { padding-left: 26px; font-size: 12.5px; }
+.toc-l4 a { padding-left: 38px; font-size: 12.5px; }
+body.toc-open .sidebar { display: block; }
+@media (max-width: 1100px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: fixed; inset: var(--topbar-h) auto 0 0; width: 280px; background: var(--bg-raised); border-right: 1px solid var(--line); padding: 20px 16px; transform: translateX(-100%); transition: transform .18s ease; z-index: 30; }
+  body.toc-open .sidebar { transform: none; box-shadow: var(--shadow); }
+}
+@media (min-width: 1101px) { .sidebar { display: block; } }
+
+/* ============================================================ prose */
+.prose { max-width: 780px; margin: 0 auto; padding: 30px 0 8px; }
+.prose > *:first-child { margin-top: 0; }
+.prose h1, .prose h2, .prose h3, .prose h4 { color: var(--text-strong); font-weight: 600; scroll-margin-top: calc(var(--topbar-h) + 18px); }
+.prose h1 { font-size: 31px; line-height: 1.25; letter-spacing: -.02em; margin: 0 0 10px; }
+.prose h2 { font-size: 22px; line-height: 1.35; margin: 46px 0 14px; padding-top: 20px; border-top: 1px solid var(--line); }
+.prose h3 { font-size: 17.5px; margin: 32px 0 10px; }
+.prose h4 { font-size: 15.5px; margin: 26px 0 8px; }
+.prose .heading { position: relative; }
+.heading-anchor { position: absolute; left: -22px; top: .18em; width: 16px; color: var(--muted); opacity: 0; transition: opacity .12s; }
+.heading-anchor svg { width: 15px; height: 15px; }
+.heading:hover .heading-anchor, .heading-anchor:focus { opacity: 1; }
+.prose p, .prose ul, .prose ol, .prose blockquote { margin: 14px 0; }
+.prose > h1 + blockquote {
+  font-size: 17px; line-height: 1.6; color: var(--muted); border: 0; padding: 0; margin: 0 0 26px; background: none;
+}
+.prose ul, .prose ol { padding-left: 24px; }
+.prose li { margin: 6px 0; }
+.prose li::marker { color: var(--muted); }
+.prose strong { color: var(--text-strong); font-weight: 600; }
+.prose em { font-style: italic; }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+.prose blockquote { border-left: 2px solid var(--line-strong); padding-left: 15px; color: var(--muted); }
+.prose :not(pre) > code {
+  font-family: var(--mono); font-size: .855em; background: var(--well);
+  border: 1px solid var(--line); border-radius: 5px; padding: .1em .35em; color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+html[data-theme="dark"] .prose :not(pre) > code { background: #1b1e24; border-color: #2a2d34; }
+.prose a.link { color: var(--brand); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+.prose a.link:hover { border-bottom-color: var(--brand); }
+.prose a.external svg { width: .78em; height: .78em; display: inline-block; vertical-align: baseline; margin-left: 2px; }
+.prose img { max-width: 100%; border-radius: var(--radius); border: 1px solid var(--line); }
+.prose details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 14px 0; background: var(--bg-raised); }
+.prose summary { cursor: pointer; font-weight: 500; color: var(--text-strong); }
+.tablewrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: var(--radius); scrollbar-width: thin; }
+/* :where() keeps these at zero specificity so a doc's own stylesheet (SGLang ships
+   table rules in its Mintlify custom.css) still wins where it defines them. */
+:where(.prose) table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+:where(.prose) thead th { text-align: left; font-weight: 600; color: var(--text-strong); background: var(--well); padding: 9px 13px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+:where(.prose) tbody td { padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+:where(.prose) tbody tr:last-child td { border-bottom: 0; }
+:where(.prose) tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--well) 45%, transparent); }
+
+/* ============================================================ tabs */
+.tabs { margin: 22px 0; }
+.tablist { display: flex; gap: 2px; list-style: none; margin: 0; padding: 0 0 0 2px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.tab-btn {
+  font: inherit; font-size: 13.5px; white-space: nowrap; cursor: pointer;
+  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 8px 13px; color: var(--muted); border-radius: 6px 6px 0 0;
+}
+.tab-btn:hover { color: var(--text-strong); background: var(--well); }
+.tab-btn.is-active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 500; }
+.tab-panel { padding: 4px 0 0; }
+.tab-panel > .prose-inner > *:first-child { margin-top: 14px; }
+
+/* ============================================================ callouts */
+.callout { display: grid; grid-template-columns: 22px 1fr; gap: 0 11px; margin: 20px 0; padding: 14px 16px; border-radius: var(--radius); border: 1px solid var(--line); border-left: 3px solid var(--tone, var(--note)); background: var(--tone-bg, var(--note-bg)); }
+.callout-head { grid-column: 2; display: flex; align-items: center; gap: 7px; }
+.callout-icon { grid-row: span 2; width: 20px; height: 20px; color: var(--tone, var(--note)); }
+.callout-icon svg { width: 20px; height: 20px; }
+.callout-title { font-weight: 600; font-size: 13.5px; color: var(--tone, var(--note)); }
+.callout-body { grid-column: 2; font-size: 14px; color: var(--text); }
+.callout-body > *:first-child { margin-top: 6px; }
+.callout-body > *:last-child { margin-bottom: 0; }
+.callout-warning { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.callout-info { --tone: var(--info); --tone-bg: var(--info-bg); }
+.callout-tip { --tone: var(--tip); --tone-bg: var(--tip-bg); }
+
+/* ============================================================ code blocks */
+.codeblock { margin: 18px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--code-bg); overflow: hidden; }
+.codebar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 13px; background: var(--well); border-bottom: 1px solid var(--line); }
+.codelang { font: 500 11.5px/1 var(--mono); letter-spacing: .02em; color: var(--muted); }
+.codehint { font: 500 10.5px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); opacity: .7; }
+.copy-btn { margin-left: auto; width: 26px; height: 26px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.copy-btn:hover { color: var(--text-strong); background: color-mix(in srgb, var(--line) 55%, transparent); }
+.copy-btn svg { width: 15px; height: 15px; }
+.codeblock pre { margin: 0; padding: 14px 16px; overflow-x: auto; background: none; scrollbar-width: thin; }
+.codeblock code, .codeblock pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.65; }
+.codeblock pre { color: var(--text-strong); }
+pre code { display: block; }
+/* highlight.js tokens */
+.hljs-comment, .hljs-quote { color: var(--tok-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: var(--tok-key); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: var(--tok-str); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--tok-num); }
+.hljs-title, .hljs-function, .hljs-title.function_, .hljs-section { color: var(--tok-fn); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-selector-attr { color: var(--tok-var); }
+.hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tok-fn); }
+.hljs-meta, .hljs-meta .hljs-keyword { color: var(--tok-meta); }
+.hljs-deletion { color: var(--tok-var); }
+.hljs-name, .hljs-tag { color: var(--tok-key); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+/* ============================================================ footer */
+.page-footer { max-width: 780px; margin: 40px auto 0; padding: 18px 0 60px; border-top: 1px solid var(--line); }
+.page-footer p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.page-footer a { color: var(--brand); text-decoration: none; }
+
+/* ============================================================ print */
+@media print {
+  .topbar, .sidebar, .copy-btn, .heading-anchor { display: none !important; }
+  .shell { display: block; padding: 0; }
+  .prose { max-width: none; }
+  .tab-panel[hidden] { display: block !important; }
+  .tabs { break-inside: avoid; }
+  body { background: #fff; color: #000; }
+}
+
+</style>
+<style>:root{--brand:#5b4bd6;--output-accent:#5b4bd6}</style>
+
+<style>
+/* --- offline-copy additions (refresh 2026-11-04) --- */
+.panels-expand {
+  font: inherit; font-size: 12.5px; margin: 0 0 10px; padding: 4px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--bg-raised);
+  color: var(--muted); cursor: pointer;
+}
+.panels-expand:hover { color: var(--text-strong); background: var(--well); }
+.tab-panel[data-panel-title]::before { content: none; }
+body[data-all-panels="on"] .tab-panel[hidden] { display: block !important; }
+body[data-all-panels="on"] .tab-panel[data-panel-title]::before {
+  content: attr(data-panel-title); display: block; font-size: 12.5px; font-weight: 600;
+  color: var(--brand); letter-spacing: .02em; margin: 12px 0 -4px;
+}
+.copy-btn.is-copied::after { content: '✓'; margin-left: 4px; color: var(--tip); }
+.snapshot-note { border-left: 3px solid var(--warn); }
+</style>
+</head>
+
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-badge">vLLM-Omni Docs</span>
+      <span class="brand-title">Image Generation API</span>
+    </div>
+    <div class="topbar-tools">
+      <label class="filter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="tocfilter" type="search" placeholder="Filter sections" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+      <button class="tool" id="toc-toggle" type="button" aria-expanded="false">Sections</button>
+      <button class="tool" id="theme-toggle" type="button" aria-label="Toggle dark mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path class="ico-sun" d="M12 4.5V3m0 18v-1.5M6 12a6 6 0 1 0 12 0 6 6 0 0 0-12 0Zm-1.4-4.9L3.2 5.7m16.1 14.9-1.4-1.4M4.5 12H3m18 0h-1.5M5.7 18.4l1.4-1.4M17 7l1.4-1.4"/><path class="ico-moon" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg></button>
+      <a class="tool tool-link" href="https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3" target="_blank" rel="noreferrer noopener">View live</a>
+    </div>
+  </div>
+</header>
+<div class="shell">
+  <aside class="sidebar"><nav class="toc" id="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul>
+      <li class="toc-l2"><a href="#quick-start" data-target="quick-start">Quick Start</a></li>
+      <li class="toc-l3"><a href="#start-the-server" data-target="start-the-server">Start the Server</a></li>
+      <li class="toc-l3"><a href="#generate-images" data-target="generate-images">Generate Images</a></li>
+      <li class="toc-l2"><a href="#api-reference" data-target="api-reference">API Reference</a></li>
+      <li class="toc-l3"><a href="#endpoint" data-target="endpoint">Endpoint</a></li>
+      <li class="toc-l3"><a href="#request-parameters" data-target="request-parameters">Request Parameters</a></li>
+      <li class="toc-l4"><a href="#openai-standard-parameters" data-target="openai-standard-parameters">OpenAI Standard Parameters</a></li>
+      <li class="toc-l4"><a href="#vllm-omni-extension-parameters" data-target="vllm-omni-extension-parameters">vllm-omni Extension Parameters</a></li>
+      <li class="toc-l3"><a href="#response-format" data-target="response-format">Response Format</a></li>
+      <li class="toc-l2"><a href="#examples" data-target="examples">Examples</a></li>
+      <li class="toc-l3"><a href="#multiple-images" data-target="multiple-images">Multiple Images</a></li>
+      <li class="toc-l3"><a href="#with-negative-prompt" data-target="with-negative-prompt">With Negative Prompt</a></li>
+      <li class="toc-l2"><a href="#parameter-handling" data-target="parameter-handling">Parameter Handling</a></li>
+      <li class="toc-l3"><a href="#parameter-compatibility" data-target="parameter-compatibility">Parameter Compatibility</a></li>
+      <li class="toc-l2"><a href="#error-responses" data-target="error-responses">Error Responses</a></li>
+      <li class="toc-l3"><a href="#400-bad-request" data-target="400-bad-request">400 Bad Request</a></li>
+      <li class="toc-l3"><a href="#422-unprocessable-entity" data-target="422-unprocessable-entity">422 Unprocessable Entity</a></li>
+      <li class="toc-l3"><a href="#503-service-unavailable" data-target="503-service-unavailable">503 Service Unavailable</a></li>
+      <li class="toc-l2"><a href="#troubleshooting" data-target="troubleshooting">Troubleshooting</a></li>
+      <li class="toc-l3"><a href="#server-not-running" data-target="server-not-running">Server Not Running</a></li>
+      <li class="toc-l3"><a href="#out-of-memory" data-target="out-of-memory">Out of Memory</a></li>
+      <li class="toc-l2"><a href="#development" data-target="development">Development</a></li>
+</ul></nav></aside>
+  <main class="main">
+    <article class="prose" id="content">
+
+<div class="callout callout-info snapshot-note"><div class="callout-head"><span class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"></path></svg></span><span class="callout-title">Offline copy</span></div><div class="callout-body"><p>Captured 2026-11-06 from <a class="link external" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/image_generation_api/" target="_blank" rel="noreferrer noopener">https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/image_generation_api/</a>.</p></div></div>
+
+<h1 id="vllm-omni-image-generation-api" class="heading"><a class="heading-anchor" href="#vllm-omni-image-generation-api" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>vLLM-Omni Image Generation API</span></h1>
+<blockquote>
+<p>Saved locally from https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/image_generation_api/ on 2026-11-06. 上游 raw Markdown（<code>docs/serving/image_generation_api.md</code>）拉取超时，本文件按该页面的渲染文本存档， 正文逐段对应线上页面；页面自身标注的更新时间为 2026-09-06。 与 Qwen-Image-2.1 / Qwen-Image-2.1-Turbo 的关系：这是 <code>/v1/images/generations</code> 的协议参考， 模型侧的取值要求见同目录的 <code>vLLM-Omni-Recipe-Qwen-Image-2.1.md</code>。</p>
+</blockquote>
+<h1 id="image-generation-api" class="heading"><a class="heading-anchor" href="#image-generation-api" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Image Generation API</span></h1>
+<p>vLLM-Omni provides an OpenAI DALL-E compatible API for text-to-image generation using diffusion models.</p>
+<p>Each server instance runs a single model (specified at startup via <code>vllm serve &lt;model&gt; --omni</code>).</p>
+<h2 id="quick-start" class="heading"><a class="heading-anchor" href="#quick-start" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Quick Start</span></h2>
+<h3 id="start-the-server" class="heading"><a class="heading-anchor" href="#start-the-server" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Start the Server</span></h3>
+<p>For example...</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code># Qwen-Image
+vllm serve Qwen/Qwen-Image --omni --port 8000
+
+# Z-Image Turbo
+vllm serve Tongyi-MAI/Z-Image-Turbo --omni --port 8000</code></pre></figure>
+<h3 id="generate-images" class="heading"><a class="heading-anchor" href="#generate-images" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Generate Images</span></h3>
+<p><strong>Using curl:</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>curl -X POST http://localhost:8000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "a dragon laying over the spine of the Green Mountains of Vermont",
+    "size": "1024x1024",
+    "seed": 42
+  }' | jq -r '.data[0].b64_json' | base64 -d &gt; dragon.png</code></pre></figure>
+<p><strong>Using curl save to file:</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>curl -o dragon.png -X POST http://localhost:8000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "a dragon laying over the spine of the Green Mountains of Vermont",
+    "size": "1024x1024",
+    "seed": 42,
+    "response_format":"file"
+  }'</code></pre></figure>
+<p><strong>Using Python:</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code><span class="hljs-keyword">import</span> requests
+<span class="hljs-keyword">import</span> base64
+<span class="hljs-keyword">from</span> PIL <span class="hljs-keyword">import</span> Image
+<span class="hljs-keyword">import</span> io
+
+response = requests.post(
+    <span class="hljs-string">"http://localhost:8000/v1/images/generations"</span>,
+    json={
+        <span class="hljs-string">"prompt"</span>: <span class="hljs-string">"a black and white cat wearing a princess tiara"</span>,
+        <span class="hljs-string">"size"</span>: <span class="hljs-string">"1024x1024"</span>,
+        <span class="hljs-string">"num_inference_steps"</span>: <span class="hljs-number">50</span>,
+        <span class="hljs-string">"seed"</span>: <span class="hljs-number">42</span>,
+    }
+)
+
+<span class="hljs-comment"># Decode and save</span>
+img_data = response.json()[<span class="hljs-string">"data"</span>][<span class="hljs-number">0</span>][<span class="hljs-string">"b64_json"</span>]
+img_bytes = base64.b64decode(img_data)
+img = Image.open(io.BytesIO(img_bytes))
+img.save(<span class="hljs-string">"cat.png"</span>)</code></pre></figure>
+<p><strong>Using Python save to file:</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code><span class="hljs-keyword">import</span> requests
+<span class="hljs-keyword">import</span> base64
+<span class="hljs-keyword">from</span> PIL <span class="hljs-keyword">import</span> Image
+<span class="hljs-keyword">import</span> io
+<span class="hljs-keyword">import</span> re
+
+response = requests.post(
+    <span class="hljs-string">"http://localhost:8000/v1/images/generations"</span>,
+    json={
+        <span class="hljs-string">"prompt"</span>: <span class="hljs-string">"a black and white cat wearing a princess tiara"</span>,
+        <span class="hljs-string">"size"</span>: <span class="hljs-string">"1024x1024"</span>,
+        <span class="hljs-string">"num_inference_steps"</span>: <span class="hljs-number">50</span>,
+        <span class="hljs-string">"seed"</span>: <span class="hljs-number">42</span>,
+        <span class="hljs-string">"response_format"</span>:<span class="hljs-string">"file"</span>
+    }
+)
+
+<span class="hljs-comment"># save to file</span>
+content_disposition = response.headers.get(<span class="hljs-string">"Content-Disposition"</span>, <span class="hljs-string">""</span>)
+match = re.search(r<span class="hljs-string">'filename="?(.+)"?'</span>, content_disposition)
+filename = match.group(<span class="hljs-number">1</span>) <span class="hljs-keyword">if</span> match <span class="hljs-keyword">else</span> <span class="hljs-string">"save.png"</span>
+<span class="hljs-keyword">with</span> open(filename, <span class="hljs-string">"wb"</span>) <span class="hljs-keyword">as</span> f:
+    <span class="hljs-keyword">for</span> chunk <span class="hljs-keyword">in</span> response.iter_content(<span class="hljs-number">8192</span>):
+        f.write(chunk)
+print(<span class="hljs-string">"saved:"</span>, filename)</code></pre></figure>
+<p><strong>Using OpenAI SDK:</strong></p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code><span class="hljs-keyword">from</span> openai <span class="hljs-keyword">import</span> OpenAI
+
+client = OpenAI(base_url=<span class="hljs-string">"http://localhost:8000/v1"</span>, api_key=<span class="hljs-string">"none"</span>)
+
+response = client.images.generate(
+    model=<span class="hljs-string">"Qwen/Qwen-Image"</span>,
+    prompt=<span class="hljs-string">"a horse jumping over a fence nearby a babbling brook"</span>,
+    n=<span class="hljs-number">1</span>,
+    size=<span class="hljs-string">"1024x1024"</span>,
+    response_format=<span class="hljs-string">"b64_json"</span>
+)
+
+<span class="hljs-comment"># Note: Extension parameters (seed, steps, cfg) require direct HTTP requests</span></code></pre></figure>
+<h2 id="api-reference" class="heading"><a class="heading-anchor" href="#api-reference" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>API Reference</span></h2>
+<h3 id="endpoint" class="heading"><a class="heading-anchor" href="#endpoint" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Endpoint</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>POST /v1/images/generations
+Content-Type: application/json</code></pre></figure>
+<h3 id="request-parameters" class="heading"><a class="heading-anchor" href="#request-parameters" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Request Parameters</span></h3>
+<h4 id="openai-standard-parameters" class="heading"><a class="heading-anchor" href="#openai-standard-parameters" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>OpenAI Standard Parameters</span></h4>
+<div class="tablewrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>prompt</code></td><td>string</td><td><strong>required</strong></td><td>Text description of the desired image</td></tr><tr><td><code>model</code></td><td>string</td><td>server's model</td><td>Model to use (optional, should match server if specified)</td></tr><tr><td><code>n</code></td><td>integer</td><td>1</td><td>Number of images to generate (1-10)</td></tr><tr><td><code>size</code></td><td>string</td><td>model defaults</td><td>Image dimensions in WxH format (e.g., "1024x1024", "512x512")</td></tr><tr><td><code>response_format</code></td><td>string</td><td>"b64_json"</td><td>Response format (<code>"b64_json"</code> or <code>"file"</code>)</td></tr><tr><td><code>user</code></td><td>string</td><td>null</td><td>User identifier for tracking</td></tr></tbody></table></div>
+<h4 id="vllm-omni-extension-parameters" class="heading"><a class="heading-anchor" href="#vllm-omni-extension-parameters" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>vllm-omni Extension Parameters</span></h4>
+<div class="tablewrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>negative_prompt</code></td><td>string</td><td>null</td><td>Text describing what to avoid in the image</td></tr><tr><td><code>num_inference_steps</code></td><td>integer</td><td>model defaults</td><td>Number of diffusion steps</td></tr><tr><td><code>guidance_scale</code></td><td>float</td><td>model defaults</td><td>Classifier-free guidance scale (typically 0.0-20.0)</td></tr><tr><td><code>true_cfg_scale</code></td><td>float</td><td>model defaults</td><td>True CFG scale (model-specific parameter, may be ignored if not supported)</td></tr><tr><td><code>seed</code></td><td>integer</td><td>null</td><td>Random seed for reproducibility</td></tr></tbody></table></div>
+<h3 id="response-format" class="heading"><a class="heading-anchor" href="#response-format" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Response Format</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>{
+  "created": 1701234567,
+  "data": [
+    {
+      "b64_json": "&lt;base64-encoded PNG&gt;",
+      "url": null,
+      "revised_prompt": null
+    }
+  ]
+}</code></pre></figure>
+<h2 id="examples" class="heading"><a class="heading-anchor" href="#examples" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Examples</span></h2>
+<h3 id="multiple-images" class="heading"><a class="heading-anchor" href="#multiple-images" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Multiple Images</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>curl -X POST http://localhost:8000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "a steampunk city set in a valley of the Adirondack mountains",
+    "n": 4,
+    "size": "1024x1024",
+    "seed": 123
+  }'</code></pre></figure>
+<p>This generates 4 images in a single request.</p>
+<h3 id="with-negative-prompt" class="heading"><a class="heading-anchor" href="#with-negative-prompt" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>With Negative Prompt</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code>response = requests.post(
+    <span class="hljs-string">"http://localhost:8000/v1/images/generations"</span>,
+    json={
+        <span class="hljs-string">"prompt"</span>: <span class="hljs-string">"a portrait of a skier in deep powder snow"</span>,
+        <span class="hljs-string">"negative_prompt"</span>: <span class="hljs-string">"blurry, low quality, distorted, ugly"</span>,
+        <span class="hljs-string">"num_inference_steps"</span>: <span class="hljs-number">100</span>,
+        <span class="hljs-string">"size"</span>: <span class="hljs-string">"1024x1024"</span>,
+    }
+)</code></pre></figure>
+<h2 id="parameter-handling" class="heading"><a class="heading-anchor" href="#parameter-handling" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Parameter Handling</span></h2>
+<p>The API passes parameters directly to the diffusion pipeline without model-specific transformation:</p>
+<ul><li><strong>Default values</strong>: When parameters are not specified, the underlying model uses its own defaults</li><li><strong>Pass-through design</strong>: User-provided values are forwarded directly to the diffusion engine</li><li><strong>Minimal validation</strong>: Only basic type checking and range validation at the API level</li></ul>
+<h3 id="parameter-compatibility" class="heading"><a class="heading-anchor" href="#parameter-compatibility" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Parameter Compatibility</span></h3>
+<p>The API passes parameters directly to the diffusion pipeline without model-specific validation.</p>
+<ul><li>Unsupported parameters may be silently ignored by the model</li><li>Incompatible values will result in errors from the underlying pipeline</li><li>Recommended values vary by model - consult model documentation</li></ul>
+<p><strong>Best Practice:</strong> Start with the model's recommended parameters, then adjust based on your needs.</p>
+<h2 id="error-responses" class="heading"><a class="heading-anchor" href="#error-responses" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Error Responses</span></h2>
+<h3 id="400-bad-request" class="heading"><a class="heading-anchor" href="#400-bad-request" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>400 Bad Request</span></h3>
+<p>Invalid parameters (e.g., model mismatch):</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>{
+  "detail": "Invalid size format: '1024x'. Expected format: 'WIDTHxHEIGHT' (e.g., '1024x1024')."
+}</code></pre></figure>
+<h3 id="422-unprocessable-entity" class="heading"><a class="heading-anchor" href="#422-unprocessable-entity" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>422 Unprocessable Entity</span></h3>
+<p>Validation errors (missing required fields):</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>{
+  "detail": [
+    {
+      "loc": ["body", "prompt"],
+      "msg": "field required",
+      "type": "value_error.missing"
+    }
+  ]
+}</code></pre></figure>
+<h3 id="503-service-unavailable" class="heading"><a class="heading-anchor" href="#503-service-unavailable" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>503 Service Unavailable</span></h3>
+<p>Diffusion engine not initialized:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>{
+  "detail": "Diffusion engine not initialized. Start server with a diffusion model."
+}</code></pre></figure>
+<h2 id="troubleshooting" class="heading"><a class="heading-anchor" href="#troubleshooting" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Troubleshooting</span></h2>
+<h3 id="server-not-running" class="heading"><a class="heading-anchor" href="#server-not-running" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Server Not Running</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code># Check if server is responding
+curl http://localhost:8000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "test"}'</code></pre></figure>
+<h3 id="out-of-memory" class="heading"><a class="heading-anchor" href="#out-of-memory" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Out of Memory</span></h3>
+<p>If you encounter OOM errors:</p>
+<ol><li>Reduce image size: <code>"size": "512x512"</code></li><li>Reduce inference steps: <code>"num_inference_steps": 25</code></li><li>Generate fewer images: <code>"n": 1</code></li></ol>
+<h2 id="development" class="heading"><a class="heading-anchor" href="#development" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Development</span></h2>
+<p>Enable debug logging to see prompts and generation details:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Code</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs"><code>vllm serve Qwen/Qwen-Image --omni \
+  --uvicorn-log-level debug</code></pre></figure>
+</article>
+    <footer class="page-footer">
+      <p>Offline copy saved 2026-11-06 from <a class="link" href="https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/image_generation_api/" target="_blank" rel="noreferrer noopener">https://docs.vllm.ai/projects/vllm-omni/en/latest/serving/image_generation_api/</a> — archived from the rendered page because the raw Markdown fetch timed out.</p>
+    </footer>
+  </main>
+</div>
+
+<script>window.__DOC__={"slug": "qwen-image-21-gen_api", "origin": "vllm-omni", "title": "Image Generation API"};</script>
+
+
+<script>
+(function () {
+  var rootEl = document.documentElement;
+  var THEME_KEY = 'qdoc:theme';
+  var toggleBtn = document.getElementById('theme-toggle');
+  function applyTheme(t) {
+    rootEl.setAttribute('data-theme', t);
+    if (rootEl.classList) rootEl.classList.toggle('dark', t === 'dark');
+    if (toggleBtn) toggleBtn.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+  var saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+  applyTheme(saved || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  if (toggleBtn) toggleBtn.addEventListener('click', function () {
+    var next = rootEl.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  });
+
+  var toc = document.getElementById('toc');
+  var filter = document.getElementById('tocfilter');
+  var links = toc ? Array.prototype.slice.call(toc.querySelectorAll('a')) : [];
+  if (filter) {
+    filter.addEventListener('input', function () {
+      var q = filter.value.trim().toLowerCase();
+      links.forEach(function (a) { a.parentNode.hidden = !!q && a.textContent.toLowerCase().indexOf(q) < 0; });
+    });
+    document.addEventListener('keydown', function (e) {
+      var tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (e.key === '/' && document.activeElement !== filter && tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); filter.focus(); }
+      else if (e.key === 'Escape' && document.activeElement === filter) { filter.value = ''; filter.dispatchEvent(new Event('input')); filter.blur(); }
+    });
+  }
+
+  var tocToggle = document.getElementById('toc-toggle');
+  if (tocToggle && toc) tocToggle.addEventListener('click', function () {
+    var open = document.body.classList.toggle('toc-open');
+    tocToggle.setAttribute('aria-expanded', String(open));
+  });
+
+  /* active section tracking against the outline */
+  var watched = Array.prototype.slice.call(document.querySelectorAll('#content h2[id], #content h3[id]'));
+  if (toc && watched.length && 'IntersectionObserver' in window) {
+    var ratios = {};
+    var observer = new IntersectionObserver(function () {
+      watched.forEach(function (h) {
+        var box = h.getBoundingClientRect();
+        ratios[h.id] = box.top < 140 && box.bottom > 0 ? 2 : (box.top >= 0 ? 1 : 0);
+      });
+      var best = null, bestScore = -1;
+      watched.forEach(function (h) { var s = ratios[h.id]; if (s > bestScore) { bestScore = s; best = h.id; } });
+      if (!best) return;
+      links.forEach(function (a) { a.classList.toggle('is-active', a.getAttribute('data-target') === best); });
+    }, { rootMargin: '-90px 0px -55% 0px', threshold: [0, 0.5, 1] });
+    watched.forEach(function (h) { observer.observe(h); });
+    window.addEventListener('scroll', function () { observer.observe(watched[0]); }, { passive: true });
+  }
+
+  /* deep link on load: scroll after hydration swaps panels in */
+  if (location.hash) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target) setTimeout(function () { target.scrollIntoView({ block: 'start' }); }, 60);
+  }
+})();
+</script>
+
+
+
+<script>
+(function () {
+  /* tab groups: the upstream bundle that used to drive them is not carried over,
+     so switching is implemented here; "expand" shows every panel at once. */
+  document.querySelectorAll('.tabs').forEach(function (group) {
+    var buttons = Array.prototype.slice.call(group.querySelectorAll('.tab-btn'));
+    var panels = Array.prototype.slice.call(group.querySelectorAll('.tab-panel'));
+    buttons.forEach(function (btn, idx) {
+      btn.addEventListener('click', function () {
+        buttons.forEach(function (b, i) {
+          var on = i === idx;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-selected', String(on));
+          b.tabIndex = on ? 0 : -1;
+        });
+        panels.forEach(function (p, i) {
+          if (i === idx) { p.removeAttribute('hidden'); } else { p.setAttribute('hidden', ''); }
+        });
+      });
+    });
+  });
+  var expand = document.createElement('button');
+  expand.type = 'button';
+  expand.className = 'panels-expand';
+  expand.textContent = '展开所有面板 / show all panels';
+  expand.addEventListener('click', function () {
+    var on = document.body.getAttribute('data-all-panels') === 'on';
+    document.body.setAttribute('data-all-panels', on ? 'off' : 'on');
+    expand.textContent = on ? '展开所有面板 / show all panels' : '收起非当前面板 / show active panel';
+  });
+  var first = document.querySelector('.tabs');
+  if (first && first.parentNode) first.parentNode.insertBefore(expand, first);
+  /* copy buttons for code blocks */
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.closest('.codeblock');
+      var code = pre ? pre.querySelector('code') : null;
+      if (!code || !navigator.clipboard) return;
+      navigator.clipboard.writeText(code.innerText).then(function () {
+        btn.classList.add('is-copied');
+        setTimeout(function () { btn.classList.remove('is-copied'); }, 1200);
+      });
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

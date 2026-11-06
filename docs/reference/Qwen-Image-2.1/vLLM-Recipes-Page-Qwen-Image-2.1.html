@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen-Image-2.1 vLLM recipe page — offline copy</title>
+<meta name="description" content="Offline copy of https://recipes.vllm.ai/Qwen/Qwen-Image-2.1">
+<style>
+/* --- base.css --- */
+/* ============================================================ tokens */
+:root {
+  --brand: #2563eb;
+  --output-accent: var(--brand);
+  --bg: #ffffff;
+  --bg-raised: #fbfbfc;
+  --well: #f6f7f9;
+  --code-bg: #f8f9fb;
+  --text: #212226;
+  --text-strong: #0d0e11;
+  --muted: #6c6f77;
+  --line: #e6e7ea;
+  --line-strong: #d3d5da;
+  --shadow: 0 1px 2px rgba(16, 18, 22, .05), 0 8px 24px -12px rgba(16, 18, 22, .12);
+  --topbar-h: 60px;
+  --radius: 10px;
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --note: #2563eb; --note-bg: #eff5ff;
+  --warn: #b45309; --warn-bg: #fff8ec;
+  --info: #0e7490; --info-bg: #ecfbff;
+  --tip: #15803d;  --tip-bg: #effcf3;
+  --tok-comment: #8a8f98; --tok-key: #a626a4; --tok-str: #0a7d43;
+  --tok-num: #b3541c; --tok-fn: #2c6bce; --tok-var: #9c3b3b; --tok-meta: #6b7280;
+}
+html[data-theme="dark"] {
+  --bg: #0d0e11;
+  --bg-raised: #14161a;
+  --well: #17191e;
+  --code-bg: #101216;
+  --text: #dcdde1;
+  --text-strong: #f4f5f7;
+  --muted: #8b8f99;
+  --line: #26282e;
+  --line-strong: #33363d;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -14px rgba(0, 0, 0, .7);
+  --note-bg: #101a2e; --warn-bg: #221a0d; --info-bg: #0c1e24; --tip-bg: #0f1f14;
+  --note: #7aa2f7; --warn: #e0a34a; --info: #56c2d6; --tip: #7dd89b;
+  --tok-comment: #6f747d; --tok-key: #c678dd; --tok-str: #98c379;
+  --tok-num: #d19a66; --tok-fn: #61afef; --tok-var: #e06c75; --tok-meta: #8b8f99;
+}
+
+/* ============================================================ base */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 15px; line-height: 1.7;
+  font-feature-settings: "cv02", "cv03";
+  -webkit-font-smoothing: antialiased;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--brand); color: #fff; padding: 8px 14px; border-radius: 0 0 8px 0;
+}
+.skip:focus { left: 0; }
+::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+
+/* ============================================================ topbar */
+.topbar {
+  position: sticky; top: 0; z-index: 40; height: var(--topbar-h);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-inner {
+  height: 100%; max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: flex; align-items: center; gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.brand-title {
+  font-weight: 600; font-size: 14.5px; color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.filter {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px;
+  background: var(--well); border: 1px solid var(--line); border-radius: 8px; color: var(--muted);
+}
+.filter svg { width: 14px; height: 14px; flex: none; }
+.filter input { border: 0; background: none; outline: none; font: inherit; font-size: 13px; color: var(--text); width: 150px; }
+.filter kbd {
+  font: 600 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 3px 5px; background: var(--bg);
+}
+.tool {
+  font: inherit; font-size: 13px; color: var(--muted); background: var(--well);
+  border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 11px; cursor: pointer;
+  display: inline-flex; align-items: center; text-decoration: none;
+}
+.tool:hover { color: var(--text-strong); border-color: var(--line-strong); }
+.tool svg { width: 16px; height: 16px; }
+#theme-toggle .ico-moon { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-sun { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-moon { display: block; }
+@media (max-width: 860px) { .filter, #toc-toggle { display: none; } }
+
+/* ============================================================ layout */
+.shell {
+  max-width: 1440px; margin: 0 auto; padding: 0 22px;
+  display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 40px;
+  align-items: start;
+}
+.sidebar { position: sticky; top: var(--topbar-h); max-height: calc(100vh - var(--topbar-h)); overflow: auto; padding: 28px 0 40px; scrollbar-width: thin; }
+.main { min-width: 0; padding-bottom: 24px; }
+.toc-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+.toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--line); }
+.toc li { margin: 0; }
+.toc a {
+  display: block; padding: 5px 0 5px 13px; margin-left: -1px; font-size: 13px; line-height: 1.45;
+  color: var(--muted); text-decoration: none; border-left: 2px solid transparent;
+}
+.toc a:hover { color: var(--text-strong); }
+.toc a.is-active { color: var(--brand); border-left-color: var(--brand); font-weight: 500; }
+.toc-l3 a { padding-left: 26px; font-size: 12.5px; }
+.toc-l4 a { padding-left: 38px; font-size: 12.5px; }
+body.toc-open .sidebar { display: block; }
+@media (max-width: 1100px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: fixed; inset: var(--topbar-h) auto 0 0; width: 280px; background: var(--bg-raised); border-right: 1px solid var(--line); padding: 20px 16px; transform: translateX(-100%); transition: transform .18s ease; z-index: 30; }
+  body.toc-open .sidebar { transform: none; box-shadow: var(--shadow); }
+}
+@media (min-width: 1101px) { .sidebar { display: block; } }
+
+/* ============================================================ prose */
+.prose { max-width: 780px; margin: 0 auto; padding: 30px 0 8px; }
+.prose > *:first-child { margin-top: 0; }
+.prose h1, .prose h2, .prose h3, .prose h4 { color: var(--text-strong); font-weight: 600; scroll-margin-top: calc(var(--topbar-h) + 18px); }
+.prose h1 { font-size: 31px; line-height: 1.25; letter-spacing: -.02em; margin: 0 0 10px; }
+.prose h2 { font-size: 22px; line-height: 1.35; margin: 46px 0 14px; padding-top: 20px; border-top: 1px solid var(--line); }
+.prose h3 { font-size: 17.5px; margin: 32px 0 10px; }
+.prose h4 { font-size: 15.5px; margin: 26px 0 8px; }
+.prose .heading { position: relative; }
+.heading-anchor { position: absolute; left: -22px; top: .18em; width: 16px; color: var(--muted); opacity: 0; transition: opacity .12s; }
+.heading-anchor svg { width: 15px; height: 15px; }
+.heading:hover .heading-anchor, .heading-anchor:focus { opacity: 1; }
+.prose p, .prose ul, .prose ol, .prose blockquote { margin: 14px 0; }
+.prose > h1 + blockquote {
+  font-size: 17px; line-height: 1.6; color: var(--muted); border: 0; padding: 0; margin: 0 0 26px; background: none;
+}
+.prose ul, .prose ol { padding-left: 24px; }
+.prose li { margin: 6px 0; }
+.prose li::marker { color: var(--muted); }
+.prose strong { color: var(--text-strong); font-weight: 600; }
+.prose em { font-style: italic; }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+.prose blockquote { border-left: 2px solid var(--line-strong); padding-left: 15px; color: var(--muted); }
+.prose :not(pre) > code {
+  font-family: var(--mono); font-size: .855em; background: var(--well);
+  border: 1px solid var(--line); border-radius: 5px; padding: .1em .35em; color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+html[data-theme="dark"] .prose :not(pre) > code { background: #1b1e24; border-color: #2a2d34; }
+.prose a.link { color: var(--brand); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+.prose a.link:hover { border-bottom-color: var(--brand); }
+.prose a.external svg { width: .78em; height: .78em; display: inline-block; vertical-align: baseline; margin-left: 2px; }
+.prose img { max-width: 100%; border-radius: var(--radius); border: 1px solid var(--line); }
+.prose details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 14px 0; background: var(--bg-raised); }
+.prose summary { cursor: pointer; font-weight: 500; color: var(--text-strong); }
+.tablewrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: var(--radius); scrollbar-width: thin; }
+/* :where() keeps these at zero specificity so a doc's own stylesheet (SGLang ships
+   table rules in its Mintlify custom.css) still wins where it defines them. */
+:where(.prose) table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+:where(.prose) thead th { text-align: left; font-weight: 600; color: var(--text-strong); background: var(--well); padding: 9px 13px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+:where(.prose) tbody td { padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+:where(.prose) tbody tr:last-child td { border-bottom: 0; }
+:where(.prose) tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--well) 45%, transparent); }
+
+/* ============================================================ tabs */
+.tabs { margin: 22px 0; }
+.tablist { display: flex; gap: 2px; list-style: none; margin: 0; padding: 0 0 0 2px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.tab-btn {
+  font: inherit; font-size: 13.5px; white-space: nowrap; cursor: pointer;
+  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 8px 13px; color: var(--muted); border-radius: 6px 6px 0 0;
+}
+.tab-btn:hover { color: var(--text-strong); background: var(--well); }
+.tab-btn.is-active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 500; }
+.tab-panel { padding: 4px 0 0; }
+.tab-panel > .prose-inner > *:first-child { margin-top: 14px; }
+
+/* ============================================================ callouts */
+.callout { display: grid; grid-template-columns: 22px 1fr; gap: 0 11px; margin: 20px 0; padding: 14px 16px; border-radius: var(--radius); border: 1px solid var(--line); border-left: 3px solid var(--tone, var(--note)); background: var(--tone-bg, var(--note-bg)); }
+.callout-head { grid-column: 2; display: flex; align-items: center; gap: 7px; }
+.callout-icon { grid-row: span 2; width: 20px; height: 20px; color: var(--tone, var(--note)); }
+.callout-icon svg { width: 20px; height: 20px; }
+.callout-title { font-weight: 600; font-size: 13.5px; color: var(--tone, var(--note)); }
+.callout-body { grid-column: 2; font-size: 14px; color: var(--text); }
+.callout-body > *:first-child { margin-top: 6px; }
+.callout-body > *:last-child { margin-bottom: 0; }
+.callout-warning { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.callout-info { --tone: var(--info); --tone-bg: var(--info-bg); }
+.callout-tip { --tone: var(--tip); --tone-bg: var(--tip-bg); }
+
+/* ============================================================ code blocks */
+.codeblock { margin: 18px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--code-bg); overflow: hidden; }
+.codebar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 13px; background: var(--well); border-bottom: 1px solid var(--line); }
+.codelang { font: 500 11.5px/1 var(--mono); letter-spacing: .02em; color: var(--muted); }
+.codehint { font: 500 10.5px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); opacity: .7; }
+.copy-btn { margin-left: auto; width: 26px; height: 26px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.copy-btn:hover { color: var(--text-strong); background: color-mix(in srgb, var(--line) 55%, transparent); }
+.copy-btn svg { width: 15px; height: 15px; }
+.codeblock pre { margin: 0; padding: 14px 16px; overflow-x: auto; background: none; scrollbar-width: thin; }
+.codeblock code, .codeblock pre { font-family: var(--mono); font-size: 12.8px; line-height: 1.65; }
+.codeblock pre { color: var(--text-strong); }
+pre code { display: block; }
+/* highlight.js tokens */
+.hljs-comment, .hljs-quote { color: var(--tok-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: var(--tok-key); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: var(--tok-str); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--tok-num); }
+.hljs-title, .hljs-function, .hljs-title.function_, .hljs-section { color: var(--tok-fn); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-selector-attr { color: var(--tok-var); }
+.hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--tok-fn); }
+.hljs-meta, .hljs-meta .hljs-keyword { color: var(--tok-meta); }
+.hljs-deletion { color: var(--tok-var); }
+.hljs-name, .hljs-tag { color: var(--tok-key); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+/* ============================================================ footer */
+.page-footer { max-width: 780px; margin: 40px auto 0; padding: 18px 0 60px; border-top: 1px solid var(--line); }
+.page-footer p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.page-footer a { color: var(--brand); text-decoration: none; }
+
+/* ============================================================ print */
+@media print {
+  .topbar, .sidebar, .copy-btn, .heading-anchor { display: none !important; }
+  .shell { display: block; padding: 0; }
+  .prose { max-width: none; }
+  .tab-panel[hidden] { display: block !important; }
+  .tabs { break-inside: avoid; }
+  body { background: #fff; color: #000; }
+}
+
+</style>
+<style>:root{--brand:#5b4bd6;--output-accent:#5b4bd6}</style>
+
+<style>
+/* --- offline-copy additions (refresh 2026-11-04) --- */
+.panels-expand {
+  font: inherit; font-size: 12.5px; margin: 0 0 10px; padding: 4px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px; background: var(--bg-raised);
+  color: var(--muted); cursor: pointer;
+}
+.panels-expand:hover { color: var(--text-strong); background: var(--well); }
+.tab-panel[data-panel-title]::before { content: none; }
+body[data-all-panels="on"] .tab-panel[hidden] { display: block !important; }
+body[data-all-panels="on"] .tab-panel[data-panel-title]::before {
+  content: attr(data-panel-title); display: block; font-size: 12.5px; font-weight: 600;
+  color: var(--brand); letter-spacing: .02em; margin: 12px 0 -4px;
+}
+.copy-btn.is-copied::after { content: '✓'; margin-left: 4px; color: var(--tip); }
+.snapshot-note { border-left: 3px solid var(--warn); }
+</style>
+</head>
+
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-badge">vLLM Recipes</span>
+      <span class="brand-title">Qwen/Qwen-Image-2.1 — recipes.vllm.ai</span>
+    </div>
+    <div class="topbar-tools">
+      <label class="filter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="tocfilter" type="search" placeholder="Filter sections" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+      <button class="tool" id="toc-toggle" type="button" aria-expanded="false">Sections</button>
+      <button class="tool" id="theme-toggle" type="button" aria-label="Toggle dark mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path class="ico-sun" d="M12 4.5V3m0 18v-1.5M6 12a6 6 0 1 0 12 0 6 6 0 0 0-12 0Zm-1.4-4.9L3.2 5.7m16.1 14.9-1.4-1.4M4.5 12H3m18 0h-1.5M5.7 18.4l1.4-1.4M17 7l1.4-1.4"/><path class="ico-moon" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg></button>
+      <a class="tool tool-link" href="https://recipes.vllm.ai/MiniMaxAI/MiniMax-H3" target="_blank" rel="noreferrer noopener">View live</a>
+    </div>
+  </div>
+</header>
+<div class="shell">
+  <aside class="sidebar"><nav class="toc" id="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul>
+      <li class="toc-l2"><a href="#other-configurations" data-target="other-configurations">Other configurations</a></li>
+      <li class="toc-l2"><a href="#install" data-target="install">Install</a></li>
+      <li class="toc-l2"><a href="#serve" data-target="serve">Serve</a></li>
+      <li class="toc-l2"><a href="#guide" data-target="guide">Guide</a></li>
+      <li class="toc-l3"><a href="#overview" data-target="overview">Overview</a></li>
+      <li class="toc-l3"><a href="#sampling-defaults" data-target="sampling-defaults">Sampling defaults</a></li>
+      <li class="toc-l3"><a href="#prerequisites" data-target="prerequisites">Prerequisites</a></li>
+      <li class="toc-l3"><a href="#offline-inference" data-target="offline-inference">Offline inference</a></li>
+      <li class="toc-l3"><a href="#online-serving" data-target="online-serving">Online serving</a></li>
+      <li class="toc-l4"><a href="#text-to-image" data-target="text-to-image">Text to image</a></li>
+      <li class="toc-l4"><a href="#image-editing" data-target="image-editing">Image editing</a></li>
+      <li class="toc-l3"><a href="#prefix-kv-cache" data-target="prefix-kv-cache">Prefix KV cache</a></li>
+      <li class="toc-l3"><a href="#cuda-graphs" data-target="cuda-graphs">CUDA graphs</a></li>
+      <li class="toc-l3"><a href="#quantization" data-target="quantization">Quantization</a></li>
+      <li class="toc-l3"><a href="#limitations" data-target="limitations">Limitations</a></li>
+      <li class="toc-l3"><a href="#references" data-target="references">References</a></li>
+</ul></nav></aside>
+  <main class="main">
+    <article class="prose" id="content">
+
+<div class="callout callout-info snapshot-note"><div class="callout-head"><span class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"></path></svg></span><span class="callout-title">Offline copy</span></div><div class="callout-body"><p>Captured 2026-11-06 from <a class="link external" href="https://recipes.vllm.ai/Qwen/Qwen-Image-2.1" target="_blank" rel="noreferrer noopener">https://recipes.vllm.ai/Qwen/Qwen-Image-2.1</a>.</p></div></div>
+
+<h1 id="qwenqwen-image-21--vllm-serving-recipe" class="heading"><a class="heading-anchor" href="#qwenqwen-image-21--vllm-serving-recipe" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Qwen/Qwen-Image-2.1 — vLLM serving recipe</span></h1>
+<blockquote>
+<p>Unified text-to-image and image-conditioned generation. A 7.1B single-stream DiT with block-causal attention and an exact cross-step prefix KV cache, paired with a Qwen3-VL-8B text encoder and a 16x RGBA autoencoder.</p>
+<p>Saved locally from https://recipes.vllm.ai/Qwen/Qwen-Image-2.1.md on 2026-11-06. The page renders one configuration per URL, so the body below is the export for <code>hardware=gb300 · variant=default · task=t2i</code>. <code>task=i2i</code> was fetched as well (<code>?hardware=gb300&amp;task=i2i</code>) and is byte-identical apart from three metadata lines (the Configuration line and the two page/JSON links); the Serve command does not vary with task, so only the t2i export is stored here. Not captured: <code>variant=fp8</code> and the other hardware values (<code>h100</code>, <code>h200</code>, <code>b200</code>, <code>gb200</code>, <code>b300</code>, <code>gb300</code>, <code>mi300x</code>, <code>mi325x</code>, <code>mi350x</code>, <code>mi355x</code>) — fetch them by changing the query string. Note that this recipe has no consumer-GPU profile at all (no RTX 5090 / 4090 entry). 本地核对到的口径差异（不改动正文）：</p>
+<ul><li>本页 Install 段仍写“vLLM-Omni 必须从 PR #7759 构建、main 上没有”，而 <code>raw.githubusercontent.com/.../main/recipes/Qwen/Qwen-Image-2.1.md</code> 已可直接取到该 recipe （本目录的 in-repo 副本即来自 main）；以 in-repo 为准，本页该段视为滞后口径。</li><li>本页写 <code>true_cfg_scale</code> 默认 4.0，in-repo 参数表写 1.0。</li><li>本页推荐 40 步（并说服务端默认 50），in-repo 示例用 50 步。</li></ul>
+</blockquote>
+<p>Configuration: hardware <code>gb300</code> (4× GB300 NVL4) · variant <code>default</code> (BF16) · task <code>t2i</code></p>
+<ul><li>Interactive page: https://recipes.vllm.ai/Qwen/Qwen-Image-2.1</li><li>This configuration as JSON: https://recipes.vllm.ai/Qwen/Qwen-Image-2.1.json?hardware=gb300</li></ul>
+<p>The commands below were rendered for exactly this configuration and take precedence over any example in the guide.</p>
+<h2 id="other-configurations" class="heading"><a class="heading-anchor" href="#other-configurations" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Other configurations</span></h2>
+<p>Change the query string (the same parameters as the page URL) and fetch this URL again. Unknown or incompatible values fall back to the recipe default, so check the Configuration line.</p>
+<ul><li><code>hardware</code>: <code>h100</code>, <code>h200</code>, <code>b200</code>, <code>gb200</code>, <code>b300</code>, <code>gb300</code>, <code>mi300x</code>, <code>mi325x</code>, <code>mi350x</code>, <code>mi355x</code></li><li><code>variant</code>: <code>default</code>, <code>fp8</code></li><li><code>task</code>: <code>t2i</code>, <code>i2i</code></li></ul>
+<h2 id="install" class="heading"><a class="heading-anchor" href="#install" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Install</span></h2>
+<p>Requires vLLM &gt;= 0.29.0.</p>
+<p>Extra dependencies:</p>
+<ul><li>vLLM-Omni must be built from PR #7759. Qwen-Image-2.1 is not in a tagged release and not on main either, so a plain clone cannot serve it.</li></ul>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">git</span> clone https://github.com/vllm-project/vllm-omni.git &amp;&amp; cd vllm-omni &amp;&amp; git fetch origin pull/7759/head:qwen-image-2.1 &amp;&amp; git checkout qwen-image-2.1 &amp;&amp; uv pip install <span class="hljs-attr">-e</span> .</code></pre></figure>
+<h2 id="serve" class="heading"><a class="heading-anchor" href="#serve" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Serve</span></h2>
+<p>vLLM-Omni recipe — the generation endpoints and request examples are in the guide below.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">vllm</span> serve Qwen/Qwen-Image-2.1 \
+  <span class="hljs-attr">--omni</span></code></pre></figure>
+<h2 id="guide" class="heading"><a class="heading-anchor" href="#guide" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Guide</span></h2>
+<blockquote>
+<p>Background reference. Commands in it are examples and may target another configuration — use the Serve section above.</p>
+</blockquote>
+<h3 id="overview" class="heading"><a class="heading-anchor" href="#overview" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Overview</span></h3>
+<p>vLLM-Omni accelerates Qwen-Image 2.1 through cross-step prefix KV cache reuse and dedicated CUDA Graphs, reducing redundant computation and kernel launch overhead. Request-level and step-level continuous batching improve GPU utilization and throughput, with phase-aware prefill and decode scheduling. It also supports tensor and Ulysses sequence parallelism, distributed VAE decoding with adaptive OOM recovery, FP8 weights and prefix KV storage, and CPU offloading for varying memory budgets.</p>
+<p>One pipeline class, <code>QwenImage21Pipeline</code>, serves both text-to-image and image-conditioned generation (editing). Prompt and reference images are encoded together by a Qwen3-VL vision-language model, so an edit request takes the same serving path as plain text-to-image, and there is no separate edit model to load.</p>
+<div class="tablewrap"><table><thead><tr><th>Component</th><th>Class</th><th>On disk</th></tr></thead><tbody><tr><td>Text encoder</td><td><code>Qwen3VLForConditionalGeneration</code></td><td>bf16, 17.5 GB</td></tr><tr><td>DiT</td><td><code>QwenImage21Transformer2DModel</code></td><td>bf16, 14.2 GB</td></tr><tr><td>Autoencoder</td><td><code>AutoencoderKLQwenImage21</code></td><td>fp32, 1.4 GB</td></tr></tbody></table></div>
+<p>The autoencoder compresses 16x into a 64-channel latent and carries 4 channels in and out, so RGBA transparency survives the round trip.</p>
+<h3 id="sampling-defaults" class="heading"><a class="heading-anchor" href="#sampling-defaults" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Sampling defaults</span></h3>
+<p>Sample at <strong>40 steps with classifier-free guidance off</strong> — <code>num_inference_steps=40</code> and <code>true_cfg_scale=1.0</code> in the reference implementation's pipeline signature (<a class="link external" href="https://github.com/huggingface/diffusers/pull/14804" target="_blank" rel="noreferrer noopener">diffusers#14804</a>).</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-attr">--num-inference-steps</span> 40 <span class="hljs-attr">--cfg-scale</span> 1.0</code></pre></figure>
+<p><code>--cfg-scale</code> above 1 engages only with a negative prompt; otherwise it is ignored with a warning. When it engages, the DiT runs twice per step, roughly doubling latency.</p>
+<h3 id="prerequisites" class="heading"><a class="heading-anchor" href="#prerequisites" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Prerequisites</span></h3>
+<p>This source checkout includes the pipeline and targets final vLLM 0.33.0. Full image-quality qualification remains pending; successful generation alone does not establish reference parity.</p>
+<p>Historical bring-up from PR #7759 on one NVIDIA GB300 generated a 1024x1024 PNG in <strong>4.5 s</strong> over 40 steps at <strong>34.0 GB</strong> peak. Those measurements do not qualify the current source/runtime.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">git</span> clone https://github.com/vllm-project/vllm-omni.git &amp;&amp; cd vllm-omni
+<span class="hljs-built_in">uv</span> venv <span class="hljs-attr">--python</span> 3.12 <span class="hljs-attr">--seed</span> &amp;&amp; source .venv/bin/activate
+<span class="hljs-built_in">uv</span> pip install vllm==0.33.0 <span class="hljs-attr">--torch-backend</span>=cu130 &amp;&amp; uv pip install <span class="hljs-attr">-e</span> .</code></pre></figure>
+<h3 id="offline-inference" class="heading"><a class="heading-anchor" href="#offline-inference" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Offline inference</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-comment"># text-to-image</span>
+<span class="hljs-built_in">python</span> examples/offline_inference/text_to_image/text_to_image.py \
+  <span class="hljs-attr">--model</span> Qwen/Qwen-Image-2.1 \
+  <span class="hljs-attr">--prompt</span> <span class="hljs-string">"A ceramic teapot on a wooden table"</span> \
+  <span class="hljs-attr">--output</span> t2i.png <span class="hljs-attr">--num-inference-steps</span> 40 <span class="hljs-attr">--cfg-scale</span> 1.0
+
+<span class="hljs-comment"># image-conditioned</span>
+<span class="hljs-built_in">python</span> examples/offline_inference/image_to_image/image_edit.py \
+  <span class="hljs-attr">--model</span> Qwen/Qwen-Image-2.1 <span class="hljs-attr">--color-format</span> RGBA <span class="hljs-attr">--seed</span> 42 \
+  <span class="hljs-attr">--image</span> input1.png input2.png \
+  <span class="hljs-attr">--prompt</span> <span class="hljs-string">"Combine these images into a single scene"</span> \
+  <span class="hljs-attr">--output</span> edit.png <span class="hljs-attr">--num-inference-steps</span> 40 <span class="hljs-attr">--cfg-scale</span> 1.0</code></pre></figure>
+<p>Up to 4 reference images per request; a fifth is rejected with a 400. Each is resized independently to ~1024x1024 of area, so they may differ in aspect ratio, and each is tagged <code>&lt;image1&gt;</code>, <code>&lt;image2&gt;</code> in the order given, so an ordinal reference in the prompt binds a phrase to a photo.</p>
+<p><code>--color-format RGBA</code> preserves transparency (the shared example defaults to RGB). Width and height are floored to a multiple of 32, never rejected. When omitted on an edit request the output size derives from the last reference image's aspect ratio at ~1024x1024.</p>
+<h3 id="online-serving" class="heading"><a class="heading-anchor" href="#online-serving" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Online serving</span></h3>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">vllm</span> serve Qwen/Qwen-Image-2.1 <span class="hljs-attr">--omni</span> <span class="hljs-attr">--port</span> 8091</code></pre></figure>
+<p>Add <code>--step-execution --max-num-seqs 8</code> to batch requests at the same KV-cache phase. Admission is all-or-nothing: once a wave is past its first denoising step, a new arrival waits for it to finish, even if <code>max-num-seqs</code> has room.</p>
+<p>Send <code>num_inference_steps</code> on every request; the server's own default is 50, not the 40 this checkpoint wants. <code>true_cfg_scale</code> defaults to 4.0 but only applies alongside a <code>negative_prompt</code> — send one without the other and you get guidance at 4.0 and roughly double the compute.</p>
+<h4 id="text-to-image" class="heading"><a class="heading-anchor" href="#text-to-image" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Text to image</span></h4>
+<p>Send JSON to <code>/v1/images/generations</code>. The picture comes back base64-encoded at <code>.data[0].b64_json</code>.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">-X</span> POST http://localhost:8091/v1/images/generations \
+  <span class="hljs-attr">-H</span> <span class="hljs-string">"Content-Type: application/json"</span> \
+  <span class="hljs-attr">-d</span> <span class="hljs-string">'{"model": "Qwen/Qwen-Image-2.1",
+       "prompt": "A ceramic teapot on a wooden table",
+       "size": "1024x1024",
+       "num_inference_steps": 40,
+       "true_cfg_scale": 1.0,
+       "seed": 42}'</span></code></pre></figure>
+<h4 id="image-editing" class="heading"><a class="heading-anchor" href="#image-editing" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Image editing</span></h4>
+<p>Send a <strong>form</strong>, not JSON, to <code>/v1/images/edits</code>. The picture is a file upload and everything else is a form field. A JSON body to this endpoint resets the connection. Repeat <code>-F image=@...</code> for more pictures, up to four.</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">-X</span> POST http://localhost:8091/v1/images/edits \
+  <span class="hljs-attr">-F</span> image=@plate.png \
+  <span class="hljs-attr">-F</span> <span class="hljs-string">'prompt=Write the words "FRESH BASIL" on this plate in dark green lettering'</span> \
+  <span class="hljs-attr">-F</span> model=Qwen/Qwen-Image-2.1 \
+  <span class="hljs-attr">-F</span> size=1024x1024 \
+  <span class="hljs-attr">-F</span> num_inference_steps=40 \
+  <span class="hljs-attr">-F</span> true_cfg_scale=1.0 \
+  <span class="hljs-attr">-F</span> seed=42</code></pre></figure>
+<p>The reply has the same shape as text to image: the picture is at <code>.data[0].b64_json</code>.</p>
+<p>If you would rather send JSON, the chat endpoint also accepts pictures. It puts the result somewhere different — <code>.choices[0].message.content[0].image_url.url</code>:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Shell</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-bash"><code><span class="hljs-built_in">curl</span> <span class="hljs-attr">-X</span> POST http://localhost:8091/v1/chat/completions \
+  <span class="hljs-attr">-H</span> <span class="hljs-string">"Content-Type: application/json"</span> \
+  <span class="hljs-attr">-d</span> <span class="hljs-string">'{"model": "Qwen/Qwen-Image-2.1",
+       "messages": [{"role": "user", "content": [
+         {"type": "image_url", "image_url": {"url": "data:image/png;base64,&lt;BASE64&gt;"}},
+         {"type": "text", "text": "Write the words \"FRESH BASIL\" on this plate"}
+       ]}],
+       "modalities": ["image"],
+       "extra_body": {"size": "1024x1024", "num_inference_steps": 40,
+                      "true_cfg_scale": 1.0, "seed": 42}}'</span></code></pre></figure>
+<h3 id="prefix-kv-cache" class="heading"><a class="heading-anchor" href="#prefix-kv-cache" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Prefix KV cache</span></h3>
+<p>On automatically; rebuilt per generation, so nothing leaks between requests. The prompt and any reference images are cached after the first denoising step and reused for the rest, which is exact rather than approximate.</p>
+<p>It pays off in proportion to how much prefix there is: repeating a prompt costs about a third of the first submission, four reference images leave only about a fifth of the sequence to recompute, and plain short-prompt text-to-image has almost nothing to cache. Changing the tail of a prompt loses the saving.</p>
+<p>For long-prompt or multi-image workloads it can be stored in FP8 via the stage <code>extras</code> key <code>prefix_kv_cache_dtype</code> — on the command line through <code>--stage-overrides '{"0":{"extras":{"prefix_kv_cache_dtype":"fp8_v"}}}'</code>, or as a stage field in a deploy YAML. <code>"fp8_v"</code> quantizes V only, <code>"fp8"</code> quantizes K too — the contributors measured ~41 dB and ~35 dB PSNR against BF16. A quantized cache returns less of the speed-up than one in the native dtype, and is not CUDA-graph capturable, so those requests fall back to eager decode.</p>
+<h3 id="cuda-graphs" class="heading"><a class="heading-anchor" href="#cuda-graphs" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>CUDA graphs</span></h3>
+<p>Fixed-shape decode steps are captured automatically (<code>enforce_eager=False</code> by default); prefill stays eager. Each image layout gets its own entry and prefix K/V is copied into static buffers before replay, which costs memory. TP, SP/ring, HSDP, offload and cache hooks, compiled blocks, quantized KV caches, dynamic LoRA and padded text masks each force eager decode. Disable with <code>--enforce-eager</code>; the AR engine's <code>compilation_config.cudagraph_mode</code> does not reach this path.</p>
+<p>Expect the first request after startup to cost about 1.3x a later one. <code>--enforce-eager</code> does not remove that cost, so it is not graph capture and disabling graphs will not flatten startup.</p>
+<h3 id="quantization" class="heading"><a class="heading-anchor" href="#quantization" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Quantization</span></h3>
+<p>Online FP8, per component:</p>
+<figure class="codeblock"><figcaption class="codebar"><span class="codelang">Python</span><button type="button" class="copy-btn" title="Copy" aria-label="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9V5.6A1.6 1.6 0 0 1 10.6 4h5.8A1.6 1.6 0 0 1 18 5.6V5.6A1.6 1.6 0 0 1 19.6 7.2v9.2A1.6 1.6 0 0 1 18 18h-7.4A1.6 1.6 0 0 1 9 16.4Zm-3.2 2.8A1.6 1.6 0 0 1 4.2 17.6V8.8A1.6 1.6 0 0 1 5.8 7.2H9"></path></svg></button></figcaption><pre class="hljs language-python"><code><span class="hljs-keyword">from</span> vllm_omni <span class="hljs-keyword">import</span> Omni
+omni = Omni(model=<span class="hljs-string">"Qwen/Qwen-Image-2.1"</span>, quantization_config={
+    <span class="hljs-string">"transformer"</span>: {<span class="hljs-string">"method"</span>: <span class="hljs-string">"fp8"</span>, <span class="hljs-string">"ignored_layers"</span>: [<span class="hljs-string">"img_mlp"</span>]},
+    <span class="hljs-string">"text_encoder"</span>: {<span class="hljs-string">"method"</span>: <span class="hljs-string">"fp8"</span>},
+})</code></pre></figure>
+<p>Only the DiT's block-internal linears are eligible; boundary projections stay BF16. Measured by the vLLM-Omni contributors on GB200 at 1024x1024, 50 steps:</p>
+<div class="tablewrap"><table><thead><tr><th>Config</th><th>Quantized</th><th>Avg PSNR vs BF16</th><th>Peak memory</th></tr></thead><tbody><tr><td>BF16</td><td>0 / 160</td><td>—</td><td>40.0 GB</td></tr><tr><td>FP8, all layers</td><td>160 / 160</td><td>26.1 dB</td><td>33.4 GB</td></tr><tr><td>FP8, <code>ignored_layers=["img_mlp"]</code></td><td>64 / 160</td><td>29.7 dB</td><td>38.3 GB</td></tr></tbody></table></div>
+<p>Measured here on one GB300 at 1024x1024, 40 steps, same prompt and seed in each case:</p>
+<div class="tablewrap"><table><thead><tr><th>Config</th><th>Peak memory</th><th>Time per image</th></tr></thead><tbody><tr><td>BF16</td><td>34.0 GB</td><td>3282-4492 ms</td></tr><tr><td>DiT FP8, <code>img_mlp</code> kept BF16</td><td>32.0-32.7 GB</td><td>3356-4706 ms</td></tr><tr><td>Text-encoder FP8</td><td><strong>27.5-28.1 GB</strong></td><td>3427-4770 ms</td></tr></tbody></table></div>
+<p>The text encoder is the bigger saving by a wide margin: about 6 GB against about 2 GB. Neither runs faster.</p>
+<p>Keeping <code>img_mlp</code> in BF16 protects composition but gives back most of the saving. The larger win is the text encoder: in a separate GB200 run, peak memory went ~41.0 GiB in BF16 to ~34.4 GiB with text-encoder FP8, and ~28.1 GiB with the DiT too. Its vision tower and unused <code>lm_head</code> are excluded by construction, but reference-image tokens still cross the quantized language-model linears, so text-encoder FP8 does reach the edit path. On Blackwell FP8 buys memory, not speed.</p>
+<h3 id="limitations" class="heading"><a class="heading-anchor" href="#limitations" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>Limitations</span></h3>
+<ul><li>Cache backends (<code>cache_dit</code>, <code>tea_cache</code>) unsupported — the model's own prefix cache conflicts with step-skipping hooks.</li><li>Sequence parallelism is Ulysses only — no ring attention, no pipeline parallelism.</li><li>True CFG only; there is no <code>guidance_scale</code>.</li><li><code>/v1/images/edits</code> takes <strong>multipart/form-data</strong>, not JSON. Send the picture as a file upload and the settings as form fields. Posting a JSON body to it resets the connection, which is easy to mistake for a broken endpoint.</li><li>Passing a picture as a <code>data:</code> URL in the <code>url</code> form field is limited to <strong>1024 KB per part</strong>. A 512x512 PNG from this model is about 1 MB, so it usually fails with <code>Part exceeded maximum size of 1024KB</code>. File uploads have no such limit. Base64 inside a form field only suits small images.</li><li><code>/v1/chat/completions</code> with <code>image_url</code> content parts works too, and returns the picture at <code>.choices[0].message.content[0].image_url.url</code>.</li><li>NVIDIA GPUs only.</li><li>VAE tiling (<code>--vae-use-tiling</code>) decodes in 512px tiles at 384px stride, halving on CUDA OOM down to 128px; tile sizes are not exposed as engine arguments.</li></ul>
+<h3 id="references" class="heading"><a class="heading-anchor" href="#references" aria-label="Link to this section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1.3 1.3M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3"></path></svg></a><span>References</span></h3>
+<ul><li><a class="link external" href="https://github.com/vllm-project/vllm-omni/blob/qwen-image-2.1/recipes/Qwen/Qwen-Image-2.1.md" target="_blank" rel="noreferrer noopener">In-repo recipe</a></li><li><a class="link external" href="https://github.com/vllm-project/vllm-omni/blob/qwen-image-2.1/docs/user_guide/diffusion_features.md" target="_blank" rel="noreferrer noopener">Feature support matrix</a></li></ul>
+</article>
+    <footer class="page-footer">
+      <p>Offline copy saved 2026-11-06 from <a class="link" href="https://recipes.vllm.ai/Qwen/Qwen-Image-2.1" target="_blank" rel="noreferrer noopener">https://recipes.vllm.ai/Qwen/Qwen-Image-2.1.md</a> — per-configuration export (hardware=gb300 · variant=default · task=t2i).</p>
+    </footer>
+  </main>
+</div>
+
+<script>window.__DOC__={"slug": "qwen-image-21-page", "origin": "vllm-omni", "title": "Qwen/Qwen-Image-2.1 — recipes.vllm.ai"};</script>
+
+
+<script>
+(function () {
+  var rootEl = document.documentElement;
+  var THEME_KEY = 'qdoc:theme';
+  var toggleBtn = document.getElementById('theme-toggle');
+  function applyTheme(t) {
+    rootEl.setAttribute('data-theme', t);
+    if (rootEl.classList) rootEl.classList.toggle('dark', t === 'dark');
+    if (toggleBtn) toggleBtn.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+  var saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+  applyTheme(saved || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  if (toggleBtn) toggleBtn.addEventListener('click', function () {
+    var next = rootEl.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  });
+
+  var toc = document.getElementById('toc');
+  var filter = document.getElementById('tocfilter');
+  var links = toc ? Array.prototype.slice.call(toc.querySelectorAll('a')) : [];
+  if (filter) {
+    filter.addEventListener('input', function () {
+      var q = filter.value.trim().toLowerCase();
+      links.forEach(function (a) { a.parentNode.hidden = !!q && a.textContent.toLowerCase().indexOf(q) < 0; });
+    });
+    document.addEventListener('keydown', function (e) {
+      var tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (e.key === '/' && document.activeElement !== filter && tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); filter.focus(); }
+      else if (e.key === 'Escape' && document.activeElement === filter) { filter.value = ''; filter.dispatchEvent(new Event('input')); filter.blur(); }
+    });
+  }
+
+  var tocToggle = document.getElementById('toc-toggle');
+  if (tocToggle && toc) tocToggle.addEventListener('click', function () {
+    var open = document.body.classList.toggle('toc-open');
+    tocToggle.setAttribute('aria-expanded', String(open));
+  });
+
+  /* active section tracking against the outline */
+  var watched = Array.prototype.slice.call(document.querySelectorAll('#content h2[id], #content h3[id]'));
+  if (toc && watched.length && 'IntersectionObserver' in window) {
+    var ratios = {};
+    var observer = new IntersectionObserver(function () {
+      watched.forEach(function (h) {
+        var box = h.getBoundingClientRect();
+        ratios[h.id] = box.top < 140 && box.bottom > 0 ? 2 : (box.top >= 0 ? 1 : 0);
+      });
+      var best = null, bestScore = -1;
+      watched.forEach(function (h) { var s = ratios[h.id]; if (s > bestScore) { bestScore = s; best = h.id; } });
+      if (!best) return;
+      links.forEach(function (a) { a.classList.toggle('is-active', a.getAttribute('data-target') === best); });
+    }, { rootMargin: '-90px 0px -55% 0px', threshold: [0, 0.5, 1] });
+    watched.forEach(function (h) { observer.observe(h); });
+    window.addEventListener('scroll', function () { observer.observe(watched[0]); }, { passive: true });
+  }
+
+  /* deep link on load: scroll after hydration swaps panels in */
+  if (location.hash) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target) setTimeout(function () { target.scrollIntoView({ block: 'start' }); }, 60);
+  }
+})();
+</script>
+
+
+
+<script>
+(function () {
+  /* tab groups: the upstream bundle that used to drive them is not carried over,
+     so switching is implemented here; "expand" shows every panel at once. */
+  document.querySelectorAll('.tabs').forEach(function (group) {
+    var buttons = Array.prototype.slice.call(group.querySelectorAll('.tab-btn'));
+    var panels = Array.prototype.slice.call(group.querySelectorAll('.tab-panel'));
+    buttons.forEach(function (btn, idx) {
+      btn.addEventListener('click', function () {
+        buttons.forEach(function (b, i) {
+          var on = i === idx;
+          b.classList.toggle('is-active', on);
+          b.setAttribute('aria-selected', String(on));
+          b.tabIndex = on ? 0 : -1;
+        });
+        panels.forEach(function (p, i) {
+          if (i === idx) { p.removeAttribute('hidden'); } else { p.setAttribute('hidden', ''); }
+        });
+      });
+    });
+  });
+  var expand = document.createElement('button');
+  expand.type = 'button';
+  expand.className = 'panels-expand';
+  expand.textContent = '展开所有面板 / show all panels';
+  expand.addEventListener('click', function () {
+    var on = document.body.getAttribute('data-all-panels') === 'on';
+    document.body.setAttribute('data-all-panels', on ? 'off' : 'on');
+    expand.textContent = on ? '展开所有面板 / show all panels' : '收起非当前面板 / show active panel';
+  });
+  var first = document.querySelector('.tabs');
+  if (first && first.parentNode) first.parentNode.insertBefore(expand, first);
+  /* copy buttons for code blocks */
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.closest('.codeblock');
+      var code = pre ? pre.querySelector('code') : null;
+      if (!code || !navigator.clipboard) return;
+      navigator.clipboard.writeText(code.innerText).then(function () {
+        btn.classList.add('is-copied');
+        setTimeout(function () { btn.classList.remove('is-copied'); }, 1200);
+      });
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

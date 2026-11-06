@@ -61,6 +61,12 @@
 | `MiniMax-H3/MiniMax-H3-SGLang-Cookbook.md` / `.html` | SGLang 部署 MiniMax-H3 官方手册副本（2026-11-04 抓取；附录 A 为 2026-09-29 builder 快照，已标注过期） |
 | `MiniMax-H3/MiniMax-H3-vLLM-Recipes.md` / `.html` | vLLM 部署 MiniMax-H3 官方手册副本（2026-11-04 抓取，默认配置 hardware=b300 · variant=default · task=t2va） |
 | `MiniMax-H3/MiniMax-H3-vLLM-Recipes-2xRTX-5090.md` / `.html` | 同一 vLLM 手册的 2×RTX 5090 配置副本（2026-11-04 抓取；含 6 个 task 取值的逐行差异核对记录） |
+| `Qwen-Image-2.1/vLLM-Omni-Recipe-Qwen-Image-2.1.md` / `.html` | Qwen-Image-2.1 与 2.1-Turbo 的 vLLM-Omni 官方 in-repo recipe（2026-11-06 抓取，Turbo 无独立 recipe、同一文件内；头部已标注与模型卡/recipes 页的口径冲突） |
+| `Qwen-Image-2.1/Qwen-Image-2.1-Model-Card.md` / `.html` | Qwen 官方 HuggingFace 模型卡（10 张参考图、RGBA、推荐 40 步、分辨率预设最大 2752×1536；经 hf-mirror 取回并与镜像页逐节核对） |
+| `Qwen-Image-2.1/Qwen-Image-2.1-Turbo-Model-Card.md` / `.html` | Qwen 官方 Turbo 模型卡（8 步调度随权重保存、`num_inference_steps` 单独设置不生效、可用 `sigmas` 覆盖） |
+| `Qwen-Image-2.1/vLLM-Recipes-Page-Qwen-Image-2.1.md` / `.html` | recipes.vllm.ai 的按配置导出（hardware=gb300 · variant=default · task=t2i；已核对 i2i 仅 3 行元数据差异） |
+| `Qwen-Image-2.1/vLLM-Omni-Image-Generation-API.md` / `.html` | vLLM-Omni `/v1/images/generations` 协议参考（文生图端点字段表） |
+| `Qwen-Image-2.1/vLLM-Omni-Image-Edit-API.md` / `.html` | vLLM-Omni `/v1/images/edits` 协议参考（图生图 multipart 字段表与限制） |
 | `迁移机配置参考：MiniMax-H3 完整 config.md` | 推理机分离部署时的完整 `config.yaml` 模板与自检命令 |
 | `tips.md` | 打包迁移（tar 排除清单）等运维小抄 |
 
