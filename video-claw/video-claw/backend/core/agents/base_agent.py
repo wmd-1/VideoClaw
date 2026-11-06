@@ -3,15 +3,22 @@
 智能体基类 - 所有阶段智能体的抽象接口
 """
 
+import asyncio
 import glob
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.language import language_from_meta, resolve_language
 
 logger = logging.getLogger(__name__)
+
+
+def heartbeat_ascent(current: float, cap: float, ratio: float = 0.12) -> float:
+    """心跳的单次渐近推进值：向 cap 逼近，至少前进 1；各阶段共用同一份算法。"""
+    return min(cap, current + max(1.0, (cap - current) * ratio))
+
 
 SESSION_PARAM_KEYS = [
     "idea", "user_textbox_input", "style", "video_ratio", "video_resolution",
@@ -113,6 +120,39 @@ class AgentInterface(ABC):
     def _report_progress(self, phase: str, step_desc: str, percent: float, data: dict = None):
         if self.progress_callback:
             self.progress_callback(phase, step_desc, percent, data)
+
+    async def _await_with_heartbeat(
+        self,
+        awaitable: Awaitable,
+        *,
+        start: float,
+        cap: float,
+        message: str,
+        log: Callable[[float, str], None],
+        interval: float = 8.0,
+    ):
+        """等待一个可能长耗时的任务，期间按固定间隔推进进度，避免进度条停在同一个数值上。
+
+        模型接口本身是单次阻塞调用、没有 token 级回调，这里用渐近推进把调用期可视化；
+        cap 留出解析/校验阶段的空间，保证进度单调递增。推进值只作建议，最终取值由
+        `log` 的实现方（各阶段的单一进度源）裁决，进度状态不在这里二次记账。
+        """
+        task = asyncio.ensure_future(awaitable)
+        percent = start
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=interval)
+                if done:
+                    break
+                percent = heartbeat_ascent(percent, cap)
+                log(percent, message)
+        finally:
+            # 外层被取消时不留无人认领的任务（否则其异常再也取不回）。
+            # 注意：cancel 只能回收 Task，to_thread 里的真实请求/线程仍会跑完，
+            # 模型调用的中断仍由 _cancellable_query 的前后检查兜底。
+            if not task.done():
+                task.cancel()
+        return task.result()
 
     def _check_cancel(self):
         if self.cancellation_check and self.cancellation_check():

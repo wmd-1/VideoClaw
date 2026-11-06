@@ -9,16 +9,140 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
-from .base_agent import AgentInterface
+from .base_agent import AgentInterface, heartbeat_ascent
 
 logger = logging.getLogger(__name__)
+
+# 分镜阶段的进度口径（openspec 之外的展示层语义，单一进度源见 _StoryboardProgress）
+STORYBOARD_PHASE = "分镜设计"
+HEARTBEAT_INTERVAL_SECONDS = 8.0     # 长耗时模型调用期间的心跳间隔
+PROGRESS_MIN_EVENT_INTERVAL = 4.0    # 心跳事件节流窗口：并发多集时不让 tick 放大成事件洪水
+
 
 def _get_storyboard_prompt(name: str, lang: str = "zh") -> str:
     from prompts.loader import load_prompt_with_fallback
     return load_prompt_with_fallback("storyboard", name, lang, "zh")
+
+
+class _StoryboardProgress:
+    """分镜阶段的唯一进度源：工作量加权 + 单调夹逼 + 运行期整数封顶 95 + 心跳节流。
+
+    记账单位 = 一次模型调用步（片段规划 1、每个片段设计 1、站位连续性检查 1）。
+    权重按「增量式」登记：先用纯文本拆分路径估算每集片段数把分母做准，规划返回
+    真实片段数后再补齐差值；分母只增不减，配合 percent 单调夹逼，任何时刻都不倒退。
+
+    percent 只在这里计算并发送，调用方 MUST NOT 自行换算档位（原「按已完成集数推进」
+    的第二进度源就是进度条钉在 10% 的根因：所有集并发跑，完成时刻挤在末尾）。
+    """
+
+    START_PERCENT = 5      # 阶段启动第一报（沿用原值）
+    FLOOR_PERCENT = 10     # 运行期下限（沿用原值）
+    RUN_CAP = 95           # 运行期整数封顶，最后的 100 只由 finish 报
+    RUN_SPAN = RUN_CAP - FLOOR_PERCENT
+
+    def __init__(self, report: Callable[..., None], *, min_interval: float = 0.0,
+                 clock: Callable[[], float] = time.monotonic):
+        """`report(message, percent, data=None)` 由调用方接入（阶段名在接入点给定）。"""
+        self._report = report
+        self._min_interval = max(0.0, float(min_interval))
+        self._clock = clock
+        self.done = 0
+        self.total = 0
+        self.percent = self.START_PERCENT
+        self._last_tick_at: Optional[float] = None
+        self._last_message: Optional[str] = None
+
+    # ─────────── 记账 ───────────
+
+    def add_total(self, count: int) -> None:
+        """增量登记新发现的模型调用步；分母只增不减（估算偏高时不回退 percent）。"""
+        try:
+            growth = int(count)
+        except (TypeError, ValueError):
+            return
+        if growth > 0:
+            self.total += growth
+
+    def complete(self, count: int = 1, message: str = "", data: Optional[dict] = None) -> int:
+        """登记已完成的调用步；带消息时按新档位立即上报（里程碑不节流）。"""
+        try:
+            moved = int(count)
+        except (TypeError, ValueError):
+            moved = 0
+        if moved > 0:
+            self.done = min(self.total, self.done + moved)
+        if message:
+            self._emit(message, self._target(), data=data)
+        return self.percent
+
+    # ─────────── 上报 ───────────
+
+    def begin(self, message: str) -> int:
+        self._emit(message, self.START_PERCENT)
+        return self.percent
+
+    def note(self, message: str, data: Optional[dict] = None) -> int:
+        return self._emit(message, self._target(), data=data)
+
+    def finish(self, message: str = "完成") -> int:
+        return self._emit(message, 100)
+
+    def beat(self, message: str, suggested: Optional[float] = None) -> bool:
+        """心跳上报：把建议档位落到自己的量程内；无可推进量或落在节流窗口内则不发。"""
+        ceiling = max(self._band(), self._next_band())
+        if suggested is None:
+            target = heartbeat_ascent(float(self.percent), float(ceiling))
+        else:
+            target = float(suggested)
+        target = min(max(target, float(self.percent)), float(ceiling), float(self.RUN_CAP))
+        if int(target) <= self.percent:
+            return False
+        now = self._clock()
+        if self._min_interval > 0 and self._last_tick_at is not None \
+                and now - self._last_tick_at < self._min_interval:
+            return False
+        self._last_tick_at = now
+        self._emit(message, int(target))
+        return True
+
+    def heartbeat_window(self) -> Tuple[float, float]:
+        """给 `_await_with_heartbeat` 的量程：当前档位 → 下一步完成应到的档位。"""
+        ceiling = max(self._band(), self._next_band())
+        return float(self.percent), float(max(self.percent, ceiling))
+
+    # ─────────── 内部 ───────────
+
+    def _band(self) -> int:
+        if self.total <= 0:
+            return self.FLOOR_PERCENT
+        return min(self.RUN_CAP, self.FLOOR_PERCENT + int(self.RUN_SPAN * self.done / self.total))
+
+    def _next_band(self) -> int:
+        """当前等待中的那一步完成后应到的档位：心跳 MUST NOT 越过未完成的工作。"""
+        if self.total <= 0:
+            return self.FLOOR_PERCENT
+        pending = min(self.done + 1, self.total)
+        return min(self.RUN_CAP, self.FLOOR_PERCENT + int(self.RUN_SPAN * pending / self.total))
+
+    def _target(self) -> int:
+        return max(self.FLOOR_PERCENT, self._band())
+
+    def _emit(self, message: str, percent: int, data: Optional[dict] = None) -> int:
+        # 单一进度源的三条不变量：整数、只前进、运行期不越过 95（100 只来自 finish）。
+        resolved = int(max(self.percent, min(100, int(percent))))
+        if resolved > self.RUN_CAP and 100 != resolved:
+            resolved = self.RUN_CAP
+        if data is None and resolved == self.percent and message == self._last_message:
+            return self.percent
+        self.percent = resolved
+        self._last_message = message
+        self._report(message, resolved, data)
+        return resolved
+
 
 class StoryboardAgent(AgentInterface):
     def __init__(self):
@@ -1036,9 +1160,16 @@ class StoryboardAgent(AgentInterface):
         segments: List[dict],
         llm_model: str,
         sid: str,
+        *,
+        progress: Optional["_StoryboardProgress"] = None,
+        heartbeat: Optional[Callable[[Awaitable, str], Awaitable[Any]]] = None,
     ) -> List[dict]:
         last_error: Optional[Exception] = None
         for attempt in range(2):
+            if attempt and progress is not None:
+                # 重试是多出来的工作量：先登记权重，再发一条可观察的消息（不改重试/超时预算）
+                progress.add_total(1)
+                progress.note(f"第 {ep_n} 集人物站位连续性检查重试（第 {attempt + 1}/2 次）")
             try:
                 prompt = self._build_staging_continuity_prompt(
                     ep_n,
@@ -1046,13 +1177,15 @@ class StoryboardAgent(AgentInterface):
                     segments,
                     retry_error=str(last_error) if last_error else "",
                 )
-                review = await self._query_json_object_with_retries(
+                query = self._query_json_object_with_retries(
                     prompt,
                     llm_model,
                     sid,
                     label=f"第 {ep_n} 集人物站位连续性检查",
                     max_retries=1,
                 )
+                review = await (heartbeat(query, f"第 {ep_n} 集正在检查人物站位连续性，请稍候...")
+                                if heartbeat else query)
                 applied = self._apply_staging_continuity_patches(segments, review)
                 issues = review.get("issues") if isinstance(review, dict) else []
                 if applied:
@@ -1063,6 +1196,11 @@ class StoryboardAgent(AgentInterface):
             except Exception as exc:
                 last_error = exc
                 logger.warning("[Storyboard] Episode %s staging continuity attempt %d failed: %s", ep_n, attempt + 1, exc)
+            finally:
+                # 一次尝试就是一步工作量：无论成功、模型失败还是校验失败都要记账，
+                # 否则收尾的档位会被未记账的失败尝试留在 95 以下。
+                if progress is not None:
+                    progress.complete(1)
         logger.warning("[Storyboard] Episode %s staging continuity check skipped after retries: %s", ep_n, last_error)
         return segments
 
@@ -1198,8 +1336,25 @@ class StoryboardAgent(AgentInterface):
         sid: str,
         progress_note: Optional[Callable[[str], None]] = None,
         script_context: Optional[dict] = None,
+        *,
+        progress: Optional["_StoryboardProgress"] = None,
     ) -> List[dict]:
         context = script_context or {}
+
+        async def _heartbeat(step: Awaitable, message: str):
+            """长耗时步骤期间的心跳推进；量程由单一进度源给出，推进值回到进度源裁决。"""
+            if progress is None:
+                return await step
+            start, cap = progress.heartbeat_window()
+            return await self._await_with_heartbeat(
+                step,
+                start=start,
+                cap=cap,
+                message=message,
+                log=lambda percent, beat_message: progress.beat(beat_message, percent),
+                interval=HEARTBEAT_INTERVAL_SECONDS,
+            )
+
         annotated_script, units = self._annotate_episode_script(
             ep_c,
             characters,
@@ -1223,35 +1378,65 @@ class StoryboardAgent(AgentInterface):
         if progress_note:
             progress_note(f"第 {ep_n} 集已完成时长标注，正在划分片段")
         planning_hint = self._build_planning_hint(context)
-        plans = await self._plan_episode_segments(
-            ep_n,
-            ep_t,
-            annotated_script,
-            units,
-            characters,
-            settings,
-            llm_model,
-            sid,
-            planning_hint=planning_hint,
+        plans = await _heartbeat(
+            self._plan_episode_segments(
+                ep_n,
+                ep_t,
+                annotated_script,
+                units,
+                characters,
+                settings,
+                llm_model,
+                sid,
+                planning_hint=planning_hint,
+            ),
+            f"第 {ep_n} 集正在划分片段，请稍候...",
         )
         if not plans:
             raise Exception(f"第 {ep_n} 集片段规划失败")
+        if progress is not None:
+            # 真实片段数此时才已知：先补齐与估算值的差量（只增不减），再为本步记账
+            progress.add_total(len(plans) - int(context.get("estimated_segments") or 0))
+            progress.complete(1, f"第 {ep_n} 集已规划 {len(plans)} 个片段，正在设计分镜")
+        elif progress_note:
+            progress_note(f"第 {ep_n} 集已规划 {len(plans)} 个片段，正在设计分镜")
 
         logger.info("[Storyboard] Episode %s planned %d segments; designing in parallel", ep_n, len(plans))
-        if progress_note:
-            progress_note(f"第 {ep_n} 集已规划 {len(plans)} 个片段，正在设计分镜")
+
+        async def _tagged(index: int, awaitable) -> Tuple[int, dict]:
+            return index, await awaitable
+
         tasks = [
-            self._design_one_segment(
+            _tagged(index, self._design_one_segment(
                 ep_n, ep_t, plan, style, llm_model, sid, planning_hint=planning_hint
-            )
-            for plan in plans
+            ))
+            for index, plan in enumerate(plans)
         ]
-        segments = await asyncio.gather(*tasks)
-        segments.sort(key=lambda item: int(item.get("segment_number") or 0))
+        # 片段设计并发跑、但完成时刻各不相同：按完成逐个推进进度（gather 只能等全部返完）。
+        # 每一项都经 _heartbeat 等待，长时间没有片段返回时进度也会渐近推进。
+        # 输出顺序仍按 segment_number（同值时按原输入序）→ 与 gather 时代逐字一致。
+        designed: List[Tuple[int, int, dict]] = []
+        for finished in asyncio.as_completed(tasks):
+            plan_index, segment = await _heartbeat(
+                finished,
+                f"第 {ep_n} 集分镜设计中（已返回 {len(designed)}/{len(plans)}），请稍候...",
+            )
+            designed.append((int(segment.get("segment_number") or 0), plan_index, segment))
+            if progress is not None:
+                progress.complete(
+                    1,
+                    f"第 {ep_n} 集分镜已设计完 {len(designed)}/{len(plans)} 个片段",
+                )
+            elif progress_note:
+                progress_note(f"第 {ep_n} 集分镜已设计完 {len(designed)}/{len(plans)} 个片段")
+        designed.sort(key=lambda item: (item[0], item[1]))
+        segments = [item[2] for item in designed]
         logger.info("[Storyboard] Episode %s checking staging continuity", ep_n)
         if progress_note:
             progress_note(f"第 {ep_n} 集正在检查人物站位连续性")
-        segments = await self._fix_episode_staging_continuity(ep_n, ep_t, segments, llm_model, sid)
+        segments = await self._fix_episode_staging_continuity(
+            ep_n, ep_t, segments, llm_model, sid, progress=progress, heartbeat=_heartbeat
+        )
         return segments
 
     @classmethod
@@ -1344,6 +1529,22 @@ class StoryboardAgent(AgentInterface):
         if scene_context:
             segment["scene_context"] = scene_context
         return segment
+
+    @classmethod
+    def _estimate_segment_count(
+        cls, ep_n: int, script_text: str, characters: List[dict], settings: List[dict]
+    ) -> int:
+        """进度权重用的片段数估算：走已有的纯文本拆分路径，不调模型。
+
+        该路径本身与模型输出同构（Segment -> Shots），拿它的条数当分母初值可以把
+        “真实片段数”的误差压小；估算失败只影响进度精度，不得影响执行，因此异常一律兜底为 1。
+        """
+        try:
+            count = len(cls._build_segments_by_regex(ep_n, script_text, characters, settings))
+        except Exception as exc:  # noqa: BLE001 - 估算不参与产物构造，不得抹掉本轮执行
+            logger.warning("[Storyboard] Episode %s segment estimate failed: %s", ep_n, exc)
+            count = 0
+        return max(1, count)
 
     @classmethod
     def _build_segments_by_regex(
@@ -1694,18 +1895,32 @@ class StoryboardAgent(AgentInterface):
 
         chars = script_data.get("characters", [])
         sets = script_data.get("settings", [])
-        
-        self._report_progress("分镜", f"开始设计 {len(episodes_to_proc)} 集的分镜...", 5)
+
         total_to_process = len(episodes_to_proc)
         completed_count = 0
-        progress_state = {"percent": 10}
+        # 单一进度源：运行期的 percent 只由 _StoryboardProgress 计算与发送，
+        # 调用方不再自行换算档位（原先「只按已完成集数推进」就是进度钉在 10% 的根因）。
+        progress = _StoryboardProgress(
+            lambda message, percent, data=None: self._report_progress(
+                STORYBOARD_PHASE, message, percent, data
+            ),
+            min_interval=PROGRESS_MIN_EVENT_INTERVAL,
+        )
+        # 初始权重：每集 1 次片段规划 + 估算片段数 + 1 次站位连续性。
+        # 估算走已有的纯文本拆分路径（不调模型），把分母做准，真实片段数返回后只增不减地补齐。
+        estimates = [
+            self._estimate_segment_count(
+                self._as_episode_number(ep.get("episode_number")) or 0,
+                ep.get("content", ""),
+                chars,
+                sets,
+            )
+            for ep in episodes_to_proc
+        ]
+        progress.add_total(sum(2 + estimate for estimate in estimates))
+        progress.begin(f"开始设计 {total_to_process} 集的分镜...")
 
-        def report_storyboard_note(message: str, percent: Optional[int] = None, data: Optional[dict] = None):
-            if percent is not None:
-                progress_state["percent"] = max(progress_state["percent"], percent)
-            self._report_progress("分镜设计", message, progress_state["percent"], data)
-        
-        async def proc_ep(ep):
+        async def proc_ep(ep, estimated: int):
             ep_n = ep.get("episode_number", 1)
             ep_t = ep.get("act_title", f"第{ep_n}集")
             ep_c = ep.get("content", "")
@@ -1725,8 +1940,10 @@ class StoryboardAgent(AgentInterface):
                 "suggested_total_seconds": suggested_total_seconds,
                 "episode_count": len(episodes),
                 "review_issues": review_issues,
+                # 进度权重补登记用的估算值：规划返回真实片段数后由进度源算差量
+                "estimated_segments": estimated,
             }
-            report_storyboard_note(f"正在处理第 {ep_n} 集分镜")
+            progress.note(f"正在处理第 {ep_n} 集分镜")
             segments = await self._design_episode_storyboard(
                 ep_n,
                 ep_t,
@@ -1736,8 +1953,9 @@ class StoryboardAgent(AgentInterface):
                 style,
                 llm_model,
                 sid,
-                progress_note=report_storyboard_note,
+                progress_note=lambda message: progress.note(message),
                 script_context=script_context,
+                progress=progress,
             )
 
             return {
@@ -1751,7 +1969,7 @@ class StoryboardAgent(AgentInterface):
         updated_ep_map = {e["episode_number"]: e for e in existing_story_eps}
         
         # 报告一次进度，带上 assets_preview 让编排器更新内存中的初步数据
-        report_storyboard_note("准备生成分镜...", 10, {
+        progress.note("准备生成分镜...", data={
             "assets_preview": {
                 "session_id": sid,
                 "episodes": sorted(updated_ep_map.values(), key=lambda x: x["episode_number"]),
@@ -1760,22 +1978,24 @@ class StoryboardAgent(AgentInterface):
             "persist": True,
         })
 
-        results_queue = [asyncio.create_task(proc_ep(ep)) for ep in episodes_to_proc]
+        results_queue = [
+            asyncio.create_task(proc_ep(ep, estimates[index]))
+            for index, ep in enumerate(episodes_to_proc)
+        ]
 
         for coro in asyncio.as_completed(results_queue):
             res = await coro
             completed_count += 1
             updated_ep_map[res["episode_number"]] = res
-            
+
             # 每完成一集分镜，通过编排器更新内存并受控持久化
             temp_eps = sorted(updated_ep_map.values(), key=lambda x: x["episode_number"])
-            
-            # 并发多集时只按已完成集数推进全局进度，避免各集内部进度互相覆盖。
-            pct = min(95, 10 + int(85 * completed_count / max(total_to_process, 1)))
-            report_storyboard_note(
+
+            # 集完成仍作为可持久化的里程碑（落库节奏与改动前逐字一致）；
+            # 档位的推进已不依赖它，MUST NOT 在这里另算一套 percent。
+            progress.note(
                 f"已完成 {completed_count}/{total_to_process} 集分镜：第 {res['episode_number']} 集",
-                pct,
-                {
+                data={
                     "assets_preview": {
                         "session_id": sid,
                         "episodes": temp_eps,
@@ -1786,6 +2006,6 @@ class StoryboardAgent(AgentInterface):
             )
 
         final_all_episodes = sorted(updated_ep_map.values(), key=lambda x: x["episode_number"])
-        
-        self._report_progress("分镜", "完成", 100)
+
+        progress.finish()
         return {"payload": {"session_id": sid, "episodes": final_all_episodes}, "stage_completed": True}

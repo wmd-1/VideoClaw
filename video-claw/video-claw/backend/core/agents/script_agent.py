@@ -311,27 +311,10 @@ class ScriptWriterAgent(AgentInterface):
             )
 
         async def _call_with_heartbeat(prompt: str, start: float, cap: float, message: str) -> str:
-            """长耗时模型调用期间按固定间隔推进进度，避免进度条停在同一个数值上。
-
-            模型接口本身是单次阻塞调用、没有 token 级回调，这里用渐近推进把
-            调用期可视化；cap 留出解析/校验阶段的空间，保证进度单调递增。
-            """
-            task = asyncio.ensure_future(_call(prompt))
-            percent = start
-            try:
-                while True:
-                    done, _ = await asyncio.wait({task}, timeout=8.0)
-                    if done:
-                        break
-                    percent = min(cap, percent + max(1.0, (cap - percent) * 0.12))
-                    _log(percent, message)
-            finally:
-                # 外层被取消时不留无人认领的任务（否则其异常再也取不回）。
-                # 注意：cancel 只能回收 Task，to_thread 里的真实请求/线程仍会跑完，
-                # 模型调用的中断仍由 _cancellable_query 的前后检查兜底。
-                if not task.done():
-                    task.cancel()
-            return task.result()
+            """长耗时模型调用期间按固定间隔推进进度（心跳实现见基类，与分镜阶段共用）。"""
+            return await self._await_with_heartbeat(
+                _call(prompt), start=start, cap=cap, message=message, log=_log,
+            )
 
         parsed: Optional[dict] = None
         _log(10, "正在构建修订提示词...")

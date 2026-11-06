@@ -585,7 +585,8 @@ def _fake_segment_designer(produced: list, segments_by_episode: dict):
     """替换分镜的"模型产 segments"这一步：process 的过滤/合并/收尾仍走真实代码。"""
 
     async def fake(self, ep_number, ep_title, ep_content, chars, sets, style, llm_model, sid,
-                   progress_note=None, script_context=None):
+                   progress_note=None, script_context=None, *, progress=None):
+        # progress 是分镜阶段的单一进度源（本用例不关心进度，收下即可保持与被替换者同形）
         produced.append(ep_number)
         return [
             {
