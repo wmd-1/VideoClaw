@@ -338,7 +338,12 @@ def test_ledger_is_single_source_and_monotonic():
 
 
 def test_ledger_throttles_heartbeat_events():
-    """T6b：心跳只受节流窗口约束——窗口内不发，窗口后即使 percent 不变也要发。"""
+    """T6b：心跳只受节流窗口约束——窗口内不发，窗口后即使 percent 不变也要发。
+
+    已知边界（不是验收目标）：当单步工作量不足 1 个百分点时，长调用期间进度数值就是
+    静止的，只有消息在动（无 token 级回调下的物理上限）；本例用 total=100 固定住这个行为，
+    以免日后把它当成“数值也在推进”误报。
+    """
     seen: List[tuple] = []
     clock = _Clock()
     ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)),
@@ -380,7 +385,11 @@ def _drive_beats(total: int, done: int, *, ticks: int = 75, interval: float = 8.
 
 
 def test_heartbeat_never_goes_silent_during_long_call():
-    """T5d：真实比例（8s tick，600 秒）的长调用不得静默，审核复现过 560/592 秒静默。"""
+    """T5d：真实比例（8s tick，600 秒）的长调用不得静默，审核复现过 560/592 秒静默。
+
+    注意：这里量的是「事件间隔」（消息是否在动），不是「数值是否在动」；后者的静止是
+    已知边界（同一组实测里单集数值停滞 584 秒、三集 600 秒），已在设计文档里标明。
+    """
     for total, done, name in ((18, 17, "单集最后一步"), (54, 51, "三集并发最后几步")):
         ledger, events = _drive_beats(total, done)
         percents = [percent for _, percent, _ in events]
@@ -412,7 +421,7 @@ def test_overestimate_is_clawed_back_without_finish_jump():
     ledger.add_total(2 + 28)          # 初始权重：规划 1 + 估算 28 + 连续性 1
     ledger.add_total(2 - 28)          # 真实片段数已知：差值为负
     assert ledger.total == 1 + 2 + 1, f"分母未收回：{ledger.total}"
-    ledger.complete(1, "已规划片段")
+    ledger.complete(1, "已规划片段", key="ep1:plan")
     planned = seen[-1][1]
     ledger.complete(1, "片段 1")
     ledger.complete(1, "片段 2")
@@ -425,32 +434,154 @@ def test_overestimate_is_clawed_back_without_finish_jump():
     assert 100 - last_running <= 6, f"收尾跳变过大：{last_running} → 100"
 
 
+def test_shrink_is_applied_immediately_without_lies():
+    """T5h：收缩虚高分母当场生效、不做假平滑；只守不变量（不倒退 / 不虚报做完 / 收尾只差一档）。
+
+    审核建议的“单次跳幅封顶”经实测不自洽：小 total 下「正常完成一步」天然就能跳
+    11–21 个百分点（total=4 时 52→73），只封顶收缩反而会把同一个真实修正推迟到更晚、
+    攒成收尾大跳。因此本例不断言跳幅大小，只断言“报出来的就是真实档位”。
+    """
+    seen: List[tuple] = []
+    ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
+
+    # 两集：ep1 估算严重偏大（K̂=28→真 2），ep2 估算偏小（K̂=1→真 3）
+    ledger.add_total((2 + 28) + (2 + 1))          # 初始 33
+    ledger.complete(1, "ep2 已规划 3 个片段", key="ep2:plan")
+    ledger.add_total(3 - 1)                        # ep2 放大 → 35
+    ledger.complete(1, "ep1 已规划 2 个片段", key="ep1:plan")
+    before = ledger.percent
+    ledger.add_total(2 - 28)                       # ep1 收缩 → 9（本身不发事件，percent 不动）
+    assert ledger.percent == before, "分母修正本身不是工作事件，不得自己推高进度"
+    ledger.note("开始设计 ep1 片段")                 # 下一个真实事件才把修正后的档位报出去
+
+    percents = [percent for _, percent in seen]
+    assert percents == sorted(percents), f"收缩后进度倒退：{percents}"
+    assert (ledger.done, ledger.total) == (2, 9), (
+        f"收缩必须只改分母且账目自洽：done={ledger.done} total={ledger.total}（期望 2/9）"
+    )
+    assert ledger.percent == ledger._band() == 10 + int(85 * 2 / 9), (
+        f"报出来的必须就是真实档位：{ledger.percent}"
+    )
+    assert ledger.percent > before, "收缩后的档位应高于收缩前（同一真实工作量下分母变小）"
+
+    reached_cap = None
+    while ledger.done < ledger.total:
+        ledger.complete(1, "完成一步")
+        if reached_cap is None and seen[-1][1] == RUN_CAP:
+            reached_cap = ledger.done
+        assert ledger.percent == ledger._band()
+
+    assert ledger.done == ledger.total == 9, f"记账未用尽：{ledger.done}/{ledger.total}"
+    assert reached_cap == 9, f"{RUN_CAP}% 必须落在最后一个真实步，实际 done={reached_cap}"
+    ledger.finish()
+    assert seen[-1][1] == 100 and 100 - seen[-2][1] <= 6, (
+        f"收尾大跳：{seen[-2][1]} → 100"
+    )
+
+
 def test_growth_keeps_progress_moving_not_frozen():
-    """T5g：分母增长时保住已挣得比例，下一个完成步必须继续推进而不被夹逼冻住。"""
+    """T5g：分母增长时不得虚报完成：用比例下限防回落，但 MUST NOT 改 done。
+
+    上一版用重定基把 done 从 1 抬到 5，造成「真实 14/18 步就报 95%」；现在接受“档位
+    先停一会儿”作为代价，换取 done/total 始终是真实步数、且 95% 等价于真做完。
+    """
     seen: List[tuple] = []
     ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
 
     ledger.add_total(2 + 2)           # 估算只有 2 个片段
-    ledger.complete(1, "已规划片段")
+    ledger.complete(1, "已规划片段", key="ep1:plan")
     planned = seen[-1][1]
     ledger.add_total(16 - 2)          # 真实 16 个片段：分母放大
-    ledger.complete(1, "片段 1")
-    first_segment = seen[-1][1]
 
-    assert first_segment > planned, (
-        f"分母增长后进度被单调夹逼冻住：规划时 {planned}，首个片段完成时仍 {first_segment}"
+    assert ledger.done == 1, f"分母修正不得改动已完成步数：done={ledger.done}"
+    assert ledger.total == 1 + 16 + 1, f"分母未反映真实工作：{ledger.total}"
+    assert seen[-1][1] == planned, "增长分母本身不是工作事件，不应推高进度"
+
+    real_steps = 1
+    done_at_cap = None
+    while ledger.done < ledger.total:
+        real_steps += 1
+        ledger.complete(1, f"第 {real_steps} 步")
+        if done_at_cap is None and seen[-1][1] == RUN_CAP:
+            done_at_cap = ledger.done
+
+    assert ledger.done == ledger.total, f"记账不完就不该跑完循环：{ledger.done}/{ledger.total}"
+    assert done_at_cap == ledger.total, (
+        f"percent 首次到 {RUN_CAP} 时 done 应为 {ledger.total}，实际 {done_at_cap}"
     )
 
-    # 走到分母用尽为止（本场景 85/18 > 1，每步至少应动 1 个百分点）
-    frozen = 0
-    previous = first_segment
+
+def _wait_seconds(text: str) -> int:
+    """从心跳消息里取已等待秒数（支持「N 秒」与「M 分 SS 秒」两种写法）。"""
+    assert "已等待" in text, f"消息里没有等待时长：{text}"
+    tail = text.split("已等待")[-1].strip()
+    if "分" in tail:
+        minutes, _, rest = tail.partition("分")
+        return int(minutes.strip() or 0) * 60 + int(rest.replace("秒", "").strip() or 0)
+    return int(tail.replace("秒", "").strip() or 0)
+
+
+def test_wait_timer_is_scoped_per_step():
+    """T5i：等待计时按步隔离——别的集（甚至同集另一步）的事件不得把本集计时归零。"""
+    seen: List[tuple] = []
+    clock = _Clock()
+    ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)), clock=clock)
+    ledger.add_total(60)
+
+    key_a = "ep1:continuity"
+    beat_a = "第 1 集正在检查人物站位连续性，模型仍在返回"
+    for _ in range(5):
+        clock.advance(8.0)
+        ledger.beat(beat_a, key=key_a)
+    first = seen[-1][0]
+    assert "已等待" in first, f"第 1 集心跳本应已起等待计时：{first}"
+
+    # 并发跳入的其它集事件：全局里程碑（无 key）与另一集的带 key 事件
+    clock.advance(8.0)
+    ledger.note("第 2 集分镜已设计完 3/6 个片段")
+    clock.advance(8.0)
+    ledger.complete(1, "第 3 集已规划 4 个片段", key="ep3:plan")
+
+    clock.advance(8.0)
+    ledger.beat(beat_a, key=key_a)
+    # 起点是第 1 集的首个心跳（t=8），至 t=64 已等 56 秒；别的集的事件不得把它归零
+    assert _wait_seconds(seen[-1][0]) == 56, f"第 1 集的等待时长应为连续累计：{seen[-1][0]}"
+    assert _wait_seconds(seen[-1][0]) > _wait_seconds(first), (
+        f"别的集的事件重置了第 1 集的计时：{first} → {seen[-1][0]}"
+    )
+
+
+def test_multi_episode_with_bidirectional_corrections():
+    """T5j：多集并发 × 双向修正的组合：不倒退、不越界跳幅、95% 仍等价于真做完。"""
+    seen: List[tuple] = []
+    ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
+
+    # 两集：ep1 估算严重偏大（K̂=28→真 2），ep2 估算偏小（K̂=1→真 12）
+    ledger.add_total((2 + 28) + (2 + 1))
+    ledger.complete(1, "ep1 已规划", key="ep1:plan")
+    ledger.add_total(2 - 28)          # ep1 收缩
+    ledger.complete(1, "ep2 已规划", key="ep2:plan")
+    ledger.add_total(12 - 1)          # ep2 放大
+
+    percents = [percent for _, percent in seen]
+    assert percents == sorted(percents), f"双向修正后进度倒退：{percents}"
+    assert ledger.percent == ledger._band(), "档位必须等于真实比例，不做假平滑"
+
+    real_steps = seen[-1][1]
+    done_at_cap = None
     while ledger.done < ledger.total:
-        ledger.complete(1, "片段")
-        if seen[-1][1] == previous:
-            frozen += 1
-        previous = seen[-1][1]
-    assert frozen == 0, f"逐片段完成仍有 {frozen} 步原地不动"
-    assert previous == RUN_CAP, f"收尾档位未到封顶：{previous}"
+        ledger.complete(1, "完成一步")
+        if done_at_cap is None and seen[-1][1] == RUN_CAP:
+            done_at_cap = ledger.done
+        assert ledger.percent == ledger._band()
+
+    assert ledger.done == ledger.total, f"记账不匹配：{ledger.done}/{ledger.total}"
+    assert ledger.total == 1 + 2 + 1 + 1 + 12 + 1, f"分母未同时体现收缩与放大：{ledger.total}"
+    # 核心不变量：95% 只允许在真实记账步全部完成的那一刻出现
+    assert done_at_cap == ledger.total, (
+        f"首次到 {RUN_CAP}% 时 done 应为 {ledger.total}，实际 {done_at_cap}"
+    )
+    assert real_steps <= RUN_CAP
 
 
 def test_ledger_running_cap_and_finish():
