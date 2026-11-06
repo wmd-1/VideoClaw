@@ -460,7 +460,7 @@ def test_shrink_is_applied_immediately_without_lies():
         f"收缩必须只改分母且账目自洽：done={ledger.done} total={ledger.total}（期望 2/9）"
     )
     assert ledger.percent == ledger._band() == 10 + int(85 * 2 / 9), (
-        f"报出来的必须就是真实档位：{ledger.percent}"
+        f"报出来的必须等于进度源自己算出的档位（含 floor）：{ledger.percent}"
     )
     assert ledger.percent > before, "收缩后的档位应高于收缩前（同一真实工作量下分母变小）"
 
@@ -482,8 +482,9 @@ def test_shrink_is_applied_immediately_without_lies():
 def test_growth_keeps_progress_moving_not_frozen():
     """T5g：分母增长时不得虚报完成：用比例下限防回落，但 MUST NOT 改 done。
 
-    上一版用重定基把 done 从 1 抬到 5，造成「真实 14/18 步就报 95%」；现在接受“档位
-    先停一会儿”作为代价，换取 done/total 始终是真实步数、且 95% 等价于真做完。
+    上一版用重定基把 done 从 1 抬到 5，造成“真实 14/18 步就报 95%”。现在接受已知代价：
+    放大后的头 3 个真实完成步档位不动（floor=0.25，直到 done/total 追上 33% 才重新前进），
+    换到的是 done/total 始终为真实步数、且 95% 等价于真做完。代价量已写成断言，不只注释。
     """
     seen: List[tuple] = []
     ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
@@ -497,14 +498,21 @@ def test_growth_keeps_progress_moving_not_frozen():
     assert ledger.total == 1 + 16 + 1, f"分母未反映真实工作：{ledger.total}"
     assert seen[-1][1] == planned, "增长分母本身不是工作事件，不应推高进度"
 
+    # 已知代价（量化）：防回落靠「已挣得比例下限」，分母变大后头几步就是原地不动
+    stalled = 0
     real_steps = 1
     done_at_cap = None
     while ledger.done < ledger.total:
         real_steps += 1
+        before = ledger.percent
         ledger.complete(1, f"第 {real_steps} 步")
-        if done_at_cap is None and seen[-1][1] == RUN_CAP:
+        if ledger.percent == before:
+            stalled += 1
+        if done_at_cap is None and ledger.percent == RUN_CAP:
             done_at_cap = ledger.done
 
+    assert stalled == 3, f"K̂=2→真实 16 的停滞代价应为 3 步（文档已知边界第 5 条），实际 {stalled}"
+    assert ledger._earned_floor == 0.25, f"下限应为放大前的比例：{ledger._earned_floor}"
     assert ledger.done == ledger.total, f"记账不完就不该跑完循环：{ledger.done}/{ledger.total}"
     assert done_at_cap == ledger.total, (
         f"percent 首次到 {RUN_CAP} 时 done 应为 {ledger.total}，实际 {done_at_cap}"
@@ -552,7 +560,11 @@ def test_wait_timer_is_scoped_per_step():
 
 
 def test_multi_episode_with_bidirectional_corrections():
-    """T5j：多集并发 × 双向修正的组合：不倒退、不越界跳幅、95% 仍等价于真做完。"""
+    """T5j：多集并发 × 双向修正的组合：不倒退、不提前 95、档位就是 max(真实比例, 已挣得下限)。
+
+    注：报出的档位不保证等于当前真实比例——先放大后收缩的窗口里 floor 会高于真实比例，
+    这是已知边界第 5 条（下方断言里量化）。
+    """
     seen: List[tuple] = []
     ledger = _ledger(lambda message, percent, data=None: seen.append((message, percent)))
 
@@ -565,15 +577,16 @@ def test_multi_episode_with_bidirectional_corrections():
 
     percents = [percent for _, percent in seen]
     assert percents == sorted(percents), f"双向修正后进度倒退：{percents}"
-    assert ledger.percent == ledger._band(), "档位必须等于真实比例，不做假平滑"
+    truth = 10 + int(85 * ledger.done / ledger.total)
+    assert ledger.percent >= truth, f"报出的档位不得低于真实比例：{ledger.percent} vs {truth}"
+    assert ledger.percent == ledger._band(), "档位必须由进度源自己算出，不得另发一套数"
 
-    real_steps = seen[-1][1]
     done_at_cap = None
     while ledger.done < ledger.total:
         ledger.complete(1, "完成一步")
-        if done_at_cap is None and seen[-1][1] == RUN_CAP:
+        if done_at_cap is None and ledger.percent == RUN_CAP:
             done_at_cap = ledger.done
-        assert ledger.percent == ledger._band()
+        assert ledger.percent >= 10 + int(85 * ledger.done / ledger.total)
 
     assert ledger.done == ledger.total, f"记账不匹配：{ledger.done}/{ledger.total}"
     assert ledger.total == 1 + 2 + 1 + 1 + 12 + 1, f"分母未同时体现收缩与放大：{ledger.total}"
@@ -581,7 +594,35 @@ def test_multi_episode_with_bidirectional_corrections():
     assert done_at_cap == ledger.total, (
         f"首次到 {RUN_CAP}% 时 done 应为 {ledger.total}，实际 {done_at_cap}"
     )
-    assert real_steps <= RUN_CAP
+
+
+def test_earned_floor_can_exceed_current_truth_ratio():
+    """T5k：先放大再收缩、且收缩落点低于历史下界时，floor 会把档位抬到真实比例之上。
+
+    这是已知边界第 5 条的量化：报出的不是当前真实比例，而是历史最高比例的下界。
+    不违反两条硬不变量：不倒退、不提前摸到 95。
+    """
+    ledger = _ledger(lambda message, percent, data=None: None)
+
+    ledger.add_total(2 + 2)
+    ledger.complete(1, "已规划片段", key="ep1:plan")   # done=1 / total=4 → 31%
+    ledger.add_total(16 - 2)          # 放大：total=18，floor = 1/4 = 0.25
+    ledger.add_total(6 - 18)          # 再收缩到 6（落点低于历史下界）
+
+    truth = 10 + int(85 * ledger.done / ledger.total)
+    assert (ledger.done, ledger.total) == (1, 6), f"账目应为 1/6：{ledger.done}/{ledger.total}"
+    assert ledger._earned_floor == 0.25
+    assert truth == 24 and ledger._band() == 31, (
+        f"floor 高于真实比例的具体幅度变了：band={ledger._band()} truth={truth}"
+    )
+    assert ledger._band() < RUN_CAP, "被 floor 抬高也不得提前报 95"
+
+    previous = ledger.percent
+    while ledger.done < ledger.total:
+        ledger.complete(1, "完成一步")
+        assert ledger.percent >= previous, "floor 只能抬高，不得造成倒退"
+        previous = ledger.percent
+    assert ledger.percent == RUN_CAP and ledger.done == ledger.total
 
 
 def test_ledger_running_cap_and_finish():
