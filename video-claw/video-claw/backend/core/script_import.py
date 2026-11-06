@@ -301,20 +301,157 @@ _SUBTITLE_RE = re.compile(r"^\s*【\s*字幕叠加\s*】\s*(.*)$")
 _END_CARD_RE = re.compile(r"^\s*【\s*定帧\s*】\s*(.*)$")
 _PLACEHOLDER_RE = re.compile(r"^\s*[\[【（(]\s*[^\]】）)]{0,12}预留位\s*[\]】）)]")
 _SCENE_DESC_RE = re.compile(r"^\s*【\s*画面描述\s*】")
+# 「[场景：李大海家中，客厅]」这类行内场景志不是动作/台词
+_BRACKET_SCENE_RE = re.compile(r"^\s*[\[【]\s*(?:场景|地点|时间|画面|镜头)\s*[:：]")
 _NARRATION_RE = re.compile(
     r"^\s*(?:【\s*旁白\s*[（(]?([^）)】]*)[）)]?\s*】|(?:旁白|Narration|VO|V\.O\.)\s*[:：])",
     re.I,
 )
 _CAST_HEAD_RE = re.compile(
-    r"^\s*(?:(?:角色设定|人物表|角色表)\s*[:：]?\s*(.*)|(?:人物|角色)\s*[:：]\s*"
+    r"^\s*(?:(?:角色设定|人物设定|角色介绍|人物介绍|人物表|角色表)\s*[:：]?\s*(.*)"
+    r"|(?:人物|角色)\s*[:：]\s*"
     r"|(?:Characters?|Cast)\s*[:：]\s*(.*))$",
     re.I,
 )
-_CAST_META_HEAD_RE = re.compile(r"^\s*(?:角色设定|人物表|角色表)", re.I)
+_CAST_META_HEAD_RE = re.compile(
+    r"^\s*(?:角色设定|人物设定|角色介绍|人物介绍|人物表|角色表)", re.I
+)
 _CAST_ITEM_RE = re.compile(r"^\s*([^\s:：]{1,24})\s*[:：]\s*(.+)$")
+# 「李大海 - 45岁，小微企业主」这类破折号条目也常见于上传剧本的人物段
+_CAST_ITEM_DASH_RE = re.compile(r"^\s*([^\s:：\-—–]{1,24})\s*[-—–]{1,2}\s*(.+)$")
 _DIALOGUE_RE = re.compile(
     r"^([^:：]{1,24}?)(?:[（(]([^）)]{0,40})[）)])?[:：]\s*(.+)$"
 )
+
+# 剧本头信息（前言区）：只有存在幕/场/集标记时才启用，避免把无结构剧本的正文当片头
+_FRONT_MATTER_LEVELS = (LEVEL_EPISODE, LEVEL_ACT, LEVEL_SCENE)
+_BOOK_TITLE_RE = re.compile(r"^《[^》]{1,60}》$")
+_WORK_TITLE_TAIL_RE = re.compile(r"(?:短片|短视频|微电影|宣传片|剧本|脚本)\s*$")
+_LABEL_TITLE_RE = re.compile(r"^([^：:]{1,10})[：:]\s*(\S.{0,60})$")
+_LABEL_TITLE_BLOCKLIST = {
+    "人物", "角色", "人物设定", "角色设定", "场景", "画面", "镜头", "地点", "时间",
+    "字幕", "字幕叠加", "定帧", "旁白", "音效", "音乐", "转场", "特效", "标题",
+    "片名", "主题", "说明", "备注", "剧情", "梗概", "简介", "概述", "大纲",
+}
+_SYNOPSIS_HEAD_RE = re.compile(
+    r"^\s*(?:剧情梗概|故事梗概|内容简介|剧情简介|故事简介|内容概述|剧本梗概"
+    r"|剧本大纲|故事大纲|梗概|简介|概述|大纲)\s*[:：]?\s*$"
+)
+
+
+def _cast_item(text: str):
+    """角色段条目：优先「名字：描述」，其次「名字 - 描述」。"""
+    value = str(text or "").strip()
+    match = _CAST_ITEM_RE.match(value)
+    if match:
+        return match
+    return _CAST_ITEM_DASH_RE.match(value)
+
+
+def _is_structure_heading(text: str) -> bool:
+    """集/幕/场/Markdown 标题：角色段遇到它必须结束。"""
+    value = str(text or "").strip()
+    return bool(
+        _EPISODE_RE.match(value)
+        or _ACT_RE.match(value)
+        or _SCENE_RE.match(value)
+        or _MARKDOWN_RE.match(value)
+    )
+
+
+def _front_matter_end(candidates: List[dict]) -> Optional[int]:
+    """前言区结束行（第一个集/幕/场标记），没有结构标记时返回 None。"""
+    stops = [
+        int(item["line"])
+        for item in candidates
+        if item.get("level") in _FRONT_MATTER_LEVELS
+    ]
+    return min(stops) if stops else None
+
+
+def _looks_like_work_title(text: str) -> bool:
+    body = _strip_markup(text)
+    if not body or len(body) > 30:
+        return False
+    if _BOOK_TITLE_RE.match(body):
+        return True
+    if re.search(r"[:：]", body):
+        return False
+    return bool(_WORK_TITLE_TAIL_RE.search(body))
+
+
+def _looks_like_label_title(text: str, cast_names: Iterable[str] = ()) -> bool:
+    """前言区「短标签：说明」形标题（如「带你了解：……」），角色名不算标题。"""
+    match = _LABEL_TITLE_RE.match(_strip_markup(text))
+    if not match:
+        return False
+    label = match.group(1).strip()
+    if not label or label in _LABEL_TITLE_BLOCKLIST:
+        return False
+    return label not in set(cast_names)
+
+
+def _synopsis_span(
+    lines: List[str],
+    candidates: List[dict],
+    front_end: Optional[int],
+) -> Optional[Tuple[int, int]]:
+    """剧情梗概/简介段的行区间（仅前言区），整段只做元信息标注。"""
+    if front_end is None:
+        return None
+    limit = min(front_end, len(lines))
+    heading_lines = {int(item["line"]) for item in candidates}
+    for index in range(limit):
+        if not _SYNOPSIS_HEAD_RE.match(_strip_markup(lines[index])):
+            continue
+        end = index
+        for follow in range(index + 1, limit):
+            stripped = lines[follow].strip()
+            if not stripped:
+                continue
+            judge = _strip_markup(stripped)
+            if (
+                follow in heading_lines
+                or _CAST_HEAD_RE.match(judge)
+                or _META_LINE_RE.match(judge)
+                or _DURATION_RE.match(judge)
+                or _TONE_RE.match(judge)
+            ):
+                break
+            end = follow
+        return index, end
+    return None
+
+
+def _front_matter_annotation(
+    stripped: str,
+    judge: str,
+    index: int,
+    synopsis_span: Optional[Tuple[int, int]],
+    cast_names: Iterable[str],
+) -> Optional[Dict[str, Any]]:
+    if synopsis_span and synopsis_span[0] <= index <= synopsis_span[1]:
+        return {"type": "meta"}
+    if _looks_like_work_title(judge):
+        return {"type": "heading", "unit": LEVEL_TITLE, "title": _clean_heading(stripped)}
+    if _looks_like_label_title(judge, cast_names):
+        return {"type": "heading", "unit": LEVEL_TITLE, "title": _clean_heading(stripped)}
+    return None
+
+
+def _text_annotation(judge: str) -> Dict[str, Any]:
+    """非结构化正文行的兜底判定：台词 / 章节标签 / 动作。"""
+    dialogue = _DIALOGUE_RE.match(judge)
+    if not dialogue:
+        return {"type": "action"}
+    speaker = dialogue.group(1).strip().strip("*_` ")
+    if speaker in {"人物", "场景", "画面", "镜头", "地点", "时间", "字幕叠加", "定帧"}:
+        return {"type": "scene_desc"}
+    return {
+        "type": "dialogue",
+        "speaker": speaker,
+        "tone": (dialogue.group(2) or "").strip(),
+    }
 
 
 def parse_duration_seconds(text: str) -> Optional[int]:
@@ -398,7 +535,7 @@ def _cast_section(lines: List[str]) -> Tuple[Optional[int], Optional[int]]:
     head_match = _CAST_HEAD_RE.match(_strip_markup(lines[start]))
     inline = ((head_match.group(1) if head_match else "") or
               (head_match.group(2) if head_match else "") or "").strip()
-    inline_item = _CAST_ITEM_RE.match(inline) if inline else None
+    inline_item = _cast_item(inline) if inline else None
     if inline and not inline_item:
         # 行内名单（如 `Characters: Alice, Bob` / `Characters: Alice`）：单行角色段
         return start, start
@@ -422,16 +559,19 @@ def _cast_section(lines: List[str]) -> Tuple[Optional[int], Optional[int]]:
                     look += 1
                 if look < len(lines):
                     nxt = lines[look].strip()
-                    nxt_item = _CAST_ITEM_RE.match(nxt)
+                    nxt_item = _cast_item(nxt)
                     if (nxt_item and not re.match(r"^【", nxt)
+                            and not _is_structure_heading(nxt)
                             and nxt_item.group(1).strip() not in seen_names):
                         continue
             break
         if (_NARRATION_RE.match(stripped) or _SCENE_DESC_RE.match(stripped)
+                or _BRACKET_SCENE_RE.match(stripped)
                 or _SUBTITLE_RE.match(stripped) or _END_CARD_RE.match(stripped)
+                or _is_structure_heading(stripped)
                 or stripped.lower().startswith("<action>")):
             break
-        item = _CAST_ITEM_RE.match(stripped)
+        item = _cast_item(stripped)
         if not item or re.match(r"^【", stripped):
             break
         name = item.group(1).strip()
@@ -457,7 +597,7 @@ def extract_cast(lines: List[str]) -> List[dict]:
         return []
     if inline:
         # 「角色设定：小陈：…」形式，补一行虚拟解析
-        item = _CAST_ITEM_RE.match(inline)
+        item = _cast_item(inline)
         if item:
             name = item.group(1).strip()
             for single in [part.strip() for part in name.split("/") if part.strip()] or [name]:
@@ -482,7 +622,7 @@ def extract_cast(lines: List[str]) -> List[dict]:
     seen = {item["name"] for item in characters}
     for line in lines[start + 1:end + 1]:
         stripped = line.strip()
-        item = _CAST_ITEM_RE.match(stripped)
+        item = _cast_item(stripped)
         if not item:
             continue
         name = item.group(1).strip()
@@ -512,6 +652,18 @@ def annotate_lines(
     """为每个非空行贴一个主类型；不复制行内容。"""
     candidate_by_line = {item["line"]: item for item in candidates}
     cast_start, cast_end = cast_range
+    # 剧本头（片名/副标题/梗概）只在“后面确实存在幕/场/集标记”时识别，
+    # 否则无结构剧本的开头对白会被误判成片头标题。
+    front_end = _front_matter_end(candidates)
+    cast_names: set = set()
+    synopsis_span: Optional[Tuple[int, int]] = None
+    if front_end is not None:
+        cast_names = {
+            str(entry.get("name") or "").strip()
+            for entry in extract_cast(lines)
+            if str(entry.get("name") or "").strip()
+        }
+        synopsis_span = _synopsis_span(lines, candidates, front_end)
     annotations: List[dict] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
@@ -523,7 +675,7 @@ def annotate_lines(
         # 已知段落标记优先于通用标题候选（如 `## 【定帧】`）
         if _PLACEHOLDER_RE.match(judge):
             item.update({"type": "placeholder", "kind": "screen_recording"})
-        elif _SCENE_DESC_RE.match(judge):
+        elif _SCENE_DESC_RE.match(judge) or _BRACKET_SCENE_RE.match(judge):
             item["type"] = "scene_desc"
         elif _NARRATION_RE.match(judge):
             speaker = (_NARRATION_RE.match(judge).group(1) or "").strip()
@@ -549,22 +701,12 @@ def annotate_lines(
         elif judge.lower().startswith("<action>"):
             item["type"] = "action"
         else:
-            dialogue = _DIALOGUE_RE.match(judge)
-            if dialogue:
-                speaker = dialogue.group(1).strip().strip("*_` ")
-                # 章节标签不是台词
-                if speaker in {"人物", "场景", "画面", "镜头", "地点", "时间", "字幕叠加", "定帧"}:
-                    item["type"] = "scene_desc"
-                else:
-                    item.update(
-                        {
-                            "type": "dialogue",
-                            "speaker": speaker,
-                            "tone": (dialogue.group(2) or "").strip(),
-                        }
-                    )
-            else:
-                item["type"] = "action"
+            front_item = None
+            if front_end is not None and index < front_end:
+                front_item = _front_matter_annotation(
+                    stripped, judge, index, synopsis_span, cast_names
+                )
+            item.update(front_item or _text_annotation(judge))
         annotations.append(item)
     return annotations
 
