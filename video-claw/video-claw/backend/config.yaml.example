@@ -137,6 +137,30 @@ custom_models:
     model: Qwen-Image-Edit
     types: [i2i]
     concurrency: 1
+  # Qwen-Image 2.1 系列（vllm-omni 部署）：能力声明口径见 docs/reference/Qwen-Image-2.1/。
+  # 基础版：官方要求每次请求显式传步数（推荐 40，服务端默认 50）；宽高对齐 32；
+  # vllm-omni 实现只接受 4 张参考图（Qwen 模型卡写 10 张），声明上限后由适配层按序收敛并记录。
+  - id: local-qwen-image-21
+    provider: local_image_t2i
+    model: Qwen/Qwen-Image-2.1
+    types: [t2i, i2i]
+    concurrency: 1
+    capabilities:
+      num_inference_steps: 40
+      true_cfg_scale: 1.0
+      max_reference_images: 4
+      size_alignment: 32
+  # Turbo：8 步蒸馏权重，调度随权重保存，MUST NOT 声明 num_inference_steps（会被 sample_sigmas 覆盖）；
+  # 如需覆盖调度只能在 config.yaml 里写 sigmas 列表（设置页不提供该控件）。
+  - id: local-qwen-image-21-turbo
+    provider: local_image_t2i
+    model: Qwen/Qwen-Image-2.1-Turbo
+    types: [t2i, i2i]
+    concurrency: 1
+    capabilities:
+      true_cfg_scale: 1.0
+      max_reference_images: 4
+      turbo: true
   - id: MiniMax-H3-sglang
     provider: local_video_sglang
     model: MiniMaxAI/MiniMax-H3

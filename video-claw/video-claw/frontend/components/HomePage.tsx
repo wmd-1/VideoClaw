@@ -14,6 +14,7 @@ import {
 } from '@/config/models';
 import { STAGES, useEnabledStages } from './TopBar';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
+import ReferenceLimitHint from '@/components/ReferenceLimitHint';
 import ProviderSelect from './ProviderSelect';
 
 import { apiFetch } from "@/lib/identityGuard";
@@ -661,6 +662,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                     onChange={v => setSelectedI2I(v)}
                     className={HOME_MODEL_SELECT_CLASS}
                   />
+                  <ReferenceLimitHint modelId={selectedI2I} />
                 </label>
                 <label className="flex flex-col gap-1 col-span-2">
                   <span className="text-gray-500 font-medium">视频生成方式</span>

@@ -464,6 +464,9 @@ export function CustomModelsSection({
           const entryId = entry.id || '';
           const envOnly = isEnvOnly(entryId);
           const selectedTypes: string[] = Array.isArray(entry.types) ? entry.types : [];
+          // 图像与视频同名参数（num_inference_steps）语义不同，控件文案按类型区分
+          const hasImageType = selectedTypes.includes('t2i') || selectedTypes.includes('i2i');
+          const hasVideoType = selectedTypes.includes('video');
           const selectedAbilities: string[] = Array.isArray(entry.abilities) ? entry.abilities : [];
           // key 使用稳定的行下标：编辑 id 时不触发重挂载（否则输入一个字符就失焦）
           return (
@@ -568,7 +571,7 @@ export function CustomModelsSection({
                 >
                   {capsOpen[String(entry.id || index)] ? '▾ 收起高级能力参数' : '▸ 高级能力参数（capabilities）'}
                 </button>
-                <span className="text-[10px] text-gray-400">留空即不下发；视频模型建议 short_edge=768、时长 4-15</span>
+                <span className="text-[10px] text-gray-400">留空即不下发；视频模型建议 short_edge=768、时长 4-15；图像模型可声明参考图上限/去噪步数等</span>
               </div>
               {capsOpen[String(entry.id || index)] && (
                 <div className="mt-2 grid grid-cols-1 gap-2 rounded-lg border border-gray-100 bg-white p-2 md:grid-cols-3 lg:grid-cols-4">
@@ -607,8 +610,8 @@ export function CustomModelsSection({
                     )}
                   </label>
                   <label className="flex flex-col">
-                    <FieldLabel text="num_inference_steps 步数" />
-                    <input className={inputClass} type="number" min={1} placeholder="标准 50；Turbo 4step→5" value={capValue(entry, 'num_inference_steps')} disabled={envOnly} onChange={e => updateCapability(index, 'num_inference_steps', e.target.value)} />
+                    <FieldLabel text={hasImageType && !hasVideoType ? 'num_inference_steps 去噪步数' : 'num_inference_steps 步数（sigma 点数）'} />
+                    <input className={inputClass} type="number" min={1} placeholder={hasImageType && !hasVideoType ? 'Qwen-Image-2.1：40；Turbo 请留空' : '标准 50；Turbo 4step→5'} value={capValue(entry, 'num_inference_steps')} disabled={envOnly} onChange={e => updateCapability(index, 'num_inference_steps', e.target.value)} />
                   </label>
                   <label className="flex flex-col">
                     <FieldLabel text="flow_shift" />
@@ -629,6 +632,42 @@ export function CustomModelsSection({
                     />
                     <span className="text-[11px] text-gray-500">快速模式（仅 4 步，不下发 shift）</span>
                   </label>
+                  {hasImageType && (
+                    <>
+                      <label className="flex flex-col">
+                        <FieldLabel text="max_reference_images 参考图上限" />
+                        <input className={inputClass} type="number" min={1} placeholder="vllm-omni：4" value={capValue(entry, 'max_reference_images')} disabled={envOnly} onChange={e => updateCapability(index, 'max_reference_images', e.target.value)} />
+                        <span className="mt-1 text-[10px] text-gray-400">超出部分由后端按顺序保留并记录；无法识别的值等同未声明</span>
+                      </label>
+                      <label className="flex flex-col">
+                        <FieldLabel text="true_cfg_scale 真 CFG" />
+                        <input className={inputClass} type="number" step="0.1" min={0} placeholder="1.0（关闭 CFG）" value={capValue(entry, 'true_cfg_scale')} disabled={envOnly} onChange={e => updateCapability(index, 'true_cfg_scale', e.target.value)} />
+                      </label>
+                      <label className="flex flex-col">
+                        <FieldLabel text="seed 随机种子" />
+                        <input className={inputClass} type="number" min={0} placeholder="42" value={capValue(entry, 'seed')} disabled={envOnly} onChange={e => updateCapability(index, 'seed', e.target.value)} />
+                      </label>
+                      <label className="flex flex-col">
+                        <FieldLabel text="size_alignment 尺寸对齐粒度" />
+                        <input className={inputClass} type="number" min={1} placeholder="32" value={capValue(entry, 'size_alignment')} disabled={envOnly} onChange={e => updateCapability(index, 'size_alignment', e.target.value)} />
+                        <span className="mt-1 text-[10px] text-gray-400">需为正整数且为 2 的幂；声明后宽高向下取整到该倍数</span>
+                      </label>
+                      <label className="flex items-center gap-2 pt-4">
+                        <input
+                          id={`turbo-mode-${String(entry.id || index)}`}
+                          type="checkbox"
+                          className="h-3.5 w-3.5 accent-violet-600"
+                          checked={Boolean(entry.capabilities?.turbo)}
+                          disabled={envOnly}
+                          onChange={e => updateCapability(index, 'turbo', e.target.checked)}
+                        />
+                        <span className="text-[11px] text-gray-500">蒸馏权重（不下发步数，调度随权重保存）</span>
+                      </label>
+                      <p className="col-span-full text-[10px] text-gray-400">
+                        sigmas（显式调度覆盖）只能在 config.yaml 的 capabilities 里声明；此处不提供控件，已有声明也不会被本页改动清除。
+                      </p>
+                    </>
+                  )}
                 </div>
               )}
 

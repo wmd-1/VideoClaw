@@ -162,6 +162,9 @@ class ReferenceGeneratorAgent(AgentInterface):
             logger.warning(f"[{segment.get('segment_id', '')}] 未找到场景参考图: location={loc}, set_id={set_id}, available_settings={list(asset_map['settings'].keys())}")
         
         logger.info(f"[{segment.get('segment_id', '')}] 共收集 {len(refs)} 张参考图")
+        # 上限 10 是模型侧（Qwen 官方模型卡）口径；后端实现上限（如 vllm-omni 只接受 4 张）
+        # 由图像适配层按 capabilities.max_reference_images 收敛并记录，本处不再自行裁剪
+        # （openspec: custom-image-adapter-fidelity D1）。
         return refs[:10]
 
     def _get_descriptions(self, segment: dict, char_id_map: dict, setting_id_map: dict,

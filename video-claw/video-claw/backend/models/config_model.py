@@ -676,6 +676,23 @@ def _normalize_video_capabilities(capability: dict[str, Any]) -> dict[str, Any]:
     return capability
 
 
+def _normalize_image_capabilities(capability: dict[str, Any]) -> dict[str, Any]:
+    """图像侧能力声明只保留合法项（openspec: custom-image-adapter-fidelity D6.1）。
+
+    非法/越界声明在 parse_image_decl 内记录并丢弃，等同未声明；其余能力标签原样保留。
+    """
+    from models.custom_common import parse_image_decl
+
+    declared = parse_image_decl(capability)
+    for key in ("num_inference_steps", "true_cfg_scale", "seed", "sigmas",
+                "max_reference_images", "size_alignment", "turbo"):
+        if key in declared:
+            capability[key] = declared[key]
+        else:
+            capability.pop(key, None)
+    return capability
+
+
 def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[str, Any]:
     """按 types/abilities 推导自定义模型能力标签，用户声明的 capabilities 可覆盖默认值。"""
     ability_types: list[str] = []
@@ -756,6 +773,8 @@ def _custom_model_capabilities(item: dict[str, Any], types: list[str]) -> dict[s
         capability = _deep_merge_dict(capability, user_caps)
     if "video" in types:
         capability = _normalize_video_capabilities(capability)
+    if any(t in types for t in ("t2i", "i2i")):
+        capability = _normalize_image_capabilities(capability)
     return capability
 
 

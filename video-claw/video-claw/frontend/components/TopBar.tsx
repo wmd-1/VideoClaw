@@ -13,6 +13,7 @@ import {
 } from '@/config/models';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility, fetchVideoModelCapabilities } from '@/lib/modelRegistry';
 import ProviderSelect from '@/components/ProviderSelect';
+import ReferenceLimitHint from '@/components/ReferenceLimitHint';
 
 import { apiFetch } from "@/lib/identityGuard";
 import { withBasePath } from '@/lib/basePath';
@@ -348,6 +349,7 @@ function ModelSelector({
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">图生图</span>
             <ProviderSelect value={config.image_it2i_model} providers={i2iProviders} onChange={v => update('image_it2i_model', v)} className={MODEL_SELECT_CLASS} />
+            <ReferenceLimitHint modelId={config.image_it2i_model} />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">视频生成方式</span>

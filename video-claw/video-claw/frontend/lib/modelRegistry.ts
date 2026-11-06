@@ -1,4 +1,4 @@
-import type { ProviderGroup, VideoModelCapabilities } from '@/config/models';
+import type { ImageModelCapabilities, ProviderGroup, VideoModelCapabilities } from '@/config/models';
 import { fetchApiModels, fetchModelAvailability } from '@/lib/workflowApi';
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -60,6 +60,25 @@ export async function fetchVideoModelCapabilities(modelId: string): Promise<Vide
     videoCapsCache = { at: now, map };
   }
   return videoCapsCache.map.get(modelId) ?? null;
+}
+
+/* 图像模型能力短缓存：图生图参考图上限提示与视频侧同一取向（避免频繁请求） */
+let imageCapsCache: { at: number; map: Map<string, ImageModelCapabilities> } | null = null;
+const IMAGE_CAPS_CACHE_TTL_MS = 10_000;
+
+export async function fetchImageModelCapabilities(modelId: string): Promise<ImageModelCapabilities | null> {
+  if (!modelId) return null;
+  const now = Date.now();
+  if (!imageCapsCache || now - imageCapsCache.at > IMAGE_CAPS_CACHE_TTL_MS) {
+    const models = await fetchApiModels({ modelType: 'i2i' });
+    const map = new Map<string, ImageModelCapabilities>();
+    for (const model of models) {
+      const caps = model.capabilities;
+      if (caps && typeof caps === 'object') map.set(model.id, caps as ImageModelCapabilities);
+    }
+    imageCapsCache = { at: now, map };
+  }
+  return imageCapsCache.map.get(modelId) ?? null;
 }
 
 /* 模型可用性短缓存（评审 M-3）：首页/顶栏共 10 处下拉都经 withSlotPlaceholder/describeSlotIssue

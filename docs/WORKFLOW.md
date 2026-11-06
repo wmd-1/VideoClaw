@@ -57,6 +57,7 @@ flowchart LR
 - 模型来源：**内置注册表**（DashScope / ARK / OpenAI / Gemini / Kling 等）+ **自定义供应商与模型**（`api_providers` 新增供应商：`protocol` = `openai` / `vllm-omni` / `sglang`；`custom_models` 引用注册，覆盖 LLM/VLM/文生图/图生图/视频）。
 - 注册方式三选一（等价）：设置页「自定义供应商/自定义模型」、直接编辑 `config.yaml`、`.env` 变量（`VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*`，优先级最高）。
 - 客户端路由为**注册表优先**：命中自定义模型走协议适配层，否则走内置名称路由；未注册的模型 id 会明确报错（不会误落入某供应商默认分支）。
+- **自定义图像模型的能力声明**（`capabilities`，设置页“高级能力参数”或直接写 YAML；口径来源 `docs/reference/Qwen-Image-2.1/`）：可声明 `num_inference_steps`（去噪步数）/ `true_cfg_scale` / `seed` / `sigmas` / `max_reference_images` / `size_alignment` / `turbo` 七项。未声明时请求字段与旧行为逐键一致；声明后文生图写入 `images/generations` 的 JSON、图生图写入 `images/edits` 的 multipart 表单字段（两条链路同一组值）。蒸馏权重（`turbo: true`，如 Qwen-Image-2.1-Turbo）**不**下发 `num_inference_steps`（调度随权重保存），要改调度只能声明 `sigmas`（仅能在 config.yaml 写，设置页不提供控件）。注意与视频侧同名参数语义不同：视频侧 `num_inference_steps` 是 sigma 点数、`fast_h3` 是快速模式标记，按模型类型解释、互不影响。非法/越界声明被忽略并记录（等同未声明），不会让生成失败；`size_alignment` 取整后尺寸低于协议下限时发送前拒绝。参考图：声明 `max_reference_images` 后由适配层按顺序收敛（超出部分不发出）并在日志记录数量与原因，生成配置面板（首页与项目页共用同一组件）据声明做发送前非阻塞提示；未声明时不裁剪，若服务端因超限报错则透出原文并提示可声明上限。远程形态（`http(s)`/`data:`）参考图会先落盘为会话临时副本再以文件 part 上传（避开官方 `url` 字段的 1024KB/part 限制），用完即清理；落盘失败在发送前拒绝。
 - 每个模型有 `concurrency`（并发缺省 1，本地单卡服务最保守）；阶段内的批量生成按该值限流（会话里 `enable_concurrency=false` 时强制串行）。
 - **web_search 实际分支（`models/llm_client.py`）**：
 

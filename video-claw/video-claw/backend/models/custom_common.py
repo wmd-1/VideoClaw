@@ -54,6 +54,124 @@ VIDEO_JOB_FAILURE_STATES = {"failed", "error", "cancelled", "canceled"}
 # 图生图 multipart 字段名按协议适配时使用的回退状态码（这些码尝试下一个字段名/编码）
 RETRYABLE_STATUS_CODES = {400, 404, 405, 415, 422}
 
+# 图像能力声明的完整集合（openspec: custom-image-adapter-fidelity D6.1）。
+# 声明值 MAY 以数值字符串书写，因此先强制转换再做范围校验；非法项忽略并记录，等同未声明。
+IMAGE_DECL_KEYS = (
+    "num_inference_steps", "true_cfg_scale", "seed", "sigmas",
+    "max_reference_images", "size_alignment", "turbo",
+)
+
+
+def _as_int(raw: Any) -> Optional[int]:
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(raw: Any) -> Optional[float]:
+    if isinstance(raw, bool):
+        return None
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _ignore_image_decl(key: str, value: Any, reason: str) -> None:
+    """记录被忽略的图像能力声明（与视频侧 sampling 声明同一取向：不影响生成）。"""
+    logger.warning("capabilities.%s ignored: %s (value=%r)", key, reason, value)
+
+
+def parse_image_decl(caps: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """校验图像模型的能力声明，只返回合法项；非法/越界项忽略并记录原因。
+
+    这里只处理“声明值非法”（等同未声明）；“参数合法但结果非法”（如取整后
+    尺寸低于协议最小值）属于发送前拒绝，由调用方处理，不在此忽略。
+    """
+    result: Dict[str, Any] = {}
+    if not isinstance(caps, dict):
+        return result
+
+    if caps.get("num_inference_steps") is not None:
+        steps = _as_int(caps.get("num_inference_steps"))
+        if steps is None:
+            _ignore_image_decl("num_inference_steps", caps.get("num_inference_steps"), "not an integer")
+        elif steps <= 0:
+            _ignore_image_decl("num_inference_steps", steps, "non-positive value")
+        else:
+            result["num_inference_steps"] = steps
+
+    if caps.get("true_cfg_scale") is not None:
+        cfg = _as_float(caps.get("true_cfg_scale"))
+        if cfg is None:
+            _ignore_image_decl("true_cfg_scale", caps.get("true_cfg_scale"), "not a number")
+        elif cfg <= 0:
+            _ignore_image_decl("true_cfg_scale", cfg, "non-positive value")
+        else:
+            result["true_cfg_scale"] = cfg
+
+    if caps.get("seed") is not None:
+        seed = _as_int(caps.get("seed"))
+        if seed is None:
+            _ignore_image_decl("seed", caps.get("seed"), "not an integer")
+        elif seed < 0:
+            _ignore_image_decl("seed", seed, "negative value")
+        else:
+            result["seed"] = seed
+
+    if caps.get("sigmas") is not None:
+        raw_sigmas = caps.get("sigmas")
+        items = list(raw_sigmas) if isinstance(raw_sigmas, (list, tuple)) else None
+        if items is None:
+            _ignore_image_decl("sigmas", raw_sigmas, "must be a list of numbers")
+        elif not items:
+            _ignore_image_decl("sigmas", raw_sigmas, "empty list")
+        else:
+            values = [_as_float(item) for item in items]
+            if any(value is None for value in values):
+                _ignore_image_decl("sigmas", raw_sigmas, "non-numeric entries")
+            elif any(value < 0 or value > 1 for value in values):
+                _ignore_image_decl("sigmas", values, "entries outside [0, 1]")
+            elif any(values[i] < values[i + 1] for i in range(len(values) - 1)):
+                _ignore_image_decl("sigmas", values, "schedule must be non-increasing")
+            else:
+                result["sigmas"] = values
+
+    if caps.get("max_reference_images") is not None:
+        limit = _as_int(caps.get("max_reference_images"))
+        if limit is None:
+            _ignore_image_decl("max_reference_images", caps.get("max_reference_images"), "not an integer")
+        elif limit <= 0:
+            _ignore_image_decl("max_reference_images", limit, "non-positive value")
+        else:
+            result["max_reference_images"] = limit
+
+    if caps.get("size_alignment") is not None:
+        alignment = _as_int(caps.get("size_alignment"))
+        if alignment is None:
+            _ignore_image_decl("size_alignment", caps.get("size_alignment"), "not an integer")
+        elif alignment <= 0 or alignment & (alignment - 1):
+            _ignore_image_decl("size_alignment", alignment, "must be a positive power of two")
+        else:
+            result["size_alignment"] = alignment
+
+    if "turbo" in caps:
+        if isinstance(caps.get("turbo"), bool):
+            if caps["turbo"]:
+                result["turbo"] = True
+        else:
+            _ignore_image_decl("turbo", caps.get("turbo"), "must be a boolean")
+
+    return result
+
+
+def filter_image_decl_keys(caps: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """供注册表使用：只保留合法声明项（非法项已被 parse_image_decl 记录并丢弃）。"""
+    return parse_image_decl(caps)
+
 
 class ModelNotRegisteredError(RuntimeError):
     """模型既不在内置注册表、也不在自定义模型列表。"""

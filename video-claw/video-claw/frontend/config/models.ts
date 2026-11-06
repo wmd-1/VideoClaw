@@ -63,3 +63,16 @@ export interface VideoModelCapabilities {
     resolutions?: string[];
     short_edge?: number;
 }
+
+/**
+ * 图像模型能力声明（openspec: custom-image-adapter-fidelity）。
+ * 字段由后端按合法范围过滤后下发，前端只用于展示与发送前提示，不自行推断默认值。
+ */
+export interface ImageModelCapabilities {
+    max_reference_images?: number;
+    num_inference_steps?: number;
+    true_cfg_scale?: number;
+    seed?: number;
+    size_alignment?: number;
+    turbo?: boolean;
+}
