@@ -315,7 +315,7 @@ Docker 下配置与本地结果缓存落在宿主 `./data/`；元数据在 Postg
 
 ## 测试与校验
 
-- 后端：`backend/tests/` 有 pytest 套件；按项目规则在既有容器内执行。容器未挂载 tests 目录时，先清空并重建目标目录，再拷贝目录内容（避免重复执行时嵌套成 `/tmp/vc_tests/tests`）：`docker exec video-claw-backend rm -rf /tmp/vc_tests && docker exec video-claw-backend mkdir -p /tmp/vc_tests`，然后 `docker cp video-claw/video-claw/backend/tests/. video-claw-backend:/tmp/vc_tests/`，再 `/app/.venv/bin/python -m pytest /tmp/vc_tests -q`。当前基线 **511 passed**；不要在宿主机直跑后端测试。
+- 后端：`backend/tests/` 有 pytest 套件；按项目规则在既有容器内执行。`tests/` 与仓库根未挂载，测试会按仓库结构读 `config.yaml.example`，并使用 `/code/result` 历史公共路径，因此拷到 `/app/tests` 并补 `/code -> /app/code` 软链（仅容器运行时，不改镜像）：`docker exec video-claw-backend sh -c 'rm -rf /app/tests && mkdir -p /app/tests && ln -sfn /app/code /code'`，然后 `docker cp video-claw/video-claw/backend/tests/. video-claw-backend:/app/tests/`，再 `/app/.venv/bin/python -m pytest /app/tests -q`。当前基线 **598 passed**；不要在宿主机直跑后端测试。
 - 启动冒烟：`GET /api/health` + `GET /api/models`；功能冒烟走 `/sandbox` 或 Pipeline 页面。
 - 前端：`npm run lint`（eslint）；`npm run build`（含 TypeScript 检查，同时产出 standalone 产物用于部署）。
 
