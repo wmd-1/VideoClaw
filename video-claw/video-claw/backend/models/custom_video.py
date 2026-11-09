@@ -30,11 +30,14 @@ from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
     RETRYABLE_STATUS_CODES,
     VIDEO_JOB_FAILURE_STATES,
     VIDEO_JOB_SUCCESS_STATES,
+    TaskDeclarationError,
+    TaskNotSupportedError,
     build_custom_client_kwargs,
     connection_hint,
+    frame_as_reference_enabled,
     guess_mime_type,
     make_http_client,
-    parse_task_list,
+    parse_task_decl,
     video_dimensions,
     video_size,
 )
@@ -399,10 +402,39 @@ class CustomVideoClient:
             return None
         return json.dumps({"audio_url": audio_reference_url})
 
+    def _task_declaration(self) -> Tuple[str, List[str]]:
+        """`capabilities.tasks` 的三态解析（与阶段预检共用 custom_common.parse_task_decl）。"""
+        return parse_task_decl(self._capabilities())
+
     def _supported_tasks(self) -> List[str]:
-        """模型声明的本服务实例支持的任务集合（capabilities.tasks，对应推理服务的 --task-type partition）。未声明返回空。"""
-        items = parse_task_list(self._capabilities().get("tasks"))
-        return [item for item in items if item in ("t2va", "fl2va", "ref2va")]
+        """模型声明的本服务实例支持的任务集合（capabilities.tasks，对应推理服务的 --task-type partition）。
+
+        未声明返回空；声明存在但全非法属配置错误，明确报错而不是退化为“未声明”。
+        生成路径已改为直接消费 `_task_declaration()` 的三态；本方法供配置自检脚本与测试使用。
+        """
+        state, tasks = self._task_declaration()
+        if state == "invalid":
+            raise TaskDeclarationError(self._tasks_invalid_message())
+        return tasks
+
+    def _task_mismatch_message(self, task: str, supported: List[str]) -> str:
+        """任务与分区不匹配的可操作错误文案（三条路径，见 video-parameter-mapping）。"""
+        return (
+            f"自定义视频模型 {self._meta.get('id')} 任务类型与服务实例不匹配："
+            f"当前请求为 {task}，而该服务声明仅支持 {'/'.join(supported)}。"
+            "请任选其一处理：① 修正模型 capabilities.tasks（对应推理服务的 --task-type）；"
+            "② 改选与实例匹配的生成方式或其他视频模型（含媒体请求不会静默去掉图片生成）；"
+            "③ 若要以参考图语义使用首/尾帧图，在模型 capabilities 显式声明 allow_frame_as_reference: true"
+        )
+
+    def _tasks_invalid_message(self) -> str:
+        """tasks 声明存在但全部非法的配置错误文案（独立 error_code=tasks_invalid）。"""
+        raw = self._capabilities().get("tasks")
+        return (
+            f"自定义视频模型 {self._meta.get('id')} 的 capabilities.tasks 声明无效："
+            f"解析后没有任何合法值（当前声明：{raw!r}），合法取值为 t2va / fl2va / ref2va。"
+            "请修正该声明后重试；字段存在但全非法不会被当作未声明而放行"
+        )
 
     def _align_task_to_partitions(
         self,
@@ -411,32 +443,34 @@ class CustomVideoClient:
         reference_image_paths: Optional[List[str]],
         reference_video_paths: Optional[List[str]],
     ) -> Tuple[Optional[str], Optional[str], Optional[List[str]]]:
-        """按声明的支持任务收敛输入布局。
+        """按声明的支持任务收敛输入布局（video-parameter-mapping: 任务类型与服务实例对齐）。
 
-        - 未声明 tasks 时零改动（向后兼容）；
-        - 推断出的 task 不在支持集合内且含图时，改走 ref2va：首/尾帧图降级为参考图（图在前、保持传入顺序）；
-        - 含图但服务实例不支持任何含图任务时明确失败，绝不静默去掉图片生成。
+        - 未声明 tasks：零改动（向后兼容）；
+        - 声明存在但全非法：按配置错误拒绝（tasks_invalid），MUST NOT 当作未声明放行；
+        - 推断 task 不在声明集合内：默认明确失败；仅当模型显式声明
+          allow_frame_as_reference=true 且集合含 ref2va 时才降级为首/尾帧图并入参考图
+          （图在前、保持传入顺序，并记录调整）；
+        - task 本来就是 ref2va 时，首/尾帧图并入参考图属字段归一，不因本变更被拒绝。
         """
-        supported = self._supported_tasks()
-        if not supported:
+        state, supported = self._task_declaration()
+        if state == "missing":
             return image_path, last_image_path, reference_image_paths
+        if state == "invalid":
+            raise TaskDeclarationError(self._tasks_invalid_message())
         refs = self._media_reference_paths(reference_image_paths, reference_video_paths)
         task = self._task_for_input(image_path, last_image_path, refs)
         target_task = task if task in supported else None
         if target_task is None:
+            # 显式授权的降级：只解决任务与分区匹配，不改变上游提示词结构（design D6）
             has_media = bool(image_path or last_image_path or refs)
-            if has_media and "ref2va" in supported:
+            if has_media and "ref2va" in supported and frame_as_reference_enabled(self._capabilities()):
                 target_task = "ref2va"
                 self._record_adjustment(
-                    f"task {task} -> ref2va（服务实例仅加载 {'/'.join(supported)} partition，首/尾帧图改按参考图使用）"
+                    f"task {task} -> ref2va（模型显式声明 allow_frame_as_reference，"
+                    "首/尾帧图改按参考图使用；提示词仍按当前生成方式生成）"
                 )
             else:
-                raise ValueError(
-                    f"自定义视频模型 {self._meta.get('id')} 任务类型与服务实例不匹配："
-                    f"当前请求为 {task}，而该服务声明仅支持 {'/'.join(supported)}。"
-                    "请修正模型 capabilities.tasks（对应推理服务的 --task-type），"
-                    "或选择支持该模式的其他视频模型（含图请求不会静默去掉图片生成）"
-                )
+                raise TaskNotSupportedError(self._task_mismatch_message(task, supported))
         # 最终走 ref2va 时把首/尾帧图统一并入参考图，避免与首帧字段混用导致服务端校验失败
         if target_task == "ref2va" and (image_path or last_image_path):
             if task == "ref2va":

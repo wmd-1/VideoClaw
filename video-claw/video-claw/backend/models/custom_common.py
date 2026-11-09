@@ -10,7 +10,7 @@ import mimetypes
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 models_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.dirname(models_dir)
@@ -43,6 +43,56 @@ def parse_task_list(raw: Any) -> List[str]:
             seen.add(token)
             parsed.append(token)
     return parsed
+
+
+# 视频任务类型合法值（对应推理服务的 DiT partition / `--task-type`）。
+VIDEO_TASK_VALUES = ("t2va", "fl2va", "ref2va")
+
+
+class TaskDeclarationError(ValueError):
+    """capabilities.tasks 存在但全部非法：配置错误（error_code=tasks_invalid）。"""
+
+
+class TaskNotSupportedError(ValueError):
+    """推断 task 不在声明集合内且未获显式授权降级（error_code=task_not_supported）。"""
+
+
+def parse_task_decl(caps: Optional[Dict[str, Any]]) -> Tuple[str, List[str]]:
+    """解析 `capabilities.tasks` 的三态（video-parameter-mapping D4）。
+
+    返回 (state, tasks)：
+    - ("missing", [])：字段缺失或为 None —— 行为与旧版一致，不做任务对齐；
+    - ("invalid", [])：字段存在但拆分后没有任何合法值 —— 配置错误，MUST NOT 退化为未声明；
+    - ("declared", [...])：至少一个合法值，去重保序（仅保留 t2va / fl2va / ref2va）。
+
+    传输层（models/custom_video.py）与阶段预检（api/routers/workflow.py）MUST 共用本函数，
+    否则“声明为空/全非法”的判定会在两处出现分叉。
+    """
+    if not isinstance(caps, dict) or caps.get("tasks") is None:
+        return "missing", []
+    valid = [item for item in parse_task_list(caps.get("tasks")) if item in VIDEO_TASK_VALUES]
+    if not valid:
+        return "invalid", []
+    return "declared", valid
+
+
+def frame_as_reference_enabled(caps: Optional[Dict[str, Any]]) -> bool:
+    """`capabilities.allow_frame_as_reference`：仅显式布尔 true 生效（默认 false）。
+
+    非布尔声明（如手写 YAML 的 "true" 字符串）同样视为 false，但记 warning：
+    本变更的目标是消除静默，不能让“开关写错”变成无提示地不生效。
+    """
+    if not isinstance(caps, dict):
+        return False
+    raw = caps.get("allow_frame_as_reference")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    logger.warning(
+        "capabilities.allow_frame_as_reference ignored: expected boolean, got %r", raw
+    )
+    return False
 
 
 DEFAULT_HTTP_TIMEOUT = 300.0

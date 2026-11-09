@@ -133,6 +133,9 @@ custom_models:
   # ⚠ 该实例的启动参数带 --task-type ref2va（内存受限 profile 只加载一个 DiT partition），
   #   所以必须声明 tasks: ['ref2va']；否则含图请求会以 fl2va 发出并被服务端 500 拒绝：
   #   checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'
+  # 声明后：首帧/首尾帧模式在阶段执行前会被拒（task_not_supported）；
+  # 要让首/尾帧图仍按参考图下发（旧行为），需显式加 allow_frame_as_reference: true；
+  # 注意该开关只解决任务与分区匹配，提示词仍按当前生成方式产出。
   - id: MiniMax-H3-vllm
     provider: local_video_vllm
     model: /models/MiniMax-H3
@@ -145,6 +148,7 @@ custom_models:
       duration: { min: 4, max: 15 }
       fps: [24]
       tasks: ['ref2va']
+      allow_frame_as_reference: true   # 仅在确实要让首/尾帧图按参考图使用时开启（默认 false）
 ```
 
 ## 2. 相对你贴出的配置改了什么
@@ -158,7 +162,7 @@ custom_models:
 | 5 | `MiniMax-H3-vllm.abilities` | 缺 `first_frame_i2v`/`start_end_frame_i2v` | 补齐 | 你把三个视频默认模型都指向它，缺标签会导致对应模式入口过滤掉它 |
 | 6 | `local_image_t2i/it2i.base_url` | `192.168.1.10:8091`（模板占位） | 待填真实地址 | 否则第 2/4 阶段图像生成必然失败（只能走上传兜底） |
 | 7 | `server.port` | `8000` | 建议 `8500`（与 `.env BACKEND_PORT` 一致） | 与 vllm-omni 的 8000 同机部署时会冲突；分开后日志/直连端口一致更清晰 |
-| 8 | 两个 H3 模型 | 无 `tasks` | vllm 条目声明 `tasks: ['ref2va']` | 你的 vllm-omni 以 `--task-type ref2va` 启动（只挂一个 DiT partition），task 不符会 500；sglang 侧如也是单 partition 同理声明 |
+| 8 | 两个 H3 模型 | 无 `tasks` | vllm 条目声明 `tasks: ['ref2va']` + `allow_frame_as_reference: true` | 你的 vllm-omni 以 `--task-type ref2va` 启动（只挂一个 DiT partition），task 不符会 500；声明后默认会在阶段前拒绝首帧/首尾帧模式，只有显式开启 `allow_frame_as_reference` 才保留“首/尾帧图并入参考图”的旧行为；sglang 侧如也是单 partition 同理声明 |
 | 9 | `server.media_ref_base_url` | 无此键 | 填推理端可访问的后端地址 | 跨机跳 sglang 时 `conditions[].uri` 的 `file://` 路径对端读不到（本次报错根因） |
 
 ## 2.5 关于 `checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'`
@@ -167,7 +171,7 @@ custom_models:
 
 | 方式 | 做法 | 适用 |
 | --- | --- | --- |
-| A（推荐，已实现） | 模型 `capabilities` 声明 `tasks: ['ref2va']` | 保持现有服务不动。含图请求会自动改按**参考图**走 ref2va（首/尾帧图并入参考图，图在前），并在日志/响应里记录调整；若实例不支持任何含图任务则**明确报错，不会静默去掉图片** |
+| A（推荐，已实现） | 模型 `capabilities` 声明 `tasks: ['ref2va']` + `allow_frame_as_reference: true`（只声明 tasks 时首/尾帧模式会在阶段前被拒） | 保持现有服务不动。开启开关后，首/尾帧请求会按**参考图**走 ref2va（首/尾帧图并入参考图，图在前），并在日志/响应里记录调整；**该开关只解决任务与分区匹配，提示词仍按当前生成方式生成**。不开启时预检会返回 `task_not_supported`（三条处置路径）而不会静默降级 |
 | B | 推理服务改用 `--task-type fl2va` 重启 | 你真正需要“首帧/首尾帧”语义时（ref2va 与 fl2va 不能同一实例同时服务，除非内存足够不传 `--task-type`） |
 | C | 视频默认模型指向 sglang 实例 | sglang 那边支持 t2va/fl2va/ref2va 全三种（本例 `53.192.56.195:30010`）；把 `models.video_first_frame` 等改指 `MiniMax-H3-sglang` 即可 |
 
@@ -250,7 +254,7 @@ docker compose restart backend
 
 ## 4. 相关能力说明（本版已支持）
 
-- **任务类型与 partition 对齐**：`capabilities.tasks` 可声明本实例支持的任务（对应 `--task-type`）；推断出的 task 不被支持且含图时自动改走 ref2va（首/尾帧图并入参考图）；不支持任何含图任务时明确报错。未声明时零行为变化。
+- **任务类型与 partition 对齐**：`capabilities.tasks` 可声明本实例支持的任务（对应 `--task-type`）。视频阶段执行前按生成方式推导的唯一 task 与声明集合比对：未获显式授权且交集为空时**启动生成前返回 409**（`task_not_supported`），传输层同样默认明确失败（不再静默把首/尾帧图降级为参考图）。仅在 `allow_frame_as_reference: true` 且 `tasks` 含 `ref2va` 时才把首/尾帧图并入参考图下发，且提示词仍按当前生成方式生成。`tasks` 写了但没有合法值会被当作配置错误（`tasks_invalid`）拒绝。未声明时零行为变化。
 - **768P 分辨率档位**：16:9→1344x768、9:16→768x1344、1:1→768x768、4:3→1024x768、3:4→768x1024、21:9→1792x768。
 - **sglang `target` 无条件下发**：`short_edge` 优先取声明值，否则由 ratio+resolution 推导；含参考图时 `aspect_ratio=auto`。
 - **调度参数**：`num_inference_steps` / `flow_shift` / `audio_flow_shift` 未声明则完全不下发（与旧行为一致）；声明后 vllm-omni 走顶层表单（`audio_flow_shift` 归 `extra_params`），sglang 走 JSON 顶层，同步端点与异步任务两条链路一致；`fast_h3: true` 时自动丢弃两个 shift。

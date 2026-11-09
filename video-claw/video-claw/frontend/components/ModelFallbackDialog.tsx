@@ -55,6 +55,28 @@ const STAGE_COPY: Record<string, FallbackCopy> = {
   video_generation: VIDEO_COPY,
 };
 
+// 视频任务能力预检的两类结构化错误（video-parameter-mapping）：按 error_code 分流，
+// 不落到“更换视频模型后重试”的通用文案（后者会误导为单纯换模型即可）。
+// 正文只做概括：具体 task/声明集合与三条路径由“原因”（后端 reason）给出，避免整段重复。
+const TASK_NOT_SUPPORTED_COPY: FallbackCopy = {
+  title: '视频模型不支持当前生成方式',
+  body: '上面的原因已给出三条可操作路径：改用与实例匹配的生成方式、修正 capabilities.tasks，或显式开启 allow_frame_as_reference（该开关只解决任务与分区匹配）。',
+  hint: '本步骤未启动生成；修正后重新执行即可，已完成的片段会保留。',
+  canUpload: false,
+};
+
+const TASKS_INVALID_COPY: FallbackCopy = {
+  title: '视频模型的任务声明无效',
+  body: '请到「设置 → 自定义模型 → 高级能力参数」修正该声明；它不会被当作“未声明”放行。',
+  hint: '修正前本步骤不会启动生成。',
+  canUpload: false,
+};
+
+const ERROR_CODE_COPY: Record<string, FallbackCopy> = {
+  task_not_supported: TASK_NOT_SUPPORTED_COPY,
+  tasks_invalid: TASKS_INVALID_COPY,
+};
+
 /** 模型不可用引导弹窗：上传图片（仅图片阶段）/ 更换模型 / 重试 */
 export default function ModelFallbackDialog({
   detail,
@@ -71,7 +93,7 @@ export default function ModelFallbackDialog({
   onRetry: () => void;
   onClose: () => void;
 }) {
-  const copy = STAGE_COPY[stage] ?? DEFAULT_COPY;
+  const copy = (detail.error_code ? ERROR_CODE_COPY[detail.error_code] : undefined) ?? STAGE_COPY[stage] ?? DEFAULT_COPY;
   const stageLabel = STAGE_LABELS[stage] || '模型生成';
   const fieldLabel = detail.field ? FIELD_LABELS[detail.field] || '' : '';
   const canUpload = copy.canUpload;

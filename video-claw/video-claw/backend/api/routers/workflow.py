@@ -119,6 +119,80 @@ PREFLIGHT_STAGE_MODEL_FIELDS = {
     "reference_generation": ("image_t2i_model", "image_it2i_model"),
 }
 
+# 视频任务能力预检的严格推导集合（video-parameter-mapping D2）：取主流程唯一可能下发的 task。
+# t2va 不纳入——缺首帧图/参考素材时由视频阶段前置失败（missing_input_image /
+# missing_reference_images），主流程不会下发 t2va；t2va 仅对沙盒/ Pipeline /连通测试等直调入口可达。
+VIDEO_MODE_TO_TASKS = {
+    "reference": ("ref2va",),
+    "start_end_frame": ("fl2va",),
+    "first_frame": ("fl2va",),
+}
+
+_VIDEO_MODE_LABELS = {
+    "reference": "参考图生视频",
+    "start_end_frame": "首尾帧生视频",
+    "first_frame": "首帧生视频",
+}
+
+
+def _preflight_video_task_capability(stage: str, field: str, model: str, values: dict) -> None:
+    """视频任务能力预检：推导会话模式在主流程中可能下发的 task，与模型声明集合比对。
+
+    只读本地配置与会话参数，MUST NOT 发起网络探测、连通性检查或任何生成类调用（design D2）。
+    判定顺序 MUST 为先授权后交集：显式授权降级（allow_frame_as_reference）优先于交集判定。
+    未声明 tasks 或非自定义模型一律放行（行为与变更前一致）。
+    """
+    from models.config_model import resolve_model_entry
+    from models.custom_common import frame_as_reference_enabled, parse_task_decl
+
+    kind, metadata = resolve_model_entry(model)
+    if kind != "custom":
+        return
+    caps = metadata.get("capabilities")
+    caps = caps if isinstance(caps, dict) else {}
+    state, declared = parse_task_decl(caps)
+    if state == "missing":
+        return
+    if state == "invalid":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "model_unavailable",
+                "stage": stage,
+                "field": field,
+                "model": model,
+                "reason": (
+                    f"模型 {model} 的 capabilities.tasks 声明无效：解析后没有任何合法值"
+                    f"（当前声明：{caps.get('tasks')!r}）；合法取值为 t2va / fl2va / ref2va，请修正后重试"
+                ),
+                "error_code": "tasks_invalid",
+            },
+        )
+    mode = values.get("video_generation_mode") or "first_frame"
+    if mode != "reference" and frame_as_reference_enabled(caps) and "ref2va" in declared:
+        # 先授权后交集：降级已被显式授权，不得以“交集为空”为由拒绝（tasks:['t2va','ref2va'] 场景）
+        return
+    expected = VIDEO_MODE_TO_TASKS.get(mode, VIDEO_MODE_TO_TASKS["first_frame"])
+    if set(expected) & set(declared):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "model_unavailable",
+            "stage": stage,
+            "field": field,
+            "model": model,
+            "reason": (
+                f"会话选择{_VIDEO_MODE_LABELS.get(mode, mode)}，需要任务 {'/'.join(expected)}，"
+                f"而模型声明的 capabilities.tasks 仅支持 {'/'.join(declared)}。"
+                "请任选其一：① 改选与实例匹配的生成方式；"
+                "② 修正模型的 capabilities.tasks（对应推理服务的 --task-type）；"
+                "③ 若要以参考图语义使用首/尾帧图，在模型 capabilities 显式声明 allow_frame_as_reference: true"
+            ),
+            "error_code": "task_not_supported",
+        },
+    )
+
 
 def _preflight_stage_models(stage: str, values: dict) -> None:
     """阶段执行前的模型可用性预检；不可用时返回 409 结构化错误（不启动生成）。
@@ -151,6 +225,13 @@ def _preflight_stage_models(stage: str, values: dict) -> None:
                     "error_code": availability["code"],
                 },
             )
+
+    if stage == "video_generation":
+        # 任务能力预检（video-parameter-mapping）：只读本地配置，位于可用性判定之后。
+        # 插入点：`reference_generation` 的模式放行分支（reference-mode-skip-scene-images）
+        # 应在下面的视频分支之外单独追加，两个变更互不覆盖。
+        for field, model in field_pairs:
+            _preflight_video_task_capability(stage, field, model, values)
 
 
 @router.post("/api/project/start")

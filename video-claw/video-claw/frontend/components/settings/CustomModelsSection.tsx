@@ -435,7 +435,14 @@ export function CustomModelsSection({
       const providerKey = entry.provider || '';
       const providerDraft = { key: providerKey, ...(providerMap[providerKey] || {}) };
       const result = await testCustomModel({
-        model: { id: entry.id, model: entry.model, abilities: entry.abilities || [] },
+        model: {
+          id: entry.id,
+          model: entry.model,
+          abilities: entry.abilities || [],
+          // 透传当前编辑值：未保存的 capabilities（tasks / allow_frame_as_reference）
+          // 后端草稿模型没有注册表条目可回退，否则任务对齐在测试路径上不生效（D7）
+          capabilities: entry.capabilities || {},
+        },
         provider: providerDraft,
         model_type: modelType as 'llm' | 'vlm' | 't2i' | 'i2i' | 'video',
       });
@@ -605,9 +612,23 @@ export function CustomModelsSection({
                     {invalidTaskTokens(capValue(entry, 'tasks')).length > 0 && (
                       <span className="mt-1 text-[10px] text-amber-600">
                         无法识别：{invalidTaskTokens(capValue(entry, 'tasks')).join('、')}
-                        （合法值：t2va / fl2va / ref2va，逗号分隔；无法识别的值会被后端忽略，等同未声明）
+                        （合法值：t2va / fl2va / ref2va，逗号分隔；无法识别的值会被忽略，
+                        若没有任何合法值则按配置错误拒绝而不是当作未声明）
                       </span>
                     )}
+                  </label>
+                  <label className="flex items-start gap-2 pt-4">
+                    <input
+                      id={`frame-as-ref-${String(entry.id || index)}`}
+                      type="checkbox"
+                      className="mt-0.5 h-3.5 w-3.5 accent-violet-600"
+                      checked={Boolean(entry.capabilities?.allow_frame_as_reference)}
+                      disabled={envOnly}
+                      onChange={e => updateCapability(index, 'allow_frame_as_reference', e.target.checked)}
+                    />
+                    <span className="text-[11px] leading-snug text-gray-500">
+                      首/尾帧图按参考图下发（仅在 tasks 含 ref2va 时生效；只解决任务与分区匹配，提示词仍按当前生成方式生成）
+                    </span>
                   </label>
                   <label className="flex flex-col">
                     <FieldLabel text={hasImageType && !hasVideoType ? 'num_inference_steps 去噪步数' : 'num_inference_steps 步数（sigma 点数）'} />

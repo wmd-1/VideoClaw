@@ -191,9 +191,17 @@ custom_models:
       # tasks（可选）：对应推理服务用 `--task-type` 只加载单个 DiT partition 的情形。
       # vllm-omni 在内存受限 profile 上以 `--task-type fl2va` 或 `ref2va` 启动（只挂一个 DiT），
       # task 与 partition 不符会被服务端 500（checkpoint partition 'ref2va' supports ['ref2va'], got task='fl2va'）。
-      # 声明 tasks: ['ref2va'] 后：含图请求自动改按参考图走 ref2va（首/尾帧图并入参考图，不静默丢图）；
-      # 若实例不支持任何含图任务则明确报错而不是去掉图片生成。不声明时行为与旧版一致。
+      # 声明后系统在视频阶段执行前校验：按会话生成方式推导的 task 不在本集合内时**默认生成前失败**
+      # （返回 task_not_supported，给出三条可操作路径），不会静默改写首/尾帧语义；
+      # 字段写了但没有任何合法值（t2va / fl2va / ref2va）会被当作配置错误（tasks_invalid）拒绝。
+      # 不声明时行为与旧版一致（不做任务对齐，服务端仍可能返回 partition 不匹配错误）。
       # tasks: ['ref2va']
+      #
+      # allow_frame_as_reference（可选，默认 false）：显式授权降级。仅当 tasks 含 ref2va 时为 true，
+      # 未声明的 task 才会把首/尾帧图并入参考图按 ref2va 下发（并记录调整）。
+      # 它只解决任务类型与服务分区匹配，提示词仍按当前生成方式生成（不会变成完整的参考图提示词结构）；
+      # 若需要完整的参考图语义，请改用“参考图生视频”模式。
+      # allow_frame_as_reference: false
   # 若要默认走 H3：把上方 models.video_first_frame / video_start_end / video_reference 指向本条 id。
   - id: MiniMax-H3-vllm
     provider: local_video_vllm
@@ -208,6 +216,7 @@ custom_models:
       fps: [24]
       # 若该 vllm-omni 实例以 --task-type ref2va 启动，请声明：
       # tasks: ['ref2va']
+      #   allow_frame_as_reference: true   # 仅在确实要让首/尾帧图按参考图使用时开启（默认 false）
 
 # 补充说明：
 # - 供应商另可用 .env 注册/覆盖：VC_PROVIDER_<名称>__PROTOCOL / __BASE_URL / __API_KEY（见 .env.example）。

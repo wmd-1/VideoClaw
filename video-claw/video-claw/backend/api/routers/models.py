@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from config import CUSTOM_MODEL_TYPES, CUSTOM_PROTOCOLS, Config
 from core.identity import CurrentUser, require_admin
-from models.config_model import model_availability
+from models.config_model import model_availability, resolve_model_entry
 
 router = APIRouter(tags=["Models"])
 logger = logging.getLogger(__name__)
@@ -23,6 +23,11 @@ _TEST_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 _TEST_PNG_DATA_URL = f"data:image/png;base64,{_TEST_PNG_B64}"
+
+# 连通测试使用最小时长参数（覆盖模型声明的 min=4 等，避免 1 秒测试被夹取/拒绝）
+_TEST_DURATION_CAP = {"min": 1, "max": 60, "integer": True, "verified": True}
+# 需从模型声明透传进测试视图的能力键（与任务对齐相关；其余声明不参与连通测试）
+_TEST_TASK_CAP_KEYS = ("tasks", "allow_frame_as_reference")
 
 
 class ModelTestRequest(BaseModel):
@@ -44,6 +49,32 @@ def _resolve_provider(req: ModelTestRequest) -> tuple:
             raise HTTPException(400, "供应商缺少名称（key）")
         return provider_key, provider
     raise HTTPException(400, "provider 必须为供应商名称或供应商配置对象")
+
+
+def _test_capabilities(model_id: str, model_entry: Dict[str, Any]) -> Dict[str, Any]:
+    """连通测试的能力视图（design D7）：保留测试时长覆盖，合并任务对齐相关声明。
+
+    来源优先请求体（用户刚编辑但尚未保存的值），请求体缺*某个键*时逐键回退注册表条目：
+    不能因请求体带了其它能力（如 fast_h3）就整块跳过回退，否则测试路径会绕过任务约束。
+    MUST 合并而非替换：否则声明 duration.min=4 的模型会无法完成 1 秒最小连通测试。
+    """
+    declared: Dict[str, Any] = {}
+    entry_caps = model_entry.get("capabilities")
+    if isinstance(entry_caps, dict):
+        declared.update(entry_caps)
+    missing = [key for key in _TEST_TASK_CAP_KEYS if key not in declared]
+    if missing:
+        kind, metadata = resolve_model_entry(model_id)
+        registry_caps = metadata.get("capabilities") if kind == "custom" else None
+        if isinstance(registry_caps, dict):
+            for key in missing:
+                if key in registry_caps:
+                    declared[key] = registry_caps[key]
+    capabilities: Dict[str, Any] = {
+        key: declared[key] for key in _TEST_TASK_CAP_KEYS if key in declared
+    }
+    capabilities["duration"] = dict(_TEST_DURATION_CAP)
+    return capabilities
 
 
 def _build_meta(req: ModelTestRequest) -> Dict[str, Any]:
@@ -71,8 +102,9 @@ def _build_meta(req: ModelTestRequest) -> Dict[str, Any]:
         "type": [req.model_type],
         "abilities": list(model_entry.get("abilities") or []),
         "custom": True,
-        # 连通测试使用最小时长参数
-        "capabilities": {"duration": {"min": 1, "max": 60, "integer": True, "verified": True}},
+        # 连通测试使用最小时长参数；任务对齐声明（tasks / allow_frame_as_reference）透传，
+        # 否则 ref2va-only 等实例的测试路径不受任务约束、失败只能来自服务端 500（D7）
+        "capabilities": _test_capabilities(model_id, model_entry),
     }
 
 
@@ -118,6 +150,7 @@ def _test_image(meta: Dict[str, Any], model_type: str) -> str:
 
 
 def _test_video(meta: Dict[str, Any]) -> str:
+    from models.custom_common import TaskDeclarationError, TaskNotSupportedError
     from models.custom_video import CustomVideoClient
 
     save_dir = os.path.join(Config.TEMP_DIR, "model_test")
@@ -134,6 +167,11 @@ def _test_video(meta: Dict[str, Any]) -> str:
             resolution="480x480",
         )
         return "任务完成并成功下载"
+    except TaskNotSupportedError as exc:
+        # 声明了 tasks 但不含 t2va：连通测试以无参考图的最小请求发起，不是服务故障
+        raise RuntimeError(f"该实例不支持纯文生视频（连通测试以无参考图的最小请求发起）：{exc}") from exc
+    except TaskDeclarationError as exc:
+        raise RuntimeError(f"模型的任务能力声明无效，请先修正 capabilities.tasks：{exc}") from exc
     except RuntimeError as exc:
         if "轮询超时" in str(exc):
             # 任务已成功创建但未在等待窗口内完成：连通性判定通过
