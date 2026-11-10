@@ -108,6 +108,199 @@ def test_sandbox_history_owner(client):
     assert len(client.get("/api/sandbox/history", headers=headers("alice")).json()["records"]) == 1
 
 
+def test_media_stream_limit_metrics_and_disconnect_release(client, session_dir, result_file, monkeypatch):
+    import asyncio
+
+    import pytest
+    from fastapi import HTTPException
+
+    import api.routers.media as media
+    from core import media_metrics
+
+    monkeypatch.setattr(media, "_MAX_STREAMS", 1)
+    monkeypatch.setattr(media, "_STREAM_WAIT_SECONDS", 0.01)
+    media_metrics.reset()
+
+    async def saturation():
+        slot = await media._reserve_stream_slot()
+        assert media.stream_metrics()["active"] == 1
+        with pytest.raises(HTTPException) as caught:
+            await media._reserve_stream_slot()
+        assert caught.value.status_code == 503
+        assert caught.value.headers == {"Retry-After": "1"}
+        slot.release(bytes_sent=3, elapsed_ms=0, outcome="completed")
+        metrics = media.stream_metrics()
+        assert metrics["active"] == 0
+        assert metrics["queued"] == 0
+        assert metrics["completed"] == 1
+        assert metrics["rejected"] == 1
+        assert metrics["bytes"] == 3
+
+    asyncio.run(saturation())
+
+    # A completed streaming response releases the slot and accounts bytes.
+    workflow_engine.create_session("stream_sid", {}, owner="alice")
+    row = make_file_row("stream_sid", result_file)
+    before = media.stream_metrics()
+    response = client.get(f"{row['public_path']}?user_login=alice")
+    assert response.status_code == 200 and response.content == b"0123456789abcdef"
+    after = media.stream_metrics()
+    assert after["active"] == before["active"]
+    assert after["completed"] == before["completed"] + 1
+    assert after["bytes"] == before["bytes"] + 16
+
+
+def test_media_503_retry_after_reaches_http_layer(session_dir, result_file, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    import api.routers.media as media
+    from api.app import app
+
+    monkeypatch.setattr(media, "_MAX_STREAMS", 1)
+    monkeypatch.setattr(media, "_STREAM_WAIT_SECONDS", 0.01)
+    workflow_engine.create_session("busy_sid", {}, owner="alice")
+    row = make_file_row("busy_sid", result_file)
+
+    async def scenario():
+        semaphore = media._semaphore()
+        await semaphore.acquire()
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+                response = await http.get(f"{row['public_path']}?user_login=alice")
+            assert response.status_code == 503
+            assert response.headers["retry-after"] == "1"
+        finally:
+            semaphore.release()
+
+    asyncio.run(scenario())
+
+
+def test_media_disconnect_is_counted_and_releases_slot():
+    import asyncio
+
+    import api.routers.media as media
+    from core import media_metrics
+
+    media_metrics.reset()
+    cleaned = []
+
+    async def scenario():
+        slot = await media._reserve_stream_slot()
+        response = media._LimitedStreamingResponse(
+            iter([b"ab"]),
+            stream_counter=[0],
+            slot=slot,
+            expected_bytes=4,
+            cleanup=lambda: cleaned.append(True),
+            status_code=200,
+            headers={},
+        )
+        scope = {
+            "type": "http", "method": "GET", "path": "/", "raw_path": b"/",
+            "query_string": b"", "headers": [], "http_version": "1.1",
+            "scheme": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+        }
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(_message):
+            return None
+
+        await response(scope, receive, send)
+        metrics = media.stream_metrics()
+        assert metrics["active"] == 0
+        assert metrics["disconnected"] == 1
+        assert metrics["partial"] == 0
+        assert metrics["completed"] == 0
+
+    asyncio.run(scenario())
+    assert cleaned
+
+
+def test_media_partial_eof_is_not_counted_as_disconnect():
+    import asyncio
+
+    import api.routers.media as media
+    from core import media_metrics
+
+    media_metrics.reset()
+
+    async def scenario():
+        slot = await media._reserve_stream_slot()
+        response = media._LimitedStreamingResponse(
+            iter([b"ab"]),
+            stream_counter=[0],
+            slot=slot,
+            expected_bytes=4,
+            status_code=200,
+            headers={},
+        )
+        scope = {
+            "type": "http", "method": "GET", "path": "/", "raw_path": b"/",
+            "query_string": b"", "headers": [], "http_version": "1.1",
+            "scheme": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        async def send(_message):
+            return None
+
+        await response(scope, receive, send)
+        metrics = media.stream_metrics()
+        assert metrics["disconnected"] == 0
+        assert metrics["partial"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_media_stream_hard_timeout_is_counted(monkeypatch):
+    import asyncio
+
+    import pytest
+
+    import api.routers.media as media
+    from core import media_metrics
+
+    monkeypatch.setattr(media, "_STREAM_MAX_SECONDS", 0.01)
+    media_metrics.reset()
+
+    async def scenario():
+        slot = await media._reserve_stream_slot()
+        response = media._LimitedStreamingResponse(
+            iter([b"a"]),
+            stream_counter=[0],
+            slot=slot,
+            expected_bytes=1,
+            status_code=200,
+            headers={},
+        )
+        scope = {
+            "type": "http", "method": "GET", "path": "/", "raw_path": b"/",
+            "query_string": b"", "headers": [], "http_version": "1.1",
+            "scheme": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        async def slow_send(_message):
+            await asyncio.sleep(0.2)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await response(scope, receive, slow_send)
+        metrics = media.stream_metrics()
+        assert metrics["active"] == 0
+        assert metrics["timed_out"] == 1
+
+    asyncio.run(scenario())
+
+
 def test_media_range_owner_missing_and_data_404(client, session_dir, result_file):
     workflow_engine.create_session("media_sid", {}, owner="alice")
     row = make_file_row("media_sid", result_file)
