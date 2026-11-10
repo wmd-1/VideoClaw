@@ -25,6 +25,7 @@ from core.grounding_cache import grounding_cache
 from core.observability import call_context
 from core.language import language_from_meta, resolve_language
 from core.persistence_service import PersistenceService
+from core.reference_skip import build_reference_skip, reference_skip_marker
 from db.repositories.commits import (
     CommitConflict,
     CommitParentMissing,
@@ -940,12 +941,43 @@ class WorkflowEngine:
         def apply(after: WorkflowState) -> None:
             if not after.meta:
                 after.meta = {}
+            previous_mode = after.meta.get("video_generation_mode")
             for key in allowed_keys:
                 if key in updates:
                     after.meta[key] = updates[key]
+            if "video_generation_mode" in updates:
+                mode = str(after.meta.get("video_generation_mode") or "first_frame")
+                if mode != previous_mode:
+                    # 先对齐标记、后重算：保证快照晋升与状态判定看到同一份产物（design D3/D7）
+                    self._align_reference_skip(after, mode)
+                    self._recalculate_all_statuses(after)
 
         state, _ = self._mutate(session_id, apply)
         return {"status": "ok", "meta": copy.deepcopy(state.meta)}
+
+    def _align_reference_skip(self, state: WorkflowState, mode: str) -> None:
+        """按当前模式双向对齐参考图阶段的 `skip` 标记（reference-mode-skip-scene-images D3/D7）。
+
+        - `reference`：产物存在即确保标记存在（不检查是否有可用选中图）；产物不存在时不创建；
+        - 其他模式：一律清除标记（该标记只对 reference 模式有效）。
+        """
+        artifact = state.artifacts.get(WorkflowStage.REFERENCE_GENERATION.value)
+        if not isinstance(artifact, dict) or not artifact:
+            return
+        if mode == "reference":
+            artifact["skip"] = build_reference_skip(mode)
+        else:
+            artifact.pop("skip", None)
+
+    @staticmethod
+    def _reference_has_selection(state: WorkflowState) -> bool:
+        """参考图产物中是否存在可用的选中图（无产物/全空/全占位 → False）。"""
+        artifact = state.artifacts.get(WorkflowStage.REFERENCE_GENERATION.value)
+        scenes = artifact.get("scenes") if isinstance(artifact, dict) else []
+        return any(
+            isinstance(item, dict) and str(item.get("selected") or "").strip()
+            for item in scenes or []
+        )
 
     def _ensure_stage_seeded(self, session_id: str, stage: str) -> None:
         if stage != WorkflowStage.CHARACTER_DESIGN.value:
@@ -1811,7 +1843,12 @@ class WorkflowEngine:
                     has_pending = True
             elif s_val == "reference_generation":
                 scenes = art.get("scenes", [])
-                if not scenes or any(not s.get("selected") for s in scenes):
+                mode = str((state.meta or {}).get("video_generation_mode") or "first_frame") if isinstance(state.meta, dict) else "first_frame"
+                if mode == "reference":
+                    # reference 模式：产物不参与下游取值，一律判完成，不读清单内容
+                    # （占位条目由分镜同步写入，不得被读作待生成）
+                    has_pending = False
+                elif not scenes or any(not s.get("selected") for s in scenes):
                     has_pending = True
             elif s_val == "prompt_rewrite":
                 items = art.get("items", [])
@@ -2742,6 +2779,18 @@ class WorkflowEngine:
             # waiting/completed/reconfirm：用户确认后直接进入下一阶段
             # reconfirm 的语义是“接受现有产物并继续”：不重跑、不清空产物
             if current_status in ("waiting", "completed", "session_completed", STATUS_RECONFIRM):
+                # 参考图阶段：非 reference 模式且无可用选中图时，拒绝直接置为已完成；
+                # 否则“继续”会绕过“切回首帧后必须重新生成分镜图”的要求（design D7）
+                if target_str == WorkflowStage.REFERENCE_GENERATION.value:
+                    mode = str((after.meta or {}).get("video_generation_mode") or "first_frame")
+                    if mode != "reference" and not self._reference_has_selection(after):
+                        response.update({
+                            "status": "error",
+                            "openclaw": "参考图阶段缺少可用的分镜图：请先重新生成分镜参考图后再继续。",
+                            "message": "需要先生成分镜图",
+                            "current_status": current_status,
+                        })
+                        return _NO_COMMIT
                 after.status[target_str] = "completed"
                 # 确认 = 接受该阶段现有结果：无论原状态是什么都清掉它自己的过期详情，
                 # 其它阶段的标记不动
@@ -3190,6 +3239,20 @@ class WorkflowEngine:
         state = self.get_state(session_id)
         if not state:
             raise KeyError(f"Session not found: {session_id}")
+
+        # 跳过形态的接口防线：目标条目不存在时不得凭空新建（design D9）
+        if stage == WorkflowStage.REFERENCE_GENERATION.value and item_type == "scenes":
+            existing = state.artifacts.get(stage)
+            if reference_skip_marker(existing):
+                known_ids = {
+                    item.get("id")
+                    for item in existing.get("scenes") or []
+                    if isinstance(item, dict) and item.get("id")
+                }
+                if item_id not in known_ids:
+                    raise ValueError(
+                        f"目标分镜条目不存在：{item_id}（参考图阶段处于跳过形态，不会新建条目）"
+                    )
 
         cfg = self._upload_item_config(stage, item_type, item_id)
         validate_upload_identifier(str(cfg.get("base") or ""), "item_id", UPLOAD_BASE_PATTERN)

@@ -98,7 +98,13 @@ def _active_video_model(values: dict) -> str:
 
 
 def _require_model_fields(values: dict) -> None:
-    missing = [field for field in REQUIRED_MODEL_FIELDS if not values.get(field)]
+    required = REQUIRED_MODEL_FIELDS
+    mode = str(values.get("video_generation_mode") or "first_frame")
+    if mode == "reference":
+        # reference 模式参考图阶段跳过（不生成分镜图），图生图模型非必需；
+        # 文生图仍必需（角色/场景设计依赖）。本函数无阶段参数，故按会话模式放行。
+        required = tuple(field for field in REQUIRED_MODEL_FIELDS if field != "image_it2i_model")
+    missing = [field for field in required if not values.get(field)]
     if not _active_video_model(values):
         missing.append("video_model")
     if missing:
@@ -201,6 +207,9 @@ def _preflight_stage_models(stage: str, values: dict) -> None:
     MUST NOT 被当成实时连通性检查——模型配置齐备但服务不可达时预检会放行，
     该类故障由运行期逐条失败分类呈现（openspec: video-stage-model-unavailable-fallback design D5）。
     """
+    if stage == "reference_generation" and str(values.get("video_generation_mode") or "first_frame") == "reference":
+        # reference 模式下参考图阶段跳过（reference-mode-skip-scene-images）：不校验图像模型字段
+        return
     if stage == "video_generation":
         # 只校验本次生成方式实际会用的那一个视频模型（含 legacy 回退后的真实来源）
         field_pairs = ((_active_video_model_field(values), _active_video_model(values)),)

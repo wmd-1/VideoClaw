@@ -639,7 +639,7 @@ function ClipRow({
 }
 
 /* ─── 主组件 ─── */
-export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, artifacts }: StageViewProps) {
+export default function VideoStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, referenceArtifact, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, artifacts, videoGenerationMode }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as VideoStageArtifact;
   // 提取剧集标题映射
   const episodeTitleMap = React.useMemo(() => {
@@ -696,6 +696,10 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
     const refScene = scenes.find(s => s.id === clipId);
     return !!(refScene?.selected || refScene?.versions?.length);
   }, [referenceArtifact]);
+
+  // 参考图阶段处于跳过形态（reference 模式）时，视频入参来自角色/场景资产，
+  // 分镜参考图不参与：MUST NOT 误报“未检测到首帧参考图”或因该原因禁用条目
+  const referenceSkipped = videoGenerationMode === 'reference';
 
   // 兼容旧格式: video_clips: {Scene_1: "path"} → clips: [{id, ...}]
   // 必须用 useMemo 稳定引用（依赖原始 state.artifact，不能用 `?? {}` 后的对象）：
@@ -958,8 +962,8 @@ export default function VideoStage({ state, sessionId, onConfirm, onIntervene, o
 
                     <div className="space-y-4">
                       {epClips.map(clip => {
-                        // 检查是否有参考图
-                        const hasRef = hasReferenceImage(clip.id);
+                        // 检查是否有参考图（reference 模式下不依赖分镜图）
+                        const hasRef = referenceSkipped || hasReferenceImage(clip.id);
                         const flag = flaggedItems?.[clip.id];
                         return (
                           <div

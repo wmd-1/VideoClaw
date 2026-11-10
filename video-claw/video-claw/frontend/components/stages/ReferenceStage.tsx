@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Image as ImageIcon, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Save, X, Upload } from 'lucide-react';
+import { Image as ImageIcon, RefreshCw, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Save, X, Upload, Info } from 'lucide-react';
 import type { StageViewProps } from './types';
 import { FlaggedItemBanner } from './MissingInputs';
 import { assetUrl, assetVersionLabel } from './utils';
@@ -40,6 +40,11 @@ interface SceneItem {
 interface ReferenceStageArtifact {
   scenes?: SceneItem[];
   scene_images?: Record<string, string>;
+  /**
+   * 跳过标记（reference-mode-skip-scene-images）：单一嵌套对象，
+   * 仅作辅助证据；呈现与否以当前视频生成方式为首要判据。
+   */
+  skip?: { reason?: string; note?: string; mode?: string };
 }
 
 /** 剧集标题条目（scriptArtifact.episodes） */
@@ -385,8 +390,15 @@ function SceneRow({
 }
 
 /* ─── 主组件 ─── */
-export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage }: StageViewProps) {
+export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, videoGenerationMode }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as ReferenceStageArtifact;
+  // 跳过形态以“当前视频生成方式”为首要判据；skip 标记仅在 reference 下作辅助证据，
+  // 历史残留标记在非 reference 模式下 MUST NOT 触发跳过说明（D5）
+  const skipForm = videoGenerationMode === 'reference';
+  // 兜底文案与后端 core/reference_skip.py::SKIP_NOTE 保持一致；改文案时需两处同步
+  // （正常路径使用产物下发的 note，此处只用于标记缺失的历史产物）。
+  const skipNote = artifact.skip?.note
+    || '参考图生视频模式直接使用「角色/场景设计」阶段的选中素材，本阶段不生成分镜图。';
   const [editDescs, setEditDescs] = useState<Record<string, string>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
   const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(new Set());
@@ -609,7 +621,9 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
           <h2 className="text-lg font-semibold text-gray-800">参考图生成</h2>
         </div>
         <p className="text-sm text-gray-500 mb-6">
-          基于角色/场景素材 + 分镜视觉描述，使用图生图生成场景参考图
+          {skipForm
+            ? '本模式直接使用「角色/场景设计」阶段的选中素材，不生成分镜参考图'
+            : '基于角色/场景素材 + 分镜视觉描述，使用图生图生成场景参考图'}
         </p>
 
         {/* 运行中 */}
@@ -621,8 +635,21 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
           <div className="text-sm text-red-600 bg-red-50 border border-red-200 p-4 rounded-xl mb-4">{state.error}</div>
         )}
 
+        {/* ═══ 跳过形态（reference 模式）═══ */}
+        {skipForm && (
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-6">
+            <div className="flex items-start gap-3">
+              <Info className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-emerald-800">本模式不生成参考图</h3>
+                <p className="mt-1 text-xs leading-relaxed text-emerald-700">{skipNote}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ═══ 场景列表 ═══ */}
-        {hasScenes && (
+        {!skipForm && hasScenes && (
           <div className="space-y-10">
             {(() => {
               // 按剧集分组
@@ -638,7 +665,7 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
                 const fallbackTitle = epScenes[0].episode_title || `第 ${epNum} 集`;
                 const scriptTitle = episodeTitleMap[Number(epNum)];
                 const episodeTitle = scriptTitle ? `第 ${epNum} 集：${scriptTitle}` : fallbackTitle;
-                
+
                 return (
                   <div key={epNum} className="space-y-4">
                     <div className="flex items-center justify-between py-2 px-1 border-b border-gray-100">
@@ -689,7 +716,7 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
         )}
 
         {/* 如果有 artifact 数据（即使 status 是 pending），也显示内容 */}
-        {!hasScenes && state.status === 'pending' && (
+        {!skipForm && !hasScenes && state.status === 'pending' && (
           <div className="text-center text-gray-400 text-sm py-20">等待上一阶段完成...</div>
         )}
       </div>

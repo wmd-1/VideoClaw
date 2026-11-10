@@ -307,6 +307,11 @@ def plan_targets(
             targets.append(ConsumeTarget(stage, container, item_id, "selected", True, False, "edit", consumers=(item_id,)))
 
     elif stage == "reference_generation":
+        if mode == "reference":
+            # Ref2VA：视频与改写 grounding 直接消费角色/场景资产，本阶段不规划任何素材。
+            # 否则角色/场景资产未产出时，物化会在 agent 之前以 ConsumptionError 失败，
+            # 使“跳过”变成阶段失败（reference-mode-skip-scene-images D8）。
+            return []
         segments = _segments(artifacts)
         by_id = dict(zip(_segment_ids(segments), segments))
         for seg_id in _wanted(list(by_id), target_ids):

@@ -1372,11 +1372,14 @@ export default function WorkflowPanel() {
       const result = await continueWorkflow(sessionId, stageId);
       // 后端拒绝继续（阶段还在执行、或状态不允许）时不得本地谎报“已确认”，也不得接着跑后续阶段
       if (result.status !== 'ready' && result.status !== 'completed') {
-        console.warn('确认未生效：', result.status, result.message || '');
+        const message = result.message || result.openclaw || '当前状态不允许继续，请检查会话状态。';
+        console.warn('确认未生效：', result.status, message);
         await resyncSessionView(token, sessionId, { statusMap: result.status_map, refreshArtifacts: true });
+        // 拒绝原因必须对用户可见（如“需要先生成分镜图”），否则界面只表现为点击无反应
+        commitStageState(token, stageId, { error: message });
         return;
       }
-      commitStageState(token, stageId, { status: 'completed', reconfirm: false, progressMessage: '已确认' });
+      commitStageState(token, stageId, { status: 'completed', reconfirm: false, progressMessage: '已确认', error: null });
 
       // 更新顶栏状态，并把 /continue 返回的状态表回写到所有阶段（不再只写 globalStatusMap）
       commitSessionView(token, {
@@ -2025,6 +2028,9 @@ export default function WorkflowPanel() {
     const showConfirm = !hasSubsequentExecution;
 
     // 计算是否有待生成的项（阶段2、4、5）；失败条目（含历史版本）也视为待处理，允许阶段级重跑
+    // reference 模式下参考图阶段不产出分镜图：该阶段的“待生成”恒为 false，
+    // 避免分镜同步写入的占位条目把「继续生成」变回可点（reference-mode-skip-scene-images D5）
+    const videoMode = projectParams?.video_generation_mode || 'first_frame';
     let hasPendingItems = false;
     if (activeStage === 'character_design') {
       const art = state?.artifact as { characters?: ArtifactItem[]; settings?: ArtifactItem[] } | undefined;
@@ -2035,7 +2041,7 @@ export default function WorkflowPanel() {
         sets.some(s => !s.selected || s.status === 'failed');
     } else if (activeStage === 'reference_generation') {
       const scenes = (state?.artifact as { scenes?: ArtifactItem[] } | undefined)?.scenes || [];
-      hasPendingItems = scenes.some(s => !s.selected || s.status === 'failed');
+      hasPendingItems = videoMode === 'reference' ? false : scenes.some(s => !s.selected || s.status === 'failed');
     } else if (activeStage === 'prompt_rewrite') {
       const items = (state?.artifact as { items?: Array<{ status?: string }> } | undefined)?.items || [];
       hasPendingItems = items.some(i => i.status === 'pending' || i.status === 'failed');
@@ -2044,9 +2050,9 @@ export default function WorkflowPanel() {
       // 检查是否有未选中或失败的 clips
       const hasUnselected = clips.some(c => !c.selected || c.status === 'failed');
       // 检查参考图阶段的 scenes 数量是否大于 video clips 数量
-      // 如果是，说明有新分镜需要生成
+      // 如果是，说明有新分镜需要生成；reference 模式不使用分镜图，占位条目不算新镜头
       const refScenes = (stageStates['reference_generation']?.artifact as { scenes?: unknown[] } | undefined)?.scenes || [];
-      const hasNewShots = refScenes.length > clips.length;
+      const hasNewShots = videoMode !== 'reference' && refScenes.length > clips.length;
       hasPendingItems = hasUnselected || hasNewShots;
     }
 
@@ -2115,6 +2121,7 @@ export default function WorkflowPanel() {
         hasPendingItems={hasPendingItems}
         hasNextStageStarted={hasNextStageStarted}
         referenceArtifact={referenceArtifact}
+        videoGenerationMode={projectParams?.video_generation_mode || 'first_frame'}
         scriptArtifact={scriptArtifact}
         flaggedItems={flaggedByStage[activeStage]}
         onNavigateStage={handleStageClick}

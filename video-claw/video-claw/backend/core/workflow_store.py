@@ -161,6 +161,13 @@ def artifact_has_pending(stage: str, art: Any) -> bool:
         episodes = art.get("episodes", [])
         return not episodes or any(not ep.get("segments") for ep in episodes if isinstance(ep, dict))
     if stage == "reference_generation":
+        # 跳过形态只看产物自身的 skip 标记：本函数没有 meta，MUST NOT 依赖会话模式，
+        # 否则会与状态重算的数据源分叉（reference-mode-skip-scene-images D3）。
+        # 标记必须是对象：非对象/空对象不算有效标记，避免误写放行晋升。
+        from core.reference_skip import reference_skip_marker
+
+        if reference_skip_marker(art):
+            return False
         scenes = art.get("scenes", [])
         return not scenes or any(not s.get("selected") for s in scenes if isinstance(s, dict))
     if stage == "prompt_rewrite":

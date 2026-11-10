@@ -693,7 +693,29 @@ class ReferenceGeneratorAgent(AgentInterface):
         input_data = self._merge_session_params(input_data)
 
         sid = input_data["session_id"]
-        
+        mode = str(input_data.get("video_generation_mode") or "first_frame").strip().lower()
+        if mode == "reference":
+            # reference 模式：视频与改写 grounding 直接消费角色/场景资产，分镜图不被消费。
+            # 在构造任何客户端、收集分镜之前短路（design D2）：零图像生成、零评估、零文件产出。
+            from core.reference_skip import build_reference_skip
+
+            regen_scenes = (intervention or {}).get("regenerate_scenes") if isinstance(intervention, dict) else None
+            if regen_scenes:
+                logger.info(
+                    "[ReferenceAgent] reference 模式忽略单条重生成请求（本阶段不生成分镜图）: %s",
+                    regen_scenes,
+                )
+            logger.info("[ReferenceAgent] reference 模式跳过参考图生成: session=%s", sid)
+            self._report_progress("参考图", "本模式不生成参考图", 100)
+            return {
+                "payload": {
+                    "session_id": sid,
+                    "scenes": [],
+                    "skip": build_reference_skip(mode),
+                },
+                "stage_completed": True,
+            }
+
         style = input_data.get("style", "anime")
         video_ratio = input_data.get("video_ratio", "16:9")
         resolution = input_data.get("resolution", "2K")

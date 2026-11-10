@@ -71,6 +71,11 @@ export interface StageViewProps {
   artifacts?: Record<string, unknown>;
   /** 参考图阶段的 artifact（仅 VideoStage 使用，用于检查依赖） */
   referenceArtifact?: unknown;
+  /**
+   * 当前会话的视频生成方式（reference-mode-skip-scene-images）：
+   * 参考图页与视频页的跳过形态 MUST 以它为首要判据，`skip` 标记只作辅助证据。
+   */
+  videoGenerationMode?: string;
   /** 剧本阶段的 artifact（用于获取剧集标题） */
   scriptArtifact?: unknown;
   /** 本阶段需要标红的条目（item id → 缺失说明） */
