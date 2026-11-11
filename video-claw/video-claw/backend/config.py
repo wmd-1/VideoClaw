@@ -123,6 +123,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "vlm_model": "",
         # 采样温度（预留：当前 provider 客户端未透传 temperature，字段先行入库）
         "temperature": 0.3,
+        # 运行时质量评审（软门槛；默认关闭，关闭时调用次数与既有行为一致）
+        "judge_enable": False,
+        # 评审用 LLM 模型（留空回退 h3_rewrite.llm_model / 会话 llm；建议与改写模型不同源）
+        "judge_model": "",
+        # 评审达标阈值（1-5，低于该分触发一次修订）
+        "judge_threshold": 3,
     },
     "custom_models": [],
 }
@@ -204,14 +210,18 @@ def _coerce_config(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(h3_rewrite, dict):
         h3_rewrite = copy.deepcopy(DEFAULT_CONFIG["h3_rewrite"])
         clean["h3_rewrite"] = h3_rewrite
-    for bool_key in ("enable", "grounding_enable"):
+    for bool_key in ("enable", "grounding_enable", "judge_enable"):
         h3_rewrite[bool_key] = _as_bool(h3_rewrite.get(bool_key))
-    for key in ("llm_model", "vlm_model"):
+    for key in ("llm_model", "vlm_model", "judge_model"):
         h3_rewrite[key] = "" if h3_rewrite.get(key) is None else str(h3_rewrite[key])
     try:
         h3_rewrite["temperature"] = float(h3_rewrite.get("temperature", 0.3))
     except (TypeError, ValueError):
         h3_rewrite["temperature"] = 0.3
+    try:
+        h3_rewrite["judge_threshold"] = max(1, min(5, int(h3_rewrite.get("judge_threshold", 3))))
+    except (TypeError, ValueError):
+        h3_rewrite["judge_threshold"] = 3
     database = clean.get("database")
     if not isinstance(database, dict):
         database = copy.deepcopy(DEFAULT_CONFIG["database"])
@@ -343,7 +353,8 @@ ENV_CUSTOM_MODEL_PATTERN = re.compile(
     r"^VC_CUSTOM_MODEL_([A-Za-z0-9]+)__(ID|PROVIDER|MODEL|NAME|TYPES|ABILITIES|CONCURRENCY)$"
 )
 ENV_H3_REWRITE_PATTERN = re.compile(
-    r"^VC_H3_REWRITE__(ENABLE|GROUNDING_ENABLE|LLM_MODEL|VLM_MODEL|TEMPERATURE)$"
+    r"^VC_H3_REWRITE__(ENABLE|GROUNDING_ENABLE|LLM_MODEL|VLM_MODEL|TEMPERATURE"
+    r"|JUDGE_ENABLE|JUDGE_MODEL|JUDGE_THRESHOLD)$"
 )
 ENV_MODEL_KEYS = {
     "VC_MODEL_LLM": "llm",
@@ -637,7 +648,9 @@ def _apply_env_overrides(
     # 旧键一次性迁移提示（VC_DESIGN_AGENT__* 已废弃，不生效）
     if design_agent_fields:
         logger.warning(
-            "环境变量 %s 已废弃：提示词改写已改为原生实现，请改用 VC_H3_REWRITE__*（ENABLE/GROUNDING_ENABLE/LLM_MODEL/VLM_MODEL/TEMPERATURE）；旧变量将被忽略",
+            "环境变量 %s 已废弃：提示词改写已改为原生实现，请改用 VC_H3_REWRITE__*"
+            "（ENABLE/GROUNDING_ENABLE/LLM_MODEL/VLM_MODEL/TEMPERATURE"
+            "/JUDGE_ENABLE/JUDGE_MODEL/JUDGE_THRESHOLD）；旧变量将被忽略",
             ", ".join(sorted(design_agent_fields)),
         )
 
@@ -645,13 +658,18 @@ def _apply_env_overrides(
     if h3_rewrite_fields:
         h3_section = effective.setdefault("h3_rewrite", {})
         for field_name, raw in h3_rewrite_fields.items():
-            if field_name in ("enable", "grounding_enable"):
+            if field_name in ("enable", "grounding_enable", "judge_enable"):
                 h3_section[field_name] = _as_bool(raw)
             elif field_name == "temperature":
                 try:
                     h3_section[field_name] = float(raw)
                 except (TypeError, ValueError):
                     h3_section[field_name] = 0.3
+            elif field_name == "judge_threshold":
+                try:
+                    h3_section[field_name] = max(1, min(5, int(raw)))
+                except (TypeError, ValueError):
+                    h3_section[field_name] = 3
             else:
                 h3_section[field_name] = "" if raw is None else str(raw)
             env_fields.append(f"h3_rewrite.{field_name}")
@@ -1069,6 +1087,9 @@ class Config:
     H3_REWRITE_LLM_MODEL = _get(CONFIG, "h3_rewrite.llm_model", "")
     H3_REWRITE_VLM_MODEL = _get(CONFIG, "h3_rewrite.vlm_model", "")
     H3_REWRITE_TEMPERATURE = _get(CONFIG, "h3_rewrite.temperature", 0.3)
+    H3_REWRITE_JUDGE_ENABLED = _get(CONFIG, "h3_rewrite.judge_enable", False)
+    H3_REWRITE_JUDGE_MODEL = _get(CONFIG, "h3_rewrite.judge_model", "")
+    H3_REWRITE_JUDGE_THRESHOLD = _get(CONFIG, "h3_rewrite.judge_threshold", 3)
 
     BASE_DIR = str(BASE_DIR)
     CODE_DIR = os.path.join(BASE_DIR, "code")
@@ -1164,6 +1185,9 @@ class Config:
         cls.H3_REWRITE_LLM_MODEL = _get(clean, "h3_rewrite.llm_model", "")
         cls.H3_REWRITE_VLM_MODEL = _get(clean, "h3_rewrite.vlm_model", "")
         cls.H3_REWRITE_TEMPERATURE = _get(clean, "h3_rewrite.temperature", 0.3)
+        cls.H3_REWRITE_JUDGE_ENABLED = _get(clean, "h3_rewrite.judge_enable", False)
+        cls.H3_REWRITE_JUDGE_MODEL = _get(clean, "h3_rewrite.judge_model", "")
+        cls.H3_REWRITE_JUDGE_THRESHOLD = _get(clean, "h3_rewrite.judge_threshold", 3)
 
         cls.DATABASE = _get(clean, "database", {})
         cls.STORAGE = _get(clean, "storage", {})

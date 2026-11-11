@@ -58,9 +58,10 @@ def test_grounding_images_non_frame_mode_only_first():
 def _patch_agent(monkeypatch, agent, seen, images_calls):
     """把 LLM/grounding 换掉，只记录“每条目解析出的模式”与“实际提交给 VLM 的图”。"""
 
-    async def fake_rewrite_one(segment, mode, system_prompt, guide, llm_model, sections):
+    async def fake_rewrite_one(segment, mode, system_prompt, guide, llm_model, sections,
+                               picture_count=None):
         seen[segment["id"]] = mode
-        return "改写结果", [], ""
+        return "改写结果", [], "", None
 
     def fake_grounding(images, vlm_model, session_id=""):
         images_calls.append(list(images))

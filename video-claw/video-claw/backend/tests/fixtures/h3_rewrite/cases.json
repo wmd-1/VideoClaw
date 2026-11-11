@@ -1,0 +1,37 @@
+[
+  {
+    "name": "t2va-basic",
+    "mode": "T2VA",
+    "duration": 5,
+    "picture_count": 0,
+    "prompt": "integrated_multimodal_description: [Shot 1] A young man stands in a bank hall.\noverall_soundscape: Quiet interior room tone with distant footsteps.\nnon_diegetic_music: Low strings fade in and last 5 seconds.\n"
+  },
+  {
+    "name": "i2va-first-frame",
+    "mode": "I2VA",
+    "duration": 5,
+    "picture_count": 1,
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] A young man stands in a bank hall.\noverall_soundscape: Quiet interior room tone with distant footsteps.\nnon_diegetic_music: Low strings fade in and last 5 seconds.\n"
+  },
+  {
+    "name": "fl2va-start-end",
+    "mode": "FL2VA",
+    "duration": 8,
+    "picture_count": 2,
+    "prompt": "How the reference pictures align with the target video — Picture 1 (from [Shot 1]) aligns with the 0.00-second mark of the target video; Picture 2 (from [Shot 1]) aligns with the 8.00-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] A young man stands in a bank hall. [Shot 2] At 00:04.000, the camera cuts to a clock on the wall.\noverall_soundscape: Quiet interior room tone with distant footsteps.\nnon_diegetic_music: Low strings fade in and last 8 seconds.\n"
+  },
+  {
+    "name": "l2va-last-frame",
+    "mode": "L2VA",
+    "duration": 6,
+    "picture_count": 1,
+    "prompt": "How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the 6.00-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] A young man walks toward a bank counter.\noverall_soundscape: Quiet interior room tone with distant footsteps.\nnon_diegetic_music: Low strings fade in and last 6 seconds.\n"
+  },
+  {
+    "name": "ref2va-full-reference",
+    "mode": "Ref2VA",
+    "duration": 8,
+    "picture_count": 2,
+    "prompt": "subject_definitions:\n<Subject 1> is the young man in <Picture 1>.\n<Subject 2> is the bank hall in <Picture 2>.\nsummary:\nA young man crosses the bank hall.\nretention_analysis:\n<Subject 1> is preserved throughout; <Subject 2> is reused as the environment.\ndetailed_description:\nThe young man from <Picture 1> walks across the hall from <Picture 2> for 8 seconds.\noverall_soundscape:\nQuiet room tone and footsteps.\nnon_diegetic_music:\nLow strings.\n"
+  }
+]

@@ -25,7 +25,7 @@ def test_rewrite_one_parse_failure_returns_empty_not_fallback(monkeypatch):
     monkeypatch.setattr(agent, "_query_llm", lambda *a, **k: "这不是合法提示词，缺少所有字段")
 
     sections = PromptRewriteAgent._render_sections("", "小陈站立", "", [], "")
-    rewritten, violations, rejected = asyncio.run(agent._rewrite_one(
+    rewritten, violations, rejected, _quality = asyncio.run(agent._rewrite_one(
         _segment(), "I2VA", "system", "guide", "fake-model", sections,
     ))
     assert rewritten == ""
@@ -45,8 +45,9 @@ def test_rewrite_segment_failure_marks_item_failed_without_version(monkeypatch):
 
     long_rejected = "x" * 5000
 
-    async def failed_rewrite(segment, mode, system_prompt, guide, llm_model, sections):
-        return "", ["缺少必填字段：镜头运动"], long_rejected
+    async def failed_rewrite(segment, mode, system_prompt, guide, llm_model, sections,
+                             picture_count=None):
+        return "", ["缺少必填字段：镜头运动"], long_rejected, None
 
     monkeypatch.setattr(agent, "_rewrite_one", failed_rewrite)
     result = asyncio.run(agent._rewrite_segments(

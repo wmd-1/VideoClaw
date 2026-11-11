@@ -113,6 +113,12 @@ h3_rewrite:
   vlm_model: ''
   # 采样温度（预留字段）
   temperature: 0.3
+  # 运行时质量评审（软门槛；默认关闭。关闭时不产生评审调用，调用次数与既有行为一致）
+  judge_enable: false
+  # 评审用 LLM 模型（留空回退 llm_model / 会话 llm；建议与改写模型不同源以降低同源盲区）
+  judge_model: ''
+  # 评审达标阈值（1-5；低于该分或存在 blocker 时触发至多一次带草稿修订）
+  judge_threshold: 3
 
 # 自定义模型注册：通过 provider 引用上面的供应商；types 取值 llm/vlm/t2i/i2i/video；
 # concurrency 缺省 1（本地单卡服务最保守）；model 为实际请求的模型名，按部署修改。

@@ -3,7 +3,7 @@
 - 输入模式：{input_mode}
 - 目标视频时长：{duration} 秒
 - 镜头编号：{segment_id}
-{authoritative_section}{current_section}{grounding_section}{user_section}{continuity_section}
+{authoritative_section}{current_section}{grounding_section}{user_section}{continuity_section}{revision_section}
 改写要求：
 1. 按上述输入模式遵循随附指南的结构与字段规范。
 2. 描述总时长与目标时长一致；关键帧任务写明与首帧/尾帧的对齐关系。

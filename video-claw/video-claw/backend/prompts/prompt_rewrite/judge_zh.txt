@@ -1,0 +1,39 @@
+【任务】请评审下面这份 MiniMax H3 视频提示词草稿。只输出一个 JSON 对象，不要输出任何解释。
+
+- 输入模式：{input_mode}
+- 目标视频时长：{duration} 秒
+
+【当前分镜】
+{shot_content}
+
+【权威事实·角色与场景设定（最高优先级）】
+{authoritative_section}
+
+【参考图/首帧实际内容（客观描述）】
+{grounding_section}
+
+【连续性摘要（辅助信息）】
+{continuity_section}
+
+【待评审提示词草稿】
+{draft_prompt}
+
+【评审维度（每维 1-5 分，5 为最好）】
+1. faithfulness：是否忠于当前分镜的剧情与动作，且不与权威事实冲突。
+2. visual_alignment：描述是否与参考图/首帧的实际内容一致；无参考内容时评估时长与结构是否自洽。
+3. specificity：是否使用具体可见、可听的细节（构图、主体、动作、运镜、光线、声音），而不是抽象修饰或剧情梗概。
+4. continuity：主体外观、命名与整体风格是否与前序分镜摘要一致。
+
+【输出契约】
+只输出一个 JSON 对象，形如：
+{{
+  "score": 4,
+  "needs_revision": false,
+  "dimensions": {{"faithfulness": 4, "visual_alignment": 4, "specificity": 5, "continuity": 4}},
+  "issues": [{{"dimension": "faithfulness", "severity": "minor", "message": "具体问题"}}]
+}}
+要求：
+- `score` 为四维均分四舍五入后的 1-5 整数；
+- `needs_revision` 表示是否必须修订；存在 `severity=blocker` 的问题时必须为 true；
+- 无法判断的维度给保守分数，并在 `issues` 中说明原因；
+- 不评价格式字段是否齐全（结构合规已由确定性校验负责）。

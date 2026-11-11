@@ -259,8 +259,9 @@ flowchart LR
 
 ### 7.2 执行模型与质量保障
 
-- **串行逐分镜**：每个分镜以**一次 LLM 调用为正常路径**；结构校验不通过时，带具体违规清单回喂重试，**最多 2 次**；仍失败则该条目 `status=failed` 并记录违规清单与最后一次被拒输出（`rejected_output`），**不阻塞其他条目**，也不静默放行。
-- **校验器（`_validate_h3_prompt`）**：必填字段存在且顺序正确（基础三字段 / Ref2VA 六段）、时长声明与目标一致、参考标签在全部段落一致且无未定义标签、抽象词黑名单命中、正文语言为英文（对话/歌词/画面文字与引号内内容豁免）。
+- **串行逐分镜与带草稿修订**：每个分镜以**一次 LLM 调用为正常路径**；确定性校验不通过时，携带**按字段分节截断的被拒草稿 + 违规清单**回喂，要求只修正违规项，**最多 2 次**；连续两轮问题清单相同则回退为不带草稿的完整重写。仍失败则该条目 `status=failed` 并记录违规清单与最后一次被拒输出（`rejected_output`），**不阻塞其他条目**，也不静默放行。单条目生成调用上限 3 次。
+- **校验器（`_validate_h3_prompt`）**：必填字段存在且顺序正确（基础三字段 / Ref2VA 六段）、时长声明与目标一致、Ref2VA 内部标签定义自洽（未定义标签仅在该模式检查）、抽象词黑名单命中、正文语言为英文（对话/歌词/画面文字与引号内内容豁免）；新增关键帧对齐（对齐声明首行+空行、I2VA 首帧 0.00 句、FL2VA/L2VA 尾帧对齐点、`S.SS` 两位小数）、首镜头无时间戳、cut time 严格递增且不越界、时间点不越界、`<Picture N>` 数量与 resolver 素材角色一致（L2VA 尾帧计 1）。**不**强制区间式时间轴，**不**要求 Ref2VA 标签必须被详细描述段引用（官方允许只在定义内引用）。关键帧对齐声明与字段之间的空行在**校验前做确定性规范化**（仅补空行，不改正文）：实测真实模型稳定不写空行，纯格式差异不应让条目重试耗尽。
+- **可选质量评审（`h3_rewrite.judge_enable`，默认关闭）**：对通过确定性校验的草稿至多评审 1 次（四维：忠于分镜与权威事实 / 视觉对齐 / 具体性 / 跨分镜连续性），不达标且生成预算未耗尽时复用同一草稿回喂通道触发至多 1 次修订，修订后不再评审。结果写入条目可选 `quality`，仅作**软门槛与诊断**：不阻塞停点、不改条目状态归一、不承诺界面可见；带 `judged_prompt_hash` 与 `applies_to_final` 标注评分对应的正文版本。评审调用失败降级为 `verdict=unavailable`，不阻塞改写。
 - **VLM grounding（独立开关 `h3_rewrite.grounding_enable`，默认 true）**：仅 `I2VA / FL2VA / Ref2VA` 调用；对选中的参考图产出**客观画面描述**并注入改写输入，VLM 不参与写提示词。成功描述进入**会话隔离 LRU**（键含 session、实际图片字节 sha256、VLM 模型、grounding 策略版本；64/会话、256/全局、8MB、TTL 2h），同图跨执行不重复调用；空/失败仅在当前执行内负缓存。失败或开关关闭时回退为无 grounding 的纯文本输入，**模式保持不变**，条目记 `grounding: {described: false, text_only: true}`，阶段末尾输出一条「grounding 降级 N/M 条目」汇总日志（关闭阶段的唯一途径是 `enable`）。缓存命中写观测（`cache_hit=true`），不改变媒体权限校验。
 - **跨分镜连续性**：串行累积前序条目的主体与风格摘要（`continuity` 字段）。优先级为：角色/场景权威事实 > 当前分镜明确要求 > 用户修改意见 > continuity 摘要 > 模型自由补充；continuity 与权威事实冲突时忽略该条，防止前序错误沿链放大。
 - **模型选择与回退**：改写用模型 `h3_rewrite.llm_model` → 会话 `llm_model` → 全局 `Config.LLM_MODEL`；grounding 用 `h3_rewrite.vlm_model` → 会话 `vlm_model` → `Config.VLM_MODEL`。`h3_rewrite.temperature` 目前是**预留字段，未透传到模型调用**（设置页与 api.md 已标注）。
@@ -276,12 +277,20 @@ flowchart LR
       "input_mode": "I2VA", "duration": 8,
       "continuity": "主体与风格摘要", "grounding": {"image_hash": "…", "described": true},
       "versions": [{"content": "…", "source": "agent", "created_at": "…"}],
+      "quality": {
+        "verdict": "pass | needs_revision | unavailable", "score": 4, "threshold": 3,
+        "dimensions": {"faithfulness": 4, "visual_alignment": 4, "specificity": 5, "continuity": 4},
+        "issues": [{"dimension": "faithfulness", "severity": "minor", "message": "…"}],
+        "revision_attempted": false,
+        "judged_prompt_hash": "…", "judged_revision": 1, "applies_to_final": true
+      },
       "status": "done"
     }
   ]
 }
 ```
 
+- **质量评审（可选）**：`quality` 仅在 `h3_rewrite.judge_enable=true` 时存在，是**软门槛**（不阻塞停点、不改状态归一、不承诺界面可见）；`applies_to_final=false` 表示评分针对修订前版本。离线 judge 评分脚本不在本变更范围，本阶段只提供运行时可选的评审能力。
 - **停点**：阶段完成进入 `waiting`，需用户确认后 `continue`；前端「确认改写结果并继续」。
 - **四种介入**：① 单条重新生成（`regenerate_items`，后台单条，**不携带连续性链**，保留权威事实与 grounding）；② 按修改意见修订（`revise_items`，上一版进「用户修改」优先级区并作为 `superseded` 版本留存）；③ 直接编辑改写结果（更新 artifact）；④ 阶段级重新执行。
 - **实时反馈**：SSE 逐条上报进度（`percent` 按 (i+1)/总数，起始 2%、完成 100%，消息为「分镜 <id> 完成/失败」）与条目完成事件 `asset_complete{type:"items"}`。服务端收到事件时按 id 追加/更新本阶段产物条目并落盘（`orchestrator.merge_progress_artifact`），而**事件另带渲染字段**（`name/original_prompt/input_mode/duration/continuity/grounding/rewritten_prompt/truncated`），因此执行期条目能按完成顺序逐条出现并被检视。注意：改写正文**只走事件、不写入服务端 shell**（避开每条完成全量重写会话文件），所以执行中刷新/断线后条目正文会回落为明示的占位态（不会误报“改写结果为空”），完整正文以阶段完成后的产物为权威；超过上限时 `truncated=true`（上限为集中定义的工程默认值 8000 字符，尚未按真实分布校准）。
@@ -427,7 +436,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 - 加载规则：`load_prompt(category, name, lang)` 依次尝试 `{name}_{lang}.txt` → `{name}_zh.txt` → `{name}.txt`；`load_prompt_with_fallback` 先首选语言、再回退 zh。
 - 维护：新增/删除模板必须同步本索引与 `test_prompt_call_sites_contract.py`；直接调用点新增时必须提供全部占位符；语言回退只说明“可加载”，不代表内容已本地化。
 
-**17 个直接调用点（与 `test_prompt_call_sites_contract.py` 对齐）**
+**18 个直接调用点（与 `test_prompt_call_sites_contract.py` 对齐）**
 
 | # | 模板路径 | 阶段 | 语言 | 输入占位符 | 输出/用途 | 调用入口 |
 |---|---|---|---|---|---|---|
@@ -448,6 +457,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 | 15 | `reference/eval_first_frame_zh.txt` | reference_generation | zh | `plot,visual_prompt,character_description,setting_description` | 首帧图评估 | `_evaluate_with_vlm` |
 | 16 | `reference/first_frame_zh.txt` | reference_generation | zh | `plot,visual_prompt,character_description,setting_description,original_text` | 中文首帧生成 | `process`/`regen_run`/`segment_run` |
 | 17 | `reference/first_frame_en.txt` | reference_generation | en | 同 #16 | 英文首帧生成（与中文同结构） | 同上（`is_zh=false`） |
+| 18 | `prompt_rewrite/judge_zh.txt` | prompt_rewrite | zh | `input_mode,duration,shot_content,authoritative_section,grounding_section,continuity_section,draft_prompt` | 可选质量评审（软门槛，默认关闭；JSON 评分与问题清单） | `PromptRewriteAgent._run_judge` |
 
 **其余模板族**
 

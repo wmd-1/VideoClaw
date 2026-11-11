@@ -339,7 +339,7 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
 ```
 
 **提示词改写阶段说明**：
-- 执行：与其他阶段一致，`POST /api/project/{session_id}/execute/prompt_rewrite`（要求分镜阶段已完成；未启用 `h3_rewrite.enable` 时返回明确错误）。改写为本地 LLM 调用（知识资产内嵌），正常路径每分镜 1 次 LLM 调用，结构校验失败最多追加 2 次修订调用。降级语义：`grounding_enable=true` 但环境未配置可用 VLM（或看图失败）时，对应条目降级为纯文本改写，**H3 模式不变**，条目带 `grounding.text_only=true` 并在阶段完成日志汇总降级数；`temperature` 为预留字段，当前未透传生效。
+- 执行：与其他阶段一致，`POST /api/project/{session_id}/execute/prompt_rewrite`（要求分镜阶段已完成；未启用 `h3_rewrite.enable` 时返回明确错误）。改写为本地 LLM 调用（知识资产内嵌）：正常路径每分镜 1 次 LLM 调用；确定性校验失败时携带**被拒草稿与违规清单**回喂，最多追加 2 次修订调用（连续两轮问题相同会回退为不带草稿的完整重写）；单条目生成调用上限 3 次。确定性校验覆盖字段/顺序、时长、关键帧对齐（对齐声明首行+空行、I2VA 首帧 0.00 句、FL2VA/L2VA 尾帧对齐、`S.SS` 两位小数）、首镜头无时间戳与 cut time 严格递增、时间点不越界、`<Picture N>` 数量及 Ref2VA 未定义标签。可选质量评审（`h3_rewrite.judge_enable`，默认关闭）对通过确定性校验的草稿至多评审 1 次，不达标时触发至多 1 次带草稿修订；结果写入条目可选 `quality`（仅作软门槛与诊断，不阻塞停点、不承诺界面展示，并标注所评正文指纹 `judged_prompt_hash` 与 `applies_to_final`）。降级语义：`grounding_enable=true` 但环境未配置可用 VLM（或看图失败）时，对应条目降级为纯文本改写，**H3 模式不变**，条目带 `grounding.text_only=true` 并在阶段完成日志汇总降级数；`temperature` 为预留字段，当前未透传生效。
 - 停点：执行完成后进入 waiting，等待用户确认或干预。
 - 干预（`POST /api/project/{session_id}/intervene`，stage=prompt_rewrite）：
   - `{"regenerate_items": ["seg_01_01", ...]}`：单条目重生成（后台执行，基于本地版本链与 continuity 上下文）；

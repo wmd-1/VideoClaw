@@ -216,13 +216,28 @@ script_generation → character_design → storyboard → reference_generation �
         {"content": "历史版本文本", "source": "agent/user/superseded", "created_at": "ISO 时间"}
       ],
       "status": "done/pending/failed",
-      "error": "失败原因（仅失败条目）"
+      "error": "失败原因（仅失败条目）",
+      "quality": {
+        "verdict": "pass/needs_revision/unavailable",
+        "score": 4,
+        "threshold": 3,
+        "dimensions": {"faithfulness": 4, "visual_alignment": 4, "specificity": 5, "continuity": 4},
+        "issues": [{"dimension": "faithfulness", "severity": "minor", "message": "问题描述"}],
+        "revision_attempted": false,
+        "judged_prompt_hash": "被评审正文指纹",
+        "judged_revision": 1,
+        "applies_to_final": true,
+        "model": "评审模型",
+        "error": "评审不可用时的原因"
+      }
     }
   ]
 }
 ```
 
 > **注意**：改写为本地 LLM 调用（知识资产内嵌于 `prompts/prompt_rewrite/`），无外部会话；
+> `quality` 仅在 `h3_rewrite.judge_enable=true` 时存在，是**软门槛**：不阻塞条目完成或阶段停点，
+> 也不承诺在界面展示；`applies_to_final=false` 表示评分针对的是修订前的被评版本，不能当作最终正文结论；
 > `input_mode` 由 mode resolver 从 `video_generation_mode` 与素材角色推导（两级模式契约见
 > `openspec/changes/native-h3-prompt-rewriter/` 引用的决策文档 §5.2）；`grounding.text_only=true`
 > 表示该条目在无 VLM 描述的情况下完成改写（模式不变）。

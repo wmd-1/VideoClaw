@@ -21,6 +21,7 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -50,6 +51,10 @@ MAX_VALIDATE_RETRIES = 2
 # 这是集中定义的工程默认值：本仓库尚无真实推理输出的长度分布样本（历史会话中 prompt_rewrite 条目为 0），
 # 未经真实分布验证，不得当成长期契约；超限部分由 truncated 显式标记，完整正文以阶段产物为权威。
 EVENT_BODY_LIMIT = 8000
+# 校验失败回喂时携带的被拒草稿上限；按字段分节分配，避免从头截断丢掉尾部字段。
+DRAFT_LIMIT = 6000
+# 草稿头部（关键帧对齐指令等非字段内容）在回喂中的保留上限。
+DRAFT_HEADER_LIMIT = 600
 # 失败条目的被拒输出仅用于诊断；限长后随产物返回，避免轮询/产物被超长输出放大。
 REJECTED_OUTPUT_LIMIT = 2000
 
@@ -120,7 +125,111 @@ def _extract_prompt(assistant_text: str) -> str:
     return text
 
 
-def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
+def _seconds_from_mmss(mm: str, ss: str) -> float:
+    return int(mm) * 60 + float(ss)
+
+
+def _normalize_keyframe_spacing(text: str, mode: str) -> str:
+    """关键帧模式：对齐声明与核心字段之间补一个空行。
+
+    实测真实模型稳定输出「对齐句\\nintegrated_multimodal_description:」，不会遵守空行要求；
+    这是纯格式问题，不应让整个条目失败。规范化只补空行，不改任何正文内容。
+    """
+    if mode not in ("I2VA", "FL2VA", "L2VA") or not text:
+        return text
+    lines = text.splitlines()
+    if len(lines) < 2 or not lines[0].strip() or not lines[1].strip():
+        return text
+    first = lines[0].strip().lower()
+    if "aligns with" not in first and "into the target video" not in first:
+        return text
+    fields = "|".join(BASE_FIELDS)
+    if re.match(rf"^\s*(?:{fields})\s*:", lines[1]):
+        lines.insert(1, "")
+        return "\n".join(lines)
+    return text
+
+
+def _validate_keyframe_alignment(text: str, mode: str, duration: int) -> List[str]:
+    """关键帧模式的对齐声明、S.SS 格式与允许对齐点（官方 base-en L19/L25/L31/L34）。"""
+    violations: List[str] = []
+    if mode not in ("I2VA", "FL2VA", "L2VA"):
+        return violations
+    lines = text.strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    second = lines[1].strip() if len(lines) > 1 else ""
+
+    if mode == "I2VA":
+        if not re.search(r"at\s+0\.00\s+seconds?\s+into\s+the\s+target\s+video", first, re.IGNORECASE) \
+                or "<Picture 1>" not in first:
+            violations.append(
+                "缺少 I2VA 首帧对齐声明（首行须为 at 0.00 seconds into the target video 且含 <Picture 1>）"
+            )
+    elif "aligns with" not in first.lower():
+        violations.append(f"缺少 {mode} 对齐声明（首行须为参考图与目标视频的对齐说明）")
+
+    if len(lines) > 1 and second:
+        violations.append("对齐声明后缺少空行（须与核心字段之间空一行）")
+
+    # 对齐时间只从对齐声明首行提取：正文里的 -second mark 不属于对齐声明，避免误伤。
+    marks = re.findall(r"(\d+(?:\.\d+)?)-second\s+mark", first, re.IGNORECASE)
+    bad_formats = [m for m in marks if not re.fullmatch(r"\d+\.\d{2}", m)]
+    if bad_formats:
+        violations.append("对齐时间未使用官方 S.SS 两位小数格式：" + ", ".join(bad_formats))
+
+    normalized = {m for m in marks if re.fullmatch(r"\d+\.\d{2}", m)}
+    if mode == "L2VA" and f"{duration}.00" not in normalized:
+        violations.append(f"未声明尾帧对齐于目标时长（{duration}.00-second mark）")
+    if mode == "FL2VA" and not {"0.00", f"{duration}.00"}.issubset(normalized):
+        violations.append(f"未同时声明首帧 0.00 与尾帧 {duration}.00 的对齐")
+    allowed = (
+        {"0.00", f"{duration}.00"} if mode == "FL2VA"
+        else {"0.00"} if mode == "I2VA"
+        else {f"{duration}.00"}
+    )
+    extra = normalized - allowed
+    if extra:
+        violations.append("对齐时间点与官方允许值不一致：" + ", ".join(sorted(extra)))
+    return violations
+
+
+def _validate_shot_timeline(text: str, duration: int) -> List[str]:
+    """镜头时间轴：首镜头无时间戳、cut time 严格递增、时间点不越界（base-en L88）。"""
+    violations: List[str] = []
+    shots = re.findall(r"\[Shot\s+(\d+)\](.*?)(?=\[Shot\s+\d+\]|$)", text, re.DOTALL)
+    cut_times: List[float] = []
+    for number, body in shots:
+        if int(number) == 1:
+            if re.search(r"At\s+\d{2}:\d{2}\.\d{3}", body, re.IGNORECASE):
+                violations.append("首个镜头不得添加时间戳（[Shot 1] 内出现 At MM:SS.mmm）")
+            continue
+        match = re.search(r"At\s+(\d{2}):(\d{2}\.\d{3})", body, re.IGNORECASE)
+        if match:
+            cut_times.append(_seconds_from_mmss(match.group(1), match.group(2)))
+        else:
+            violations.append(f"[Shot {number}] 缺少严格递增的 cut time（At MM:SS.mmm）")
+    for index in range(1, len(cut_times)):
+        if cut_times[index] <= cut_times[index - 1]:
+            violations.append("后续镜头的 cut time 必须严格递增")
+            break
+    for mm, ss in re.findall(r"At\s+(\d{2}):(\d{2}\.\d{3})", text, re.IGNORECASE):
+        value = _seconds_from_mmss(mm, ss)
+        if value > duration + 1e-6:
+            violations.append(f"时间点 {value:.2f}s 超出目标时长（{duration} 秒）")
+            break
+    for value in re.findall(r"(\d+(?:\.\d+)?)-second\s+mark", text, re.IGNORECASE):
+        try:
+            number = float(value)
+        except ValueError:
+            continue
+        if number > duration + 1e-6:
+            violations.append(f"对齐时间点 {value}s 超出目标时长（{duration} 秒）")
+            break
+    return violations
+
+
+def _validate_h3_prompt(text: str, mode: str, duration: int, *,
+                        picture_count: Optional[int] = None) -> List[str]:
     """字段级结构校验器（纯函数）。返回人类可读的违规清单；空列表 = 通过。"""
     violations: List[str] = []
     if not text or not text.strip():
@@ -149,7 +258,7 @@ def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
     ):
         violations.append(f"未声明与目标一致的总时长（{duration} 秒）")
 
-    # Ref2VA 标签一致性：全文出现的参考标签必须在 subject_definitions 段有定义
+    # R9：未定义标签仅用于 Ref2VA（基础模式没有 subject_definitions 段）
     if mode == "Ref2VA":
         sd_match = re.search(
             r"subject_definitions\s*:(.*?)(?=\n\s*summary\s*:)", text, re.DOTALL
@@ -160,6 +269,21 @@ def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
             undefined = used - defined
             if undefined:
                 violations.append(f"出现未定义的参考标签：{', '.join(sorted(undefined))}")
+    else:
+        violations.extend(_validate_keyframe_alignment(text, mode, duration))
+
+    # R5-R7：镜头时间轴与时间点
+    violations.extend(_validate_shot_timeline(text, duration))
+
+    # R8：<Picture N> 必须对应实际参考图数量
+    if picture_count is not None:
+        used_pictures = sorted({int(n) for n in re.findall(r"<Picture\s+(\d+)>", text)})
+        invalid = [n for n in used_pictures if n < 1 or n > picture_count]
+        if invalid:
+            violations.append(
+                f"参考图片标签超出实际素材数量（实际 {picture_count} 张）："
+                + ", ".join(f"<Picture {n}>" for n in invalid)
+            )
 
     # 抽象词黑名单
     lowered = text.lower()
@@ -175,6 +299,106 @@ def _validate_h3_prompt(text: str, mode: str, duration: int) -> List[str]:
             violations.append("改写正文应为英文（对话、歌词与画面文字可保留原语言）")
 
     return violations
+
+
+def _truncate_draft_by_field(text: str, mode: str, limit: int = DRAFT_LIMIT) -> str:
+    """按 H3 字段分节截断被拒草稿。
+
+    从头截断会整体丢掉 `overall_soundscape` / `non_diegetic_music` 等尾部字段，
+    使"草稿需足够完整"失效；这里保留头部（对齐指令）与每个字段的片段，逐节标记截断。
+    """
+    if not text or len(text) <= limit:
+        return text
+    fields = REF_FIELDS if mode == "Ref2VA" else BASE_FIELDS
+    positions: List[tuple] = []
+    for field in fields:
+        match = re.search(rf"^\s*{field}\s*:", text, re.MULTILINE)
+        if match:
+            positions.append((match.start(), field))
+    if not positions:
+        return text[:limit].rstrip() + "\n…（草稿已截断）"
+    positions.sort()
+    header = text[:positions[0][0]].strip()
+    if len(header) > DRAFT_HEADER_LIMIT:
+        header = header[:DRAFT_HEADER_LIMIT].rstrip() + "\n…（对齐指令已截断）"
+    parts: List[str] = [header] if header else []
+    per_field = max(200, (limit - len(header)) // len(positions))
+    for index, (start, field) in enumerate(positions):
+        end = positions[index + 1][0] if index + 1 < len(positions) else len(text)
+        chunk = text[start:end].strip()
+        if len(chunk) > per_field:
+            chunk = chunk[:per_field].rstrip() + f"\n…（{field} 已截断）"
+        parts.append(chunk)
+    return "\n\n".join(parts)
+
+
+def _build_revision_section(draft: str, feedback: List[str], mode: str) -> str:
+    """修订专用分节：问题清单 + 按字段分节截断后的被拒草稿。"""
+    if not draft or not feedback:
+        return ""
+    issues = "\n".join(f"- {item}" for item in feedback)
+    extra = ""
+    if any("抽象词" in item for item in feedback):
+        extra += (
+            "\n- 抽象词必须完全移除（含 'cinematic'）：改用具体的镜头运动、机位、"
+            "光线与材质描述（例如 'slow tracking shot at eye level, sodium-vapor lamps reflecting on wet asphalt'）。"
+        )
+    if any("时长" in item for item in feedback):
+        extra += "\n- 必须在描述中显式写出总时长（如 '8 seconds' 或 '0.00s-8.00s' 的时间轴）。"
+    return (
+        "\n【上一次输出未通过校验，请在草稿基础上仅修正以下问题，其余内容保持不变】\n"
+        f"{issues}{extra}\n"
+        "【被拒草稿（按字段分节；标注已截断的字段不得凭空补写，只按问题清单修正）】\n"
+        f"{_truncate_draft_by_field(draft, mode)}\n"
+    )
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """从评审回复中提取第一个 JSON 对象（兼容 Markdown 代码块）。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    fenced = _CODE_FENCE_RE.findall(raw)
+    candidates = fenced or [raw]
+    for candidate in candidates:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start < 0 or end <= start:
+            continue
+        try:
+            payload = json.loads(candidate[start:end + 1])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _issue_messages(quality: Optional[Dict[str, Any]]) -> List[str]:
+    """评审问题 → 回喂用的字符串清单（不得把 dict 直接渲染进提示词）。"""
+    if not isinstance(quality, dict):
+        return []
+    messages: List[str] = []
+    for issue in quality.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        message = str(issue.get("message") or "").strip()
+        if message:
+            severity = str(issue.get("severity") or "minor")
+            messages.append(f"[{severity}] {message}")
+    if not messages and quality.get("verdict") == "needs_revision":
+        messages.append(
+            f"评审得分 {quality.get('score')} 低于阈值 {quality.get('threshold')}，请提升具体性与一致性"
+        )
+    return messages
+
+
+def _mark_quality_applies(quality: Optional[Dict[str, Any]], final_prompt: str) -> None:
+    """标注评分是否适用于最终正文；修订后未复评时不得把旧分当作最终结论。"""
+    if not isinstance(quality, dict):
+        return
+    judged = str(quality.get("judged_prompt_hash") or "")
+    quality["applies_to_final"] = bool(judged) and judged == content_version(final_prompt)
 
 
 def _continuity_from_prompt(text: str, mode: str) -> str:
@@ -375,17 +599,21 @@ class PromptRewriteAgent(AgentInterface):
     def _grounding_images(self, segment: Dict[str, Any], ordered_segments: List[Dict[str, Any]],
                           scene_map: Dict[str, Dict], mode: str,
                           artifacts: Optional[Dict[str, Any]] = None) -> List[str]:
-        """按模式取 grounding 图：首帧 = 本分镜选中参考图；FL2VA 追加下一分镜选中图作尾帧。
+        """参考图清单：grounding 与 `<Picture N>` 数量校验共用同一取法。
 
-        `ordered_segments` 必须是**完整有序分镜**（非本次目标子集），否则单条/批量
-        重写会取错邻接（B3）。Ref2VA 直接消费消费计划给出的有序参考集（B1）。
+        首帧 = 本分镜选中参考图；FL2VA / L2VA 追加下一分镜选中图作尾帧（L2VA 本分镜
+        通常无图，尾帧来自下一分镜）。`ordered_segments` 必须是**完整有序分镜**（非本次
+        目标子集），否则单条/批量重写会取错邻接（B3）。Ref2VA 直接消费消费计划给出的
+        有序参考集（B1）。
         """
         if mode == "Ref2VA":
             return self._reference_asset_images(segment, artifacts or {})
         scene = scene_map.get(segment["id"]) or {}
         selected = str(scene.get("selected") or "").strip()
         images = [selected] if selected else []
-        if mode == "FL2VA":
+        # FL2VA 追加下一分镜尾帧；L2VA 的生产输入是本分镜无图、尾帧来自下一分镜，
+        # 同样必须追加，否则清单为空会把官方 <Picture 1> 误判为超量标签。
+        if mode in ("FL2VA", "L2VA"):
             nxt = self._next_in_order(ordered_segments, segment["id"])
             if nxt is not None:
                 next_scene = scene_map.get(nxt["id"]) or {}
@@ -398,13 +626,15 @@ class PromptRewriteAgent(AgentInterface):
 
     @staticmethod
     def _render_sections(authoritative: str, shot_content: str, user_section: str,
-                         continuity_summaries: List[str], grounding_desc: str) -> Dict[str, str]:
+                         continuity_summaries: List[str], grounding_desc: str,
+                         revision_section: str = "") -> Dict[str, str]:
         sections = {
             "authoritative_section": authoritative,
             "current_section": f"【当前分镜】\n{shot_content}\n" if shot_content else "",
             "user_section": user_section,
             "continuity_section": "",
             "grounding_section": "",
+            "revision_section": revision_section,
         }
         if continuity_summaries:
             joined = "\n".join(f"- {s}" for s in continuity_summaries)
@@ -459,48 +689,143 @@ class PromptRewriteAgent(AgentInterface):
         )
         return self._llm.query(full_prompt, model=llm_model, safe_content=False)
 
+    def _run_judge(self, draft: str, mode: str, duration: int, sections: Dict[str, str],
+                   shot_content: str, llm_model: str, revision: int) -> Dict[str, Any]:
+        """一次多维度质量评审。任何失败都归一为 unavailable dict，绝不抛出。"""
+        model = (
+            str(Config.H3_REWRITE_JUDGE_MODEL or "").strip()
+            or str(Config.H3_REWRITE_LLM_MODEL or "").strip()
+            or str(llm_model or "").strip()
+        )
+        base = {
+            "judged_prompt_hash": content_version(draft),
+            "judged_revision": revision,
+            "model": model,
+        }
+        try:
+            template = load_prompt("prompt_rewrite", "judge", "zh")
+            prompt = template.format(
+                input_mode=mode,
+                duration=duration,
+                shot_content=shot_content,
+                authoritative_section=sections.get("authoritative_section", ""),
+                grounding_section=sections.get("grounding_section", ""),
+                continuity_section=sections.get("continuity_section", ""),
+                draft_prompt=draft,
+            )
+            if self._llm is None:
+                from models.llm_client import LLM
+                self._llm = LLM()
+            with call_context(
+                operation="prompt_rewrite", template_name="judge_zh",
+                template_version=content_version(template),
+            ):
+                raw = self._llm.query(prompt, model=model, safe_content=False)
+            payload = _extract_json_object(raw)
+            if not isinstance(payload, dict):
+                return {**base, "verdict": "unavailable", "error": "评审输出无法解析为 JSON"}
+            try:
+                score = max(1, min(5, int(payload.get("score"))))
+            except (TypeError, ValueError):
+                return {**base, "verdict": "unavailable", "error": "评审输出缺少有效 score"}
+            dimensions = payload.get("dimensions")
+            dimensions = dimensions if isinstance(dimensions, dict) else {}
+            issues: List[Dict[str, str]] = []
+            for issue in payload.get("issues") or []:
+                if not isinstance(issue, dict):
+                    continue
+                message = str(issue.get("message") or "").strip()
+                if not message:
+                    continue
+                issues.append({
+                    "dimension": str(issue.get("dimension") or ""),
+                    "severity": str(issue.get("severity") or "minor"),
+                    "message": message,
+                })
+            threshold = max(1, min(5, int(Config.H3_REWRITE_JUDGE_THRESHOLD or 3)))
+            needs_revision = (
+                bool(payload.get("needs_revision"))
+                or score < threshold
+                or any(item["severity"] == "blocker" for item in issues)
+            )
+            return {
+                **base,
+                "verdict": "needs_revision" if needs_revision else "pass",
+                "score": score,
+                "threshold": threshold,
+                "dimensions": dimensions,
+                "issues": issues,
+                "revision_attempted": False,
+            }
+        except Exception as exc:  # noqa: BLE001 - 评审失败只降级，不阻塞改写
+            logger.warning("prompt_rewrite: 质量评审失败（降级 unavailable）：%s", exc)
+            return {**base, "verdict": "unavailable", "error": str(exc)[:200]}
+
     async def _rewrite_one(self, segment: Dict[str, Any], mode: str, system_prompt: str, guide: str,
-                           llm_model: str, sections: Dict[str, str]) -> Tuple[str, List[str], str]:
-        """单分镜改写：1 次正常调用 + 校验失败带违规清单回喂重试 ≤2 次。
-        返回 (提示词, 违规清单, 最后一次被拒输出)。"""
-        base_request = self._build_request_text(segment, mode, sections)
+                           llm_model: str, sections: Dict[str, str],
+                           picture_count: Optional[int] = None) -> Tuple[str, List[str], str, Optional[Dict]]:
+        """单分镜改写：1 次正常调用 + 校验失败带草稿与违规清单回喂重试 ≤2 次。
+
+        返回 (提示词, 违规清单, 最后一次被拒输出, quality)；
+        评审关闭时 quality 恒为 None，调用次数与既有行为一致。
+        """
         violations: List[str] = []
         last_output = ""
+        draft = ""
+        last_valid = ""
+        prev_feedback: List[str] = []
+        judged = False
+        quality: Optional[Dict[str, Any]] = None
+        judge_enabled = bool(Config.H3_REWRITE_JUDGE_ENABLED)
         for attempt in range(1 + MAX_VALIDATE_RETRIES):
             self._check_cancel()
-            request_text = base_request
-            if violations:
-                fix_hint = ""
-                if any("抽象词" in v for v in violations):
-                    fix_hint += (
-                        "\n- 抽象词必须完全移除（含 'cinematic'）：改用具体的镜头运动、机位、"
-                        "光线与材质描述（例如 'slow tracking shot at eye level, sodium-vapor lamps reflecting on wet asphalt'）。"
-                    )
-                if any("时长" in v for v in violations):
-                    fix_hint += (
-                        "\n- 必须在描述中显式写出总时长（如 '8 seconds' 或 '0.00s-8.00s' 的时间轴）。"
-                    )
-                request_text = (
-                    f"{base_request}\n\n"
-                    "【上一次输出未通过校验，违规清单如下，请修正后重新输出完整提示词】\n"
-                    + "\n".join(f"- {v}" for v in violations)
-                    + fix_hint
-                )
+            # 收敛保护：连续两轮问题清单相同说明带草稿修订未生效，回退为完整重写。
+            revision_section = ""
+            if draft and violations and violations != prev_feedback:
+                revision_section = _build_revision_section(draft, violations, mode)
+            request_text = self._build_request_text(
+                segment, mode, {**sections, "revision_section": revision_section},
+            )
             assistant_text = await asyncio.to_thread(
                 self._query_llm, system_prompt, guide, request_text, llm_model
             )
-            rewritten = _extract_prompt(assistant_text)
+            rewritten = _normalize_keyframe_spacing(_extract_prompt(assistant_text), mode)
             last_output = rewritten or last_output
-            violations = _validate_h3_prompt(rewritten, mode, segment["duration"])
+            prev_feedback = violations
+            violations = _validate_h3_prompt(
+                rewritten, mode, segment["duration"], picture_count=picture_count,
+            )
+            draft = rewritten or draft
+            if rewritten and not violations:
+                last_valid = rewritten
+                if judge_enabled and not judged:
+                    judged = True
+                    quality = await asyncio.to_thread(
+                        self._run_judge, rewritten, mode, segment["duration"], sections,
+                        segment["shot_content"], llm_model, attempt + 1,
+                    )
+                    if quality.get("verdict") == "needs_revision" and attempt < MAX_VALIDATE_RETRIES:
+                        quality["revision_attempted"] = True
+                        violations = _issue_messages(quality)
+                        record_call(
+                            event_type="quality_revision", call_kind="text",
+                            model=str(quality.get("model") or llm_model),
+                            attempt=attempt + 1, retry_reason="quality", status="ok",
+                        )
+                        continue
+                _mark_quality_applies(quality, rewritten)
+                return rewritten, [], "", quality
             if violations:
                 record_call(
                     event_type="validation_retry", call_kind="text", model=llm_model,
                     attempt=attempt + 1, retry_reason="validation",
                     validation_retries=attempt + 1, status="ok",
                 )
-            if rewritten and not violations:
-                return rewritten, [], ""
-        return "", violations or ["改写结果为空"], last_output
+        if last_valid:
+            _mark_quality_applies(quality, last_valid)
+            return last_valid, [], "", quality
+        _mark_quality_applies(quality, "")
+        return "", violations or ["改写结果为空"], last_output, quality
 
     # ─── 条目构造 ───
 
@@ -602,11 +927,16 @@ class PromptRewriteAgent(AgentInterface):
                 has_reference_set=(video_generation_mode == "reference"),
             )
             guide = await asyncio.to_thread(self._load_guide, mode)
+            # 参考图清单：grounding 与 <Picture N> 数量校验共用同一取法（含 L2VA 尾帧）。
+            reference_images = self._grounding_images(
+                segment, ordered, scene_map, mode, artifacts=artifacts,
+            )
+            picture_count = len(reference_images)
             # C：VLM grounding（独立开关；失败回退文本输入，模式不变）
             if mode in ("I2VA", "FL2VA", "Ref2VA"):
                 grounding_desc, grounding_hashes = await asyncio.to_thread(
                     self._grounding_describe,
-                    self._grounding_images(segment, ordered, scene_map, mode, artifacts=artifacts),
+                    reference_images,
                     vlm_model,
                     str(input_data.get("session_id") or session_meta.get("session_id") or ""),
                 )
@@ -660,13 +990,15 @@ class PromptRewriteAgent(AgentInterface):
                     }
                 },
             )
+            quality: Optional[Dict[str, Any]] = None
             try:
                 with call_context(
                     operation="prompt_rewrite", template_name="rewrite_zh",
                     template_version=template_version,
                 ):
-                    rewritten, violations, rejected = await self._rewrite_one(
-                        segment, mode, system_prompt, guide, llm_model, sections
+                    rewritten, violations, rejected, quality = await self._rewrite_one(
+                        segment, mode, system_prompt, guide, llm_model, sections,
+                        picture_count=picture_count,
                     )
                 if rewritten:
                     item = self._make_item(segment, rewritten, mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
@@ -686,6 +1018,8 @@ class PromptRewriteAgent(AgentInterface):
                 item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
                 item["status"] = "failed"
                 item["error"] = str(exc)
+            if quality is not None:
+                item["quality"] = quality
             results[segment["id"]] = item
             self._report_progress(
                 "提示词改写",

@@ -20,7 +20,7 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/execute/prompt_rewr
   -d '{"session_id": "xxx"}'
 ```
 
-> ⚠️ 每个分镜串行发起一次本地 LLM 调用（结构校验失败时最多追加 2 次带违规清单的修订调用），阶段耗时为分钟级；请耐心等待 SSE 进度事件。
+> ⚠️ 每个分镜串行发起一次本地 LLM 调用；确定性校验失败时携带**被拒草稿与违规清单**回喂，最多追加 2 次修订调用（连续两轮问题相同会回退为不带草稿的完整重写），单条目生成调用上限 3 次。开启质量评审（`h3_rewrite.judge_enable`，默认关闭）后每条目额外至多 1 次评审调用。阶段耗时为分钟级，请耐心等待 SSE 进度事件。
 
 ## 停点说明
 
@@ -102,6 +102,7 @@ curl -X PATCH "http://localhost:8000/api/project/{session_id}/artifact/prompt_re
 | 错误 | 原因 | 解决方法 |
 |------|------|----------|
 | `提示词改写阶段未启用` | `h3_rewrite.enable=false` | 在设置页「H3 提示词改写」开启，或 `.env` 配置 `VC_H3_REWRITE__ENABLE=true` |
-| `结构校验未通过：...` | LLM 输出漏字段/抽象词/标签不一致 | 系统已自动回喂重试 ≤2 次；仍失败可单条重新生成 |
+| `结构校验未通过：...` | LLM 输出漏字段/抽象词/标签不一致/关键帧对齐或时间轴不合规 | 系统已自动带草稿回喂重试 ≤2 次；仍失败可单条重新生成 |
+| 条目带 `quality.verdict=needs_revision` | 质量评审不达标但硬校验通过（软门槛，不阻塞） | 可直接采用，或按问题清单做单条修订；评审启用时才会出现该字段 |
 | 条目 status=failed | LLM 调用失败 / 校验重试耗尽 | 单条重新生成；不阻塞其他条目；视频阶段对失败条目回退默认拼装 |
 | `grounding.text_only=true` | VLM 不可用或 grounding 开关关闭 | 改写仍完成（纯文本输入，模式不变）；可配置 `h3_rewrite.vlm_model` 后重试 |
