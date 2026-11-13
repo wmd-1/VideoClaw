@@ -53,12 +53,15 @@ class QwenVLClient:
                 {"text": text},
                 *({"image": p} for p in images)
             ]}]
+            # 统一默认 600s；dashscope SDK 从 kwargs 取 request_timeout 作为读取超时
+            request_params = dict(parameters or {})
+            request_params.setdefault("request_timeout", 600)
             response = MultiModalConversation.call(
                 model=model,
                 messages=messages,
                 api_key=self.api_key,
                 enable_thinking=False,
-                **(parameters or {})
+                **request_params
             )
             if hasattr(response, 'status_code') and response.status_code == 200:
                 # qwen3.5-plus 的返回格式为 { choices: [ { message: { content: [...] } } ] }

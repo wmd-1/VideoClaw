@@ -35,7 +35,7 @@ class ImageGPT:
                  api_key: str = None,
                  base_url: str = None,
                  proxy: str = None,
-                 timeout: float = 300.0):
+                 timeout: float = 600.0):  # 统一默认 600s（见 custom_common.DEFAULT_LLM_TIMEOUT）
         """
         OpenAI 图片生成客户端
         :param api_key: API Key

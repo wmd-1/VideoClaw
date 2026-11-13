@@ -32,8 +32,8 @@ SCRIPT_REVISION_MAX_CHARS = 60000
 SCRIPT_REVIEW_MAX_CHARS = 8000
 SCRIPT_REVIEW_MAX_TOTAL_CHARS = 10000
 
-# 质检输出是多条带原文/改写的 JSON，长输出容易触发自定义模型 300s 读超时；
-# 仅本次质检调用放宽到 600s，不影响其它阶段的默认超时。
+# 所有 LLM/VLM 阶段统一默认 600s（models.custom_common.DEFAULT_LLM_TIMEOUT）。
+# 质检输出是多条带原文/改写的 JSON，按实际 prompt 长度在此基础上动态放宽。
 SCRIPT_REVIEW_TIMEOUT = 600.0
 # 长剧本按实际 prompt 字符数动态放宽；上限 1800s（含提示词/角色/场景/行号）。
 SCRIPT_REVIEW_TIMEOUT_MAX = 1800.0

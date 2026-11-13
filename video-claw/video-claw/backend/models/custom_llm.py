@@ -13,6 +13,7 @@ if backend_dir not in sys.path:
 import httpx  # noqa: E402 - sys.path 引导后导入
 
 from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
+    DEFAULT_LLM_TIMEOUT,
     build_custom_client_kwargs,
     connection_hint,
     make_http_client,
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 class CustomChatClient:
     """LLM/VLM 统一走 chat/completions；图片以 data URL 传递（VLM），web_search 参数忽略。"""
 
-    def __init__(self, meta: Dict[str, Any], timeout: float = 300.0):
+    def __init__(self, meta: Dict[str, Any], timeout: float = DEFAULT_LLM_TIMEOUT):
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
         self._base_url = str(meta.get("base_url") or "")

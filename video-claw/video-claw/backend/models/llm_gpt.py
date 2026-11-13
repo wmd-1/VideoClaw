@@ -21,7 +21,8 @@ class GPT:
     OpenAI 文本生成客户端
     可选模型：gpt-4o, 
     """
-    def __init__(self, base_url="", api_key="", proxy=None, timeout=300):
+    # 统一默认 600s（见 custom_common.DEFAULT_LLM_TIMEOUT）
+    def __init__(self, base_url="", api_key="", proxy=None, timeout=600.0):
         import httpx
         self.api_key = api_key or Config.OPENAI_API_KEY
         self.timeout = timeout

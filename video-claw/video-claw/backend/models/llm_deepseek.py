@@ -15,7 +15,7 @@ from config import Config  # noqa: E402 - sys.path 引导后导入
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DEEPSEEK_TIMEOUT = 300
+DEFAULT_DEEPSEEK_TIMEOUT = 600  # 统一默认 600s（见 custom_common.DEFAULT_LLM_TIMEOUT）
 DEFAULT_DEEPSEEK_MAX_ATTEMPTS = 5
 
 

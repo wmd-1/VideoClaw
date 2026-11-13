@@ -92,7 +92,10 @@ class QwenLLM:
                 if web_search:
                     request_params["enable_search"] = True
 
-                response = Generation.call(api_key=self.api_key, **request_params)
+                # 统一默认 600s；dashscope SDK 从 kwargs 取 request_timeout 作为读取超时
+                response = Generation.call(
+                    api_key=self.api_key, request_timeout=600, **request_params
+                )
 
                 if response.status_code == 200:
                     choice = response.output.choices[0]

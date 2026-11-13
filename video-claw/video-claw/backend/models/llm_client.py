@@ -23,7 +23,10 @@ except ImportError:
 
 from config import Config  # noqa: E402 - sys.path 引导后导入
 from models.config_model import resolve_model_entry  # noqa: E402 - sys.path 引导后导入
-from models.custom_common import ModelNotRegisteredError  # noqa: E402 - sys.path 引导后导入
+from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
+    DEFAULT_LLM_TIMEOUT,
+    ModelNotRegisteredError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +100,7 @@ class LLM:
         """统一入口：记录一次文本模型调用（观测失败不影响调用）。
 
         timeout: 仅自定义模型（OpenAI 兼容 chat/completions）生效；
-        长输出场景（如剧本质检）可显式放宽，未传时沿用客户端默认 300s。
+        长输出场景（如剧本质检）可显式放宽，未传时沿用统一默认 600s。
         """
         import time
 
@@ -160,7 +163,7 @@ class LLM:
         if entry_kind == "custom":
             from models.custom_llm import CustomChatClient
 
-            custom_client = CustomChatClient(entry_meta, timeout=timeout or 300.0)
+            custom_client = CustomChatClient(entry_meta, timeout=timeout or DEFAULT_LLM_TIMEOUT)
             try:
                 result = custom_client.query(
                     prompt, image_urls=image_urls, model=model, web_search=web_search

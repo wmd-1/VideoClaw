@@ -47,10 +47,11 @@ class Gemini:
         if self.base_url and not self.base_url.endswith("/v1"):
             self.base_url = self.base_url.rstrip("/") + "/v1"
         self.api_key = api_key or Config.GEMINI_API_KEY
-        kwargs = {"api_key": self.api_key, "base_url": self.base_url}
+        # 统一默认 600s（见 custom_common.DEFAULT_LLM_TIMEOUT）
+        kwargs = {"api_key": self.api_key, "base_url": self.base_url, "timeout": 600.0}
         proxy = Config.provider_proxy("gemini")
         if proxy:
-            kwargs["http_client"] = httpx.Client(proxy=proxy)
+            kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=600.0)
         self.client = OpenAI(**kwargs)
         self.max_attempts = 10
 

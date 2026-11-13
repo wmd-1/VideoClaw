@@ -35,7 +35,7 @@ class GPTVLClient:
                  api_key: Optional[str] = None,
                  base_url: Optional[str] = None,
                  proxy: Optional[str] = None,
-                 timeout: float = 60.0):
+                 timeout: float = 600.0):  # 统一默认 600s（见 custom_common.DEFAULT_LLM_TIMEOUT）
         """
         GPT 多模态客户端
         :param api_key: OpenAI API Key

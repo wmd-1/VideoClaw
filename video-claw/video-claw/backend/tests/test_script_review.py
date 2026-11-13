@@ -1029,14 +1029,14 @@ def test_apply_script_review_rejects_generated_session():
 
 
 def test_llm_query_passes_review_timeout(monkeypatch):
-    """质检长输出需要把 600s 显式传给自定义模型客户端，其它调用保持默认。"""
+    """质检长输出可显式放宽超时；其它调用沿用统一默认 600s。"""
     import models.custom_llm as custom_llm
     import models.llm_client as llm_client
 
     seen = {}
 
     class FakeClient:
-        def __init__(self, meta, timeout=300.0):
+        def __init__(self, meta, timeout=600.0):
             seen["timeout"] = timeout
 
         def query(self, *args, **kwargs):
@@ -1050,10 +1050,10 @@ def test_llm_query_passes_review_timeout(monkeypatch):
         llm_client, "resolve_model_entry",
         lambda model: ("custom", {"id": model, "request_model": model, "base_url": "http://x"}),
     )
-    assert llm_client.LLM().query("hi", model="fake-custom", timeout=600.0) == "ok"
-    assert seen["timeout"] == 600.0
+    assert llm_client.LLM().query("hi", model="fake-custom", timeout=1200.0) == "ok"
+    assert seen["timeout"] == 1200.0
     assert llm_client.LLM().query("hi", model="fake-custom") == "ok"
-    assert seen["timeout"] == 300.0
+    assert seen["timeout"] == 600.0
 
 
 def test_review_prompt_templates_reachable_in_both_languages():

@@ -95,6 +95,10 @@ def frame_as_reference_enabled(caps: Optional[Dict[str, Any]]) -> bool:
     return False
 
 
+# LLM/VLM 推理调用的统一默认读取超时（秒）。
+# 导入剧本解析、质检、改写、分镜等阶段未显式指定时都沿用此值。
+DEFAULT_LLM_TIMEOUT = 600.0
+# 通用 HTTP 客户端工厂兜底（图片/视频生成客户端会显式传自己的时长）
 DEFAULT_HTTP_TIMEOUT = 300.0
 DEFAULT_VIDEO_POLL_INTERVAL = 5.0
 DEFAULT_VIDEO_POLL_TIMEOUT = 1800.0
