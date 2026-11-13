@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
-import { Save, X, Users, MapPin, Film, Sparkles, BookOpen, Lightbulb, Target, User, Crosshair, RefreshCw, Palette, Edit3, Plus, Trash2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Save, X, Users, MapPin, Film, Sparkles, ShieldCheck, BookOpen, Lightbulb, Target, User, Crosshair, RefreshCw, Palette, Edit3, Plus, Trash2 } from 'lucide-react';
 import type { StageViewProps } from './types';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 
 import { apiFetch } from "@/lib/identityGuard";
+import { diffText } from "@/lib/textDiff";
 /* ─── 类型 ─── */
 
 interface LoglineData {
@@ -89,30 +90,34 @@ interface PendingRevision {
   episode?: ScriptEpisode;
 }
 
-interface ImportReviewIssue {
-  line?: number;
+interface ScriptReviewIssue {
+  id: string;
+  episode_number: number;
+  line: number;
   type?: string;
   severity?: string;
   problem?: string;
   suggestion?: string;
+  action: 'replace' | 'insert_after' | 'delete';
+  /** 质检时的原文行，用于弹窗展示与应用前比对 */
+  original?: string;
+  text?: string;
 }
 
-interface ImportReview {
+interface ScriptReview {
   summary?: string;
-  issues?: ImportReviewIssue[];
-  unit_durations?: { line: number; seconds: number }[];
-  suggested_total_seconds?: number | null;
-  duration_reason?: string;
-  /** manual=用户勾选；auto=长文自动触发 */
-  mode?: string;
-  /** 质检实际覆盖的行范围（长文会截断） */
-  coverage?: {
-    covered_lines?: number;
-    total_lines?: number;
-    truncated?: boolean;
-  };
-  /** 正文被修改后旧结论不再可信 */
-  stale?: boolean;
+  issues?: ScriptReviewIssue[];
+  base_version?: string;
+  created_at?: string;
+}
+
+interface ReviewRollback {
+  episodes?: ScriptEpisode[];
+  summary?: string;
+  before_version?: string;
+  after_version?: string;
+  applied_at?: string;
+  issue_ids?: string[];
 }
 
 interface ScriptData {
@@ -126,16 +131,16 @@ interface ScriptData {
   overall_style?: string;
   mood?: string;
   session_id?: string;
-  /** 导入质检：问题清单与时长建议（仅导入路径） */
-  import_review?: ImportReview;
+  /** 剧本 AI 质检：逐行修改建议预览（用户勾选后应用） */
+  pending_review?: ScriptReview;
+  /** 最近一次质检写入的快照；用于“撤销本次质检” */
+  review_rollback?: ReviewRollback;
   /** 导入路径元信息（生成路径可缺省） */
   meta?: {
     source_format?: string;
     target_duration_seconds?: number | null;
     suggested_total_seconds?: number | null;
     duration_budget?: string;
-    /** off=未质检；manual=手动勾选；auto=长文自动 */
-    import_review_mode?: string;
     original_text?: string;
     explicit_cast?: boolean;
     [key: string]: unknown;
@@ -150,10 +155,6 @@ interface ScriptData {
   /** 逐幕生成进度 */
   beat_sheet?: string;
   completed_acts?: ActCompleteData[];
-  /** 智能续写增量数据 */
-  new_characters?: ScriptCharacter[];
-  new_settings?: ScriptSetting[];
-  new_episodes?: ScriptEpisode[];
   /** 修订预览：仅由 AI 修改流程产生，应用/取消后清除 */
   pending_revision?: PendingRevision;
   [key: string]: unknown;
@@ -167,9 +168,18 @@ const REVIEW_SEVERITY: Record<string, { label: string; className: string }> = {
 
 const REVIEW_TYPE_LABEL: Record<string, string> = {
   content: '内容',
-  order: '时序',
-  timing: '时长',
+  structure: '结构',
+  description: '画面描述',
+  dialogue: '台词',
   pacing: '节奏',
+  consistency: '一致性',
+  format: '格式',
+};
+
+const REVIEW_ACTION_LABEL: Record<string, string> = {
+  replace: '改写',
+  insert_after: '插入',
+  delete: '删除',
 };
 
 /* ─── Logline 六要素展示卡 ─── */
@@ -207,10 +217,11 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const data = (state.artifact || {}) as ScriptData;
 
   const isLoglinePhase = data.phase === 'logline_selection' || data.phase === 'logline_confirm' || data.phase === 'mode_selection';
+  const isImportMode = Boolean(data.meta?.source_format);
+  const pendingReview = data.pending_review;
+  const reviewKey = pendingReview?.created_at || (pendingReview ? 'pending' : '');
+  const reviewIssues = Array.isArray(pendingReview?.issues) ? pendingReview.issues : [];
 
-  const [showSmartContinueDialog, setShowSmartContinueDialog] = useState(false);
-  const [smartContinueEpisodes, setSmartContinueEpisodes] = useState<number>(1);
-  const [smartContinueIdea, setSmartContinueIdea] = useState<string>('');
   const [editingEpisodeIndex, setEditingEpisodeIndex] = useState<number | null>(null);
   const [savingEpisodeIndex, setSavingEpisodeIndex] = useState<number | null>(null);
   const [episodeDraft, setEpisodeDraft] = useState<{ title: string; content: string }>({ title: '', content: '' });
@@ -229,11 +240,25 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
     settings: false,
     episodes: false,
   });
-  const [showRevisionPanel, setShowRevisionPanel] = useState(false);
+  const [showRevisionDialog, setShowRevisionDialog] = useState(false);
   const [revisionInstruction, setRevisionInstruction] = useState('');
   const [revisionScope, setRevisionScope] = useState<'all' | 'episode'>('all');
   const [revisionEpisode, setRevisionEpisode] = useState<number | null>(null);
   const [showApplyConfirm, setShowApplyConfirm] = useState(false);
+  const [dismissedReviewKey, setDismissedReviewKey] = useState('');
+  const [reviewSelectionByKey, setReviewSelectionByKey] = useState<Record<string, string[]>>({});
+  const [reviewActionError, setReviewActionError] = useState('');
+  const [reviewApplyKey, setReviewApplyKey] = useState('');
+  // 质检结果弹窗与勾选状态均由 pending_review 派生，不靠 effect 写 state（新结果自动弹出）。
+  // 质检仅导入模式开放：灵感生成会话即使携带历史 pending_review 也不弹窗、不显示入口。
+  const showReviewDialog = isImportMode && Boolean(pendingReview) && dismissedReviewKey !== reviewKey;
+  // 默认不勾选：用户必须逐条确认后才可应用（尤其是 delete / 整行 replace）
+  const selectedReviewIds = reviewSelectionByKey[reviewKey] ?? [];
+  // 应用失败只展示本次质检触发的错误；弹窗打开期间其它动作失败不误报为“应用失败”
+  const reviewApplyAttempted = Boolean(reviewKey) && reviewApplyKey === reviewKey;
+  const reviewDisplayError = reviewActionError || (
+    reviewApplyAttempted && state.status === 'error' ? (state.error || '应用失败，请重试') : ''
+  );
   /**
    * 集级/成片过期提示全部取 `stageStates` 派生的 props（openspec: stage-view-resync）：
    * 保存与确认都会走一次 `resyncSessionView({ refreshArtifacts: true })` 重算它们。
@@ -242,17 +267,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
    */
   const staleEpisodes = Array.from(new Set(staleStoryboardEpisodes || [])).sort((a, b) => a - b);
   const finalVideosStale = Boolean(staleFinalVideos);
-
-  const handleSmartContinueConfirm = useCallback(() => {
-    onIntervene({
-      action: 'smart_continue',
-      episodes_to_add: smartContinueEpisodes,
-      sequel_idea: smartContinueIdea
-    });
-    setShowSmartContinueDialog(false);
-    setSmartContinueIdea('');
-    setSmartContinueEpisodes(1);
-  }, [smartContinueEpisodes, smartContinueIdea, onIntervene]);
 
   const hasContent = Boolean(data.title || data.characters?.length || data.scenes?.length);
 
@@ -293,6 +307,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
       payload.episode_number = Number(target);
     }
     onIntervene(payload);
+    setShowRevisionDialog(false);
   };
 
   const cancelRevision = async () => {
@@ -300,7 +315,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
       await patchScriptArtifact({ pending_revision: null });
       onUpdateArtifact?.({ pending_revision: undefined });
       // 状态表回写已由 patchScriptArtifact 统一完成（写入即同步，不等下一轮轮询）
-      setShowRevisionPanel(false);
+      setShowRevisionDialog(false);
       setShowApplyConfirm(false);
     } catch (error) {
       console.error('取消修订失败:', error);
@@ -314,6 +329,54 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
       confirm_overwrites: confirmOverwrites,
     });
     setShowApplyConfirm(false);
+  };
+
+  const startScriptReview = () => {
+    setDismissedReviewKey('');
+    setReviewActionError('');
+    setReviewApplyKey('');
+    onIntervene({ action: 'review_script' });
+  };
+
+  const cancelReview = async () => {
+    setReviewActionError('');
+    setReviewApplyKey('');
+    try {
+      await patchScriptArtifact({ pending_review: null });
+      onUpdateArtifact?.({ pending_review: undefined });
+      setDismissedReviewKey(reviewKey);
+    } catch (error) {
+      console.error('取消质检失败:', error);
+      setReviewActionError('取消质检失败，请重试');
+    }
+  };
+
+  const toggleReviewIssue = (issueId: string) => {
+    const next = selectedReviewIds.includes(issueId)
+      ? selectedReviewIds.filter(id => id !== issueId)
+      : [...selectedReviewIds, issueId];
+    setReviewSelectionByKey({ [reviewKey]: next });
+  };
+
+  const selectAllReviewIssues = () => {
+    setReviewSelectionByKey({ [reviewKey]: reviewIssues.map(issue => issue.id) });
+  };
+
+  const selectNoReviewIssues = () => {
+    setReviewSelectionByKey({ [reviewKey]: [] });
+  };
+
+  const dismissReviewDialog = () => {
+    setDismissedReviewKey(reviewKey);
+  };
+
+  const applySelectedReview = () => {
+    if (!selectedReviewIds.length) return;
+    // 不提前收起弹窗：应用成功由 pending_review 消失自动关闭；失败时弹窗留在原处
+    // 展示 state.error，用户可直接重试。
+    setReviewActionError('');
+    setReviewApplyKey(reviewKey);
+    onIntervene({ action: 'apply_script_review', selected_issue_ids: selectedReviewIds });
   };
 
   const toggleDeleteMode = (key: keyof typeof deleteMode) => {
@@ -569,89 +632,10 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 部分集行数较多；分镜阶段按内容完整优先保留，不再为原剧本时长压缩正文。
               </p>
             )}
-            {data.meta?.import_review_mode === 'off' && (
-              <p className="text-xs text-gray-400">
-                本次未执行节奏/时长质检（导入时勾选，长文会自动质检）。
-              </p>
-            )}
           </div>
         )}
 
-        {/* 导入质检：问题清单与时长建议（不修改正文） */}
-        {data.import_review && (
-          <section className="mb-4 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Sparkles className="w-4 h-4 text-sky-600" />
-              <h3 className="text-sm font-semibold text-sky-800">剧本质检</h3>
-              {data.import_review.stale && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">
-                  正文已修改，建议可能过期
-                </span>
-              )}
-              {data.import_review.mode === 'manual' && (
-                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] text-sky-700">
-                  手动触发
-                </span>
-              )}
-              {data.import_review.mode === 'auto' && (
-                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] text-sky-700">
-                  长文自动质检
-                </span>
-              )}
-              {data.import_review.coverage?.truncated && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">
-                  仅覆盖前 {data.import_review.coverage.covered_lines}/
-                  {data.import_review.coverage.total_lines} 行
-                </span>
-              )}
-              {typeof data.import_review.suggested_total_seconds === 'number' && !data.import_review.stale && (
-                <span className="text-xs text-sky-700">
-                  建议总时长 {data.import_review.suggested_total_seconds} 秒
-                  {data.meta?.target_duration_seconds
-                    ? `（原文 ${data.meta.target_duration_seconds} 秒）`
-                    : ''}
-                </span>
-              )}
-            </div>
-            {data.import_review.summary && (
-              <p className="text-sm leading-relaxed text-gray-700">{data.import_review.summary}</p>
-            )}
-            {data.import_review.duration_reason && (
-              <p className="mt-1 text-xs text-gray-500">时长依据：{data.import_review.duration_reason}</p>
-            )}
-            {!!data.import_review.issues?.length && !data.import_review.stale && (
-              <ul className="mt-3 space-y-1.5">
-                {data.import_review.issues.map((issue, index) => {
-                  const severity = REVIEW_SEVERITY[issue.severity || 'medium'] || REVIEW_SEVERITY.medium;
-                  return (
-                    <li key={`${issue.line}-${index}`} className="text-xs leading-relaxed text-gray-600">
-                      <span className={`mr-1.5 inline-block rounded px-1.5 py-0.5 ${severity.className}`}>
-                        {severity.label}
-                      </span>
-                      {typeof issue.line === 'number' && (
-                        <span className="mr-1 text-gray-400">第 {issue.line + 1} 行</span>
-                      )}
-                      <span className="mr-1 text-gray-500">
-                        [{REVIEW_TYPE_LABEL[issue.type || 'pacing'] || '节奏'}]
-                      </span>
-                      {issue.problem}
-                      {issue.suggestion && <span className="text-gray-500"> → {issue.suggestion}</span>}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {!!data.import_review.unit_durations?.length && (
-              <p className="mt-2 text-[11px] text-sky-700">
-                {data.import_review.stale
-                  ? '正文已修改，原时长建议已失效，分镜将按新正文重新估算。'
-                  : `已按建议为 ${data.import_review.unit_durations.length} 行动作/台词规划时长，分镜阶段直接采用。`}
-              </p>
-            )}
-          </section>
-        )}
-
-        {/* 运行中 - 进度条 & 已选 Logline & 增量生成结果 */}
+        {/* 运行中 - 进度条 & 已选 Logline & 逐幕生成结果 */}
         {state.status === 'running' && (
           <>
             {data.selected_logline && (
@@ -825,7 +809,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           </div>
         )}
 
-        {/* ===== AI 修改：预览 ===== */}
+        {/* ===== 剧本AI修改：预览 ===== */}
         {revision && (
           <section className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
             <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -887,83 +871,13 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 取消
               </button>
               <button
-                onClick={() => setShowRevisionPanel(true)}
+                onClick={() => setShowRevisionDialog(true)}
                 disabled={state.status === 'running'}
                 className="px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 disabled:opacity-50 transition-colors"
               >
                 重新输入
               </button>
             </div>
-          </section>
-        )}
-
-        {/* ===== AI 修改：输入 ===== */}
-        {hasContent && !revision && state.status !== 'running' && (
-          <section className="mb-6 bg-white border border-gray-200 rounded-xl p-4">
-            <div className="flex flex-wrap items-center gap-2 mb-2">
-              <Sparkles className="w-4 h-4 text-purple-500" />
-              <h3 className="text-sm font-semibold text-gray-700">AI 修改剧本</h3>
-              <span className="text-xs text-gray-400">输入修改方向，先预览再应用</span>
-            </div>
-            {!showRevisionPanel ? (
-              <button
-                onClick={() => setShowRevisionPanel(true)}
-                className="px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 transition-colors"
-              >
-                输入修改方向
-              </button>
-            ) : (
-              <div className="space-y-2">
-                <textarea
-                  value={revisionInstruction}
-                  onChange={e => setRevisionInstruction(e.target.value)}
-                  placeholder="例如：把第二集的冲突提前到开场，结尾更明确"
-                  className="w-full h-24 border border-gray-200 rounded-xl p-3 text-sm text-gray-700 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 resize-none"
-                />
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    value={revisionScope}
-                    onChange={e => setRevisionScope(e.target.value as 'all' | 'episode')}
-                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:border-purple-400"
-                  >
-                    <option value="all">全剧</option>
-                    <option value="episode">仅某一集</option>
-                  </select>
-                  {revisionScope === 'episode' && (
-                    <select
-                      value={revisionEpisode ?? revisionEpisodes[0]?.episode_number ?? revisionEpisodes[0]?.act_number ?? ''}
-                      onChange={e => setRevisionEpisode(Number(e.target.value))}
-                      className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 focus:outline-none focus:border-purple-400"
-                    >
-                      {revisionEpisodes.map((ep, index) => {
-                        const num = getEpisodeNumber(ep, index);
-                        return (
-                          <option key={`${num}-${index}`} value={num}>
-                            第 {num} 集：{ep.act_title}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  )}
-                  <button
-                    onClick={submitRevision}
-                    disabled={!revisionInstruction.trim()}
-                    className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors"
-                  >
-                    按此方向修改
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowRevisionPanel(false);
-                      setRevisionInstruction('');
-                    }}
-                    className="px-4 py-2 text-gray-500 bg-gray-50 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors"
-                  >
-                    收起
-                  </button>
-                </div>
-              </div>
-            )}
           </section>
         )}
 
@@ -979,7 +893,10 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             {/* 标题 / Logline / 标签 */}
             {data.title && (
               <section className="bg-white border border-gray-200 rounded-xl p-5">
-                <h3 className="text-xl font-bold text-gray-800 mb-2">{data.title}</h3>
+                <h3 className="mb-2 text-xl font-bold text-gray-800">
+                  <span className="mr-1.5 text-sm font-semibold text-gray-400">剧本标题：</span>
+                  {data.title}
+                </h3>
                 {data.logline && <p className="text-sm text-gray-500 mb-3">{data.logline}</p>}
                 <div className="flex flex-wrap gap-1.5">
                   {data.genre?.map((g, i) => (
@@ -987,19 +904,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   ))}
                   {data.mood && <span className="px-2.5 py-0.5 bg-pink-50 text-pink-600 text-xs rounded-full font-medium">{data.mood}</span>}
                   {data.overall_style && <span className="px-2.5 py-0.5 bg-cyan-50 text-cyan-600 text-xs rounded-full font-medium">{data.overall_style}</span>}
-                </div>
-              </section>
-            )}
-
-            {/* 故事梗概 */}
-            {data.logline && (
-              <section>
-                <div className="flex items-center gap-2 mb-3">
-                  <BookOpen className="w-4 h-4 text-orange-500" />
-                  <h3 className="text-sm font-semibold text-gray-700">故事梗概</h3>
-                </div>
-                <div className="bg-white border border-gray-200 rounded-xl p-5">
-                  <p className="text-sm text-gray-600 leading-relaxed">{data.logline}</p>
                 </div>
               </section>
             )}
@@ -1380,88 +1284,53 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               </section>
             )}
 
-            {/* ===== 智能续写 UI ===== */}
-            {!data.new_episodes || data.new_episodes.length === 0 ? (
-              data.episodes && data.episodes.length > 0 && state.status !== 'running' && (
-                <div className="mt-8 flex justify-center">
-                  <button
-                    onClick={() => setShowSmartContinueDialog(true)}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-purple-600 hover:to-purple-700 transition-all font-medium text-sm"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    智能续写
-                  </button>
-                </div>
-              )
-            ) : (
-              <div className="mt-8 space-y-6">
-                <div className="relative flex py-5 items-center">
-                  <div className="flex-grow border-t border-purple-300 border-dashed"></div>
-                  <span className="flex-shrink-0 mx-4 text-purple-600 font-bold text-sm bg-purple-50 px-4 py-1 rounded-full shadow-sm">续集</span>
-                  <div className="flex-grow border-t border-purple-300 border-dashed"></div>
-                </div>
-                
-                {data.new_characters && data.new_characters.length > 0 && (
-                  <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 shadow-sm flex flex-col gap-3">
-                    <h4 className="text-sm font-bold text-amber-800 flex items-center gap-2">
-                      <Users className="w-4 h-4" /> 新增角色
-                    </h4>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                      {data.new_characters.map((c, i: number) => (
-                        <div key={i} className="bg-white p-3 rounded-lg border border-amber-100 shadow-sm flex flex-col gap-1">
-                          <div className="font-bold text-amber-900 text-sm">{c.name}</div>
-                          <p className="text-[11px] text-gray-600 line-clamp-2 md:line-clamp-none">{c.description}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+            {/* ===== 剧本操作：剧本AI修改 / 剧本AI质检 ===== */}
+            {reviewDisplayError && (
+              <p className="mt-4 text-xs text-red-600">
+                质检操作失败：{reviewDisplayError}。可打开「查看质检结果」重新勾选后重试。
+              </p>
+            )}
+            {isImportMode && data.review_rollback && state.status !== 'running' && !revision && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                <span>本次剧本AI质检已应用，可恢复为质检前的正文。</span>
+                <button
+                  onClick={() => onIntervene({ action: 'rollback_script_review' })}
+                  className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-700 transition-colors hover:bg-amber-100"
+                >
+                  撤销本次质检
+                </button>
+              </div>
+            )}
+            {state.status !== 'running' && !revision && (
+              <div
+                className={`mt-8 flex flex-wrap items-center gap-3 ${isImportMode ? 'justify-between' : 'justify-center'}`}
+              >
+                <button
+                  onClick={() => setShowRevisionDialog(true)}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-purple-600 hover:to-purple-700 transition-all font-medium text-sm"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  剧本AI修改
+                </button>
+                {isImportMode && (
+                  pendingReview ? (
+                    <button
+                      onClick={() => setDismissedReviewKey('')}
+                      className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      查看质检结果{reviewIssues.length ? `（${reviewIssues.length}）` : ''}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={startScriptReview}
+                      className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      剧本AI质检
+                    </button>
+                  )
                 )}
-                
-                {data.new_settings && data.new_settings.length > 0 && (
-                  <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col gap-3">
-                    <h4 className="text-sm font-bold text-emerald-800 flex items-center gap-2">
-                      <MapPin className="w-4 h-4" /> 新增场景
-                    </h4>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                      {data.new_settings.map((s, i: number) => (
-                        <div key={i} className="bg-white p-3 rounded-lg border border-emerald-100 shadow-sm flex flex-col gap-1">
-                          <div className="font-bold text-emerald-900 text-sm">{s.name}</div>
-                          <p className="text-[11px] text-gray-600 line-clamp-2 md:line-clamp-none">{s.description}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="space-y-6">
-                  {data.new_episodes?.map((ep, i: number) => (
-                    <div key={`new-${i}`} className="bg-purple-50 border-2 border-purple-300 rounded-xl overflow-hidden shadow-md">
-                      <div className="bg-gradient-to-r from-purple-200 to-purple-100 px-4 py-3 flex items-center justify-between border-b border-purple-200/50">
-                        <h4 className="font-bold text-purple-900">第 {ep.episode_number || (data.episodes ? data.episodes.length + i + 1 : i + 1)} 集：{ep.act_title}</h4>
-                        <span className="text-[10px] font-bold text-purple-700 bg-purple-200/50 px-2 py-0.5 rounded shadow-sm tracking-wider">NEW EPISODE</span>
-                      </div>
-                      <div className="p-5 text-gray-800 whitespace-pre-wrap leading-relaxed text-[15px] bg-white/80">
-                        {ep.content}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex justify-end gap-3 mt-4">
-                  <button
-                    onClick={() => onIntervene({ action: 'delete_continue' })}
-                    className="px-5 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-lg text-sm font-medium transition-colors border border-red-200"
-                  >
-                    删除新剧集
-                  </button>
-                  <button
-                    onClick={() => onIntervene({ action: 'confirm_continue' })}
-                    className="flex items-center gap-2 px-5 py-2 bg-gradient-to-r from-purple-600 to-purple-700 text-white rounded-lg text-sm font-medium hover:from-purple-700 hover:to-purple-800 transition-colors shadow-sm"
-                  >
-                    <Save className="w-4 h-4" />
-                    保存新剧集
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -1487,63 +1356,208 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
         />
       )}
 
-      {/* ===== 智能续写弹窗 ===== */}
-      {showSmartContinueDialog && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm shadow-2xl transition-opacity duration-200">
-          <div className="bg-white rounded-2xl w-[min(480px,calc(100vw-2rem))] p-6 shadow-2xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-2 border-b border-gray-100 pb-3">
-              <Sparkles className="w-5 h-5 text-purple-500" />
-              智能续写设置
+      {/* ===== 剧本AI修改弹窗 ===== */}
+      {showRevisionDialog && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="w-[min(560px,calc(100vw-2rem))] rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="mb-1 flex items-center gap-2 border-b border-gray-100 pb-3 text-lg font-bold text-gray-800">
+              <Sparkles className="h-5 w-5 text-purple-500" />
+              剧本AI修改
             </h3>
-            
-            <div className="space-y-5">
-              <div>
-                <label className="block text-[13px] font-bold text-gray-600 mb-2 uppercase tracking-wide">一次续写剧集数</label>
-                <div className="flex gap-3">
-                  {[1, 2, 3].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() => setSmartContinueEpisodes(num)}
-                      className={`flex-1 py-2.5 px-4 rounded-xl font-bold text-sm transition-all border outline-none ${
-                        smartContinueEpisodes === num 
-                          ? 'bg-purple-50 border-purple-500 text-purple-700 shadow-[0_0_0_2px_rgba(168,85,247,0.1)]'
-                          : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50 hover:border-gray-300'
-                      }`}
-                    >
-                      {num} 集
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[13px] font-bold text-gray-600 mb-2 flex items-center gap-2">
-                  后续剧情想法主线 <span className="text-[10px] font-medium text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">(可选)</span>
-                </label>
-                <textarea 
-                  value={smartContinueIdea}
-                  onChange={(e) => setSmartContinueIdea(e.target.value)}
-                  placeholder="如果留空，AI 将自动为您生成后续的续写灵感主线。"
-                  className="w-full h-32 border border-gray-200 rounded-xl p-3 text-[14px] text-gray-700 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 resize-none transition-all placeholder:text-gray-400 bg-gray-50/50 focus:bg-white"
-                ></textarea>
-              </div>
+            <p className="mb-3 mt-2 text-xs text-gray-400">输入修改方向，先预览再应用</p>
+            <textarea
+              value={revisionInstruction}
+              onChange={e => setRevisionInstruction(e.target.value)}
+              placeholder="例如：把第二集的冲突提前到开场，结尾更明确"
+              className="h-28 w-full resize-none rounded-xl border border-gray-200 p-3 text-sm text-gray-700 focus:border-purple-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <select
+                value={revisionScope}
+                onChange={e => setRevisionScope(e.target.value as 'all' | 'episode')}
+                className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:border-purple-400 focus:outline-none"
+              >
+                <option value="all">全剧</option>
+                <option value="episode">仅某一集</option>
+              </select>
+              {revisionScope === 'episode' && (
+                <select
+                  value={revisionEpisode ?? revisionEpisodes[0]?.episode_number ?? revisionEpisodes[0]?.act_number ?? ''}
+                  onChange={e => setRevisionEpisode(Number(e.target.value))}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:border-purple-400 focus:outline-none"
+                >
+                  {revisionEpisodes.map((ep, index) => {
+                    const num = getEpisodeNumber(ep, index);
+                    return (
+                      <option key={`${num}-${index}`} value={num}>
+                        第 {num} 集：{ep.act_title}
+                      </option>
+                    );
+                  })}
+                </select>
+              )}
             </div>
-
-            <div className="flex justify-end gap-3 mt-8">
-              <button 
-                onClick={() => setShowSmartContinueDialog(false)}
-                className="px-5 py-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl text-sm font-bold transition-colors outline-none"
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowRevisionDialog(false)}
+                className="px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold"
               >
                 取消
               </button>
-              <button 
-                onClick={handleSmartContinueConfirm}
-                className="px-6 py-2.5 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-xl text-sm font-bold hover:from-purple-600 hover:to-purple-700 transition-all shadow-md group flex items-center justify-center gap-2 outline-none hover:shadow-lg"
+              <button
+                onClick={submitRevision}
+                disabled={!revisionInstruction.trim()}
+                className="px-6 py-2.5 bg-purple-600 text-white rounded-xl text-sm font-bold transition-colors hover:bg-purple-700 disabled:opacity-50"
               >
-                <Sparkles className="w-4 h-4 opacity-70" />
-                确认生成
+                按此方向修改
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 剧本AI质检结果弹窗 ===== */}
+      {showReviewDialog && pendingReview && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="flex max-h-[85vh] w-[min(760px,calc(100vw-2rem))] flex-col rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="mb-2 flex items-center gap-2 border-b border-gray-100 pb-3 text-lg font-bold text-gray-800">
+              <ShieldCheck className="h-5 w-5 text-sky-500" />
+              剧本AI质检结果
+              <span className="ml-auto text-xs font-normal text-gray-400">默认不勾选，请选择要接受的修改；红=删除，绿=新增</span>
+            </h3>
+            {pendingReview.summary && (
+              <p className="mt-2 text-sm leading-relaxed text-gray-600">{pendingReview.summary}</p>
+            )}
+            {reviewIssues.length === 0 ? (
+              <div className="py-10 text-center text-sm text-gray-400">本次质检未发现需要修改的问题。</div>
+            ) : (
+              <>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+                  <span>共 {reviewIssues.length} 条建议，已选 {selectedReviewIds.length} 条</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={selectAllReviewIssues}
+                      className="rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200"
+                    >
+                      全选
+                    </button>
+                    <button
+                      onClick={selectNoReviewIssues}
+                      className="rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200"
+                    >
+                      全不选
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 flex-1 space-y-2 overflow-y-auto pr-1">
+                  {reviewIssues.map(issue => {
+                    const severity = REVIEW_SEVERITY[issue.severity || 'medium'] || REVIEW_SEVERITY.medium;
+                    const checked = selectedReviewIds.includes(issue.id);
+                    const diff = diffText(
+                      issue.action === 'insert_after' ? '' : issue.original || '',
+                      issue.text || '',
+                    );
+                    const originalParts = issue.action === 'insert_after'
+                      ? [{ type: 'same' as const, text: issue.original || '' }]
+                      : diff.filter(part => part.type !== 'add');
+                    const newParts = diff.filter(part => part.type !== 'remove');
+                    return (
+                      <div
+                        key={issue.id}
+                        className={`rounded-xl border p-3 transition-colors ${
+                          checked ? 'border-sky-200 bg-sky-50/50' : 'border-gray-200 bg-white'
+                        }`}
+                      >
+                        <label className="flex cursor-pointer items-start gap-2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleReviewIssue(issue.id)}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                              <span className={`rounded px-1.5 py-0.5 ${severity.className}`}>{severity.label}</span>
+                              <span className="text-gray-500">第 {issue.episode_number} 集 · 第 {issue.line} 行</span>
+                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-500">
+                                {REVIEW_TYPE_LABEL[issue.type || 'content'] || '内容'}
+                              </span>
+                              <span className="rounded bg-sky-100 px-1.5 py-0.5 text-sky-700">
+                                {REVIEW_ACTION_LABEL[issue.action] || '改写'}
+                              </span>
+                            </div>
+                            <p className="mt-1.5 text-sm leading-relaxed text-gray-700">{issue.problem}</p>
+                            {issue.suggestion && (
+                              <p className="mt-0.5 text-xs leading-relaxed text-gray-500">建议：{issue.suggestion}</p>
+                            )}
+                            <div className="mt-2 space-y-1 text-xs">
+                              <p className="whitespace-pre-wrap rounded bg-gray-50 px-2 py-1 text-gray-500">
+                                原文：
+                                {originalParts.map((part, idx) => (
+                                  <span
+                                    key={`${issue.id}-old-${idx}`}
+                                    className={part.type === 'remove' ? 'rounded bg-red-100 text-red-700' : undefined}
+                                  >
+                                    {part.text}
+                                  </span>
+                                ))}
+                              </p>
+                              {issue.action === 'delete' ? (
+                                <p className="rounded bg-red-50 px-2 py-1 text-red-600">删除此行</p>
+                              ) : (
+                                <p className="whitespace-pre-wrap rounded bg-emerald-50 px-2 py-1 text-emerald-700">
+                                  {issue.action === 'insert_after' ? '插入：' : '改为：'}
+                                  {newParts.map((part, idx) => (
+                                    <span
+                                      key={`${issue.id}-new-${idx}`}
+                                      className={part.type === 'add' ? 'rounded bg-emerald-200/70 text-emerald-900' : undefined}
+                                    >
+                                      {part.text}
+                                    </span>
+                                  ))}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
+              <button
+                onClick={dismissReviewDialog}
+                disabled={state.status === 'running'}
+                className="px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold disabled:opacity-50"
+              >
+                收起
+              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={cancelReview}
+                  disabled={state.status === 'running'}
+                  className="rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-bold text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                >
+                  取消质检
+                </button>
+                {reviewIssues.length > 0 && (
+                  <button
+                    onClick={applySelectedReview}
+                    disabled={!selectedReviewIds.length || state.status === 'running'}
+                    className="rounded-xl bg-sky-600 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
+                  >
+                    {state.status === 'running' ? '正在应用...' : `应用所选修改（${selectedReviewIds.length}）`}
+                  </button>
+                )}
+              </div>
+            </div>
+            {reviewDisplayError && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+                操作失败：{reviewDisplayError}
+              </div>
+            )}
           </div>
         </div>
       )}

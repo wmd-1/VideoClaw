@@ -90,6 +90,14 @@ script_generation → character_design → storyboard → reference_generation �
 }
 ```
 
+剧本阶段的预览层字段（提交时与正文分离，不晋升为正式快照）：
+
+- `pending_revision`：`revise_script` 的修订预览（含 `base_version`、逐集 diff 与角色/场景同步信息）；
+- `pending_review`：`review_script` 的质检预览（仅导入剧本），`issues[]` 每项含 `episode_number`、`line`（集内 1-based 行号）、`action`（`replace` / `insert_after` / `delete`）、`original` 与 `text`，用户勾选后由 `apply_script_review` 应用；
+- `new_episodes` / `new_characters` / `new_settings` / `sequel_idea`：智能续写预览（前端入口已隐藏，后端保留兼容）。
+
+导入路径早期产物可能带 `import_review` 与行级 `line_annotations` 时长建议；新导入不再生成，保留字段仅用于旧产物兼容。
+
 ### 2. character_design
 
 ```json

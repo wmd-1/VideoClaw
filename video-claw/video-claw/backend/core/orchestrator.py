@@ -2538,14 +2538,27 @@ class WorkflowEngine:
                     else None
                 )
                 if requires_intervention:
-                    # 【续写/修订预览状态】预览只占用预览层，不替换正文（R08）
-                    preview = payload.get("pending_revision") if isinstance(payload, dict) else None
-                    if isinstance(preview, dict):
+                    # 【续写/修订/质检预览状态】预览只占用预览层，不替换正文（R08）
+                    preview_key = None
+                    if isinstance(payload, dict):
+                        for key in ("pending_revision", "pending_review"):
+                            if isinstance(payload.get(key), dict):
+                                preview_key = key
+                                break
+                    if preview_key:
+                        preview = payload[preview_key]
                         current_art = after.artifacts.get(stage_key)
                         current_art = copy.deepcopy(current_art) if isinstance(current_art, dict) else {}
                         if preview.get("base_version") != script_revision.content_fingerprint(current_art):
-                            raise ValueError("剧本正文已变化，本次修订预览已过期，请重新发起修订")
-                        current_art["pending_revision"] = copy.deepcopy(preview)
+                            label = "修订" if preview_key == "pending_revision" else "质检"
+                            raise ValueError(
+                                f"剧本正文已变化，本次{label}预览已过期，请重新发起{label}"
+                            )
+                        current_art[preview_key] = copy.deepcopy(preview)
+                        # 修订与质检预览互斥：同一时刻只允许一份待处理预览
+                        for other_key in ("pending_revision", "pending_review"):
+                            if other_key != preview_key:
+                                current_art.pop(other_key, None)
                         after.artifacts[stage_key] = current_art
                     else:
                         # 续写预览保留 new_episodes 等增量字段供前端展示，不跨阶段同步
@@ -2959,14 +2972,18 @@ class WorkflowEngine:
         rebuild_script_ranges = False
         rebuild_script_annotations = False
         if stage == "script_generation":
-            # 取消请求显式携带 pending_revision；正文级编辑使预览失效；
+            # 取消请求显式携带 pending_revision / pending_review；正文级编辑使预览失效；
             # 仅改 title/logline 等元信息时保留预览（与内容指纹口径一致）。
             current_art = state.artifacts.get(stage)
             if isinstance(current_art, dict) and (
                 "pending_revision" in body
+                or "pending_review" in body
                 or {"episodes", "characters", "settings"} & set(body)
             ):
                 current_art.pop("pending_revision", None)
+                current_art.pop("pending_review", None)
+                # 正文/角色/场景被手工编辑后，质检撤销快照不再对应当前正文
+                current_art.pop("review_rollback", None)
             if isinstance(current_art, dict) and "episodes" in body:
                 # 客户端回写的派生字段一律丢弃，避免旧标注/旧 original_text 覆盖重建结果
                 body.pop("line_annotations", None)
@@ -2983,8 +3000,9 @@ class WorkflowEngine:
                         if isinstance(episode, dict):
                             episode.pop("line_start", None)
                             episode.pop("line_end", None)
-            # 请求体中的 pending_revision 只作为清除信号，不写入产物（避免 null 空键）
+            # 请求体中的 pending_revision / pending_review 只作为清除信号，不写入产物（避免 null 空键）
             body.pop("pending_revision", None)
+            body.pop("pending_review", None)
         merge_keys_by_stage = {
             "character_design": ("characters", "settings"),
             "reference_generation": ("scenes",),

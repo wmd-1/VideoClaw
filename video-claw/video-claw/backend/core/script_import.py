@@ -919,12 +919,10 @@ def build_import_artifact(
     }
 
 
-# ─────────────── 导入质检（只建议，不改正文） ───────────────
+# ─────────────── 导入质检（历史结果规范化：新流程不再触发，改走剧本 AI 质检） ───────────────
 
 MIN_UNIT_DURATION = 2
 MAX_UNIT_DURATION = 15
-# 导入质检默认关闭：长文自动触发或用户在导入时显式勾选，避免短剧本多一次大模型调用
-IMPORT_REVIEW_AUTO_MIN_CHARS = 20000
 # 画面描述行不单独成镜头，但它的停留建议会合并到同场景的下一个动作/台词
 _DURATION_TYPES = {"action", "dialogue", "narration", "scene_desc", "placeholder"}
 _MAX_REVIEW_ISSUES = 20
@@ -951,7 +949,9 @@ def apply_import_review(
     review: Any,
     annotations: List[dict],
 ) -> Tuple[Optional[Dict[str, Any]], List[dict]]:
-    """规范化质检结果，并把建议时长合并到行标注。
+    """规范化导入质检结果，并把建议时长合并到行标注（历史工具）。
+
+    导入阶段已不再触发质检；本函数保留用于旧产物兼容、离线分析或迁移工具。
 
     - 只接受原文中真实存在的行号，虚构行号一律丢弃；
     - 建议时长夹取到 2-15 秒，且只落到动作/台词/旁白行；

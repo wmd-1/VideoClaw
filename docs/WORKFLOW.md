@@ -145,7 +145,9 @@ flowchart LR
 **用户可介入**：
 
 - 修改剧本文本/角色/场景/分集（`PATCH /api/project/{sid}/artifact/script_generation`，支持新增空白角色/场景/剧集）；
-- **智能续写**：给出续写方向 → 后端只回预演（`new_episodes` 预览，不污染下游）→ 用户确认后才写入并与下游同步；
+- **剧本AI修改**：以自然语言给出修改方向（`revise_script`）→ 后端只回 `pending_revision` 预览，用户确认后才写入；前端入口位于剧本内容最底部；
+- **剧本AI质检**（导入模式）：`review_script` 对当前剧本逐行质检，只回 `pending_review` 预览（`replace` / `insert_after` / `delete` 三类操作）；用户勾选建议后以 `apply_script_review` 应用所选修改，正文变更会同步清空行级标注并标记下游待重新确认。质检提示词内置四条约束：内容与时序准确、合理规划时间、优化视听节奏、总时长灵活；分镜提示词同步声明原文保真、台词时长与节奏约束。质检单集上限 8000 字符、全剧上限 10000 字符，超出请缩短/减少集数或等待分批质检支持（当前尚未实现分批）；长输出 600s 起步、约 6 字符/秒、1800s 封顶，按实际 prompt 长度计算，其它阶段保持默认 300s。质检会过滤空行/元信息/制作标记的删除、字幕↔对白错行与说话人错配，并按集号/行号排序；拆分台词统一用 replace（≤3 段，超过 3 段的建议会被保守丢弃、不截断正文），对白续行需同说话人、动作行续行需说话人对白或 `<action>`，动作/描述行 replace 需与原行 4 字窗口覆盖率 ≥65%，对白行以原行正文为参照字符覆盖率 ≥20%；对白和动作行长度均 ≤ `max(原长*1.4, 原长+4)`（允许换序/小幅润色），`<action>` 内容也需接地；应用后落盘最小快照，撤销校验使用 structure 指纹 + 仅 summary 辅助指纹，可从页面“撤销本次质检”（摘要改动后撤销会拒绝，琥珀条可能保留，属已知 UI 边界）；弹窗提供红/绿字符级 diff；宿主 8500 端口与前端真实 API 代理已恢复；空转 replace 会被丢弃；insert_after 需有原行文字依据且每行≤2 条，新增制作标记或原文没有的括号状态（如（微笑））会被过滤。
+- **智能续写**：后端保留 `smart_continue` 兼容，前端入口已隐藏；
 - 确认（`/continue`）后进入第 2、3 阶段。
 
 ---
@@ -463,7 +465,7 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 | 模板族 | 语言 | 阶段/用途 | 入口 | 备注 |
 |---|---|---|---|---|
-| `script/*`（34） | zh/en 可用时回退 zh | 剧本生成、导入、修订、续写、分类、评估、提取 | `ScriptWriterAgent._get_script_prompt`（load_prompt_with_fallback） | 含 `generate/eval/revise/meta/import/act_extract/smart_continue` 等；调用点不在直接 `load_prompt` AST 名单内 |
+| `script/*`（38） | zh/en 可用时回退 zh | 剧本生成、导入、修订、质检、续写、分类、评估、提取 | `ScriptWriterAgent._get_script_prompt`（load_prompt_with_fallback） | 含 `generate/eval/revise/review/meta/import/act_extract/smart_continue` 等；调用点不在直接 `load_prompt` AST 名单内 |
 | `storyboard/*`（3） | zh | storyboard | `StoryboardAgent` | 分镜规划/连续性 |
 | `pipelines/*`（2） | en/zh | 一次性 standard pipeline | `pipelines/standard.py` 的 `load_prompt("pipelines",...)` | 图片提示词/旁白生成 |
 | `style/*`（8） | 无后缀 | 各生成阶段风格前缀 | `AgentInterface._get_style_prompt`（直接读文件） | 不走 `load_prompt`；无 `_zh/_en` |

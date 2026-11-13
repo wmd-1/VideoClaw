@@ -168,13 +168,22 @@ def test_all_seven_keys_are_the_complete_set():
 
 
 def _example_config() -> dict:
-    import os
+    from pathlib import Path
 
     import yaml
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml.example")
-    with open(path, encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    # 测试可能在 /app/tests（镜像内）或 /tmp/vc_tests（README 复现路径）执行；
+    # 后者按 __file__ 推导会得到 /tmp/config.yaml.example，必须回退到应用根。
+    candidates = [
+        Path(__file__).resolve().parent.parent / "config.yaml.example",
+        Path("/app/config.yaml.example"),
+        Path.cwd() / "config.yaml.example",
+    ]
+    for path in candidates:
+        if path.exists():
+            with open(path, encoding="utf-8") as handle:
+                return yaml.safe_load(handle)
+    raise FileNotFoundError(f"config.yaml.example not found in {[str(p) for p in candidates]}")
 
 
 def test_example_templates_register_expected_declarations(monkeypatch):

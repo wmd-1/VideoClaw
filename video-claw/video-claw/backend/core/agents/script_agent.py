@@ -4,6 +4,8 @@
 """
 
 import asyncio
+import copy
+import hashlib
 import json
 import logging
 import os
@@ -13,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from prompts.loader import load_prompt_with_fallback
 
-from .. import script_import, script_revision
+from .. import script_import, script_review, script_revision
 from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,65 @@ def _get_script_prompt(name: str, lang: str = "zh") -> str:
 
 # 全剧修订的上下文字符上限：超出时要求改用单集修订，不静默截断
 SCRIPT_REVISION_MAX_CHARS = 60000
+
+# 剧本 AI 质检的字符上限：单集不超过 8000，全剧不超过 10000；超出时拒绝，不静默截断。
+# 当前尚未实现按集分批，因此错误文案明确提示“缩短/减少集数或等待分批支持”，不承诺不存在的功能。
+SCRIPT_REVIEW_MAX_CHARS = 8000
+SCRIPT_REVIEW_MAX_TOTAL_CHARS = 10000
+
+# 质检输出是多条带原文/改写的 JSON，长输出容易触发自定义模型 300s 读超时；
+# 仅本次质检调用放宽到 600s，不影响其它阶段的默认超时。
+SCRIPT_REVIEW_TIMEOUT = 600.0
+# 长剧本按实际 prompt 字符数动态放宽；上限 1800s（含提示词/角色/场景/行号）。
+SCRIPT_REVIEW_TIMEOUT_MAX = 1800.0
+
+
+def _review_aux_fingerprint(artifact: Dict[str, Any]) -> str:
+    """只覆盖用户可编辑的摘要；派生标注/场景映射不从指纹阻塞撤销。"""
+    payload = {"summary": artifact.get("summary")}
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def script_review_timeout_for_chars(prompt_chars: Any) -> float:
+    """按实际 prompt 字符数计算质检超时：600s 起步，约 6 字符/秒，封顶 1800s。"""
+    try:
+        chars = max(0, int(prompt_chars))
+    except (TypeError, ValueError):
+        chars = 0
+    return max(SCRIPT_REVIEW_TIMEOUT, min(SCRIPT_REVIEW_TIMEOUT_MAX, chars / 6.0))
+
+
+def review_episode_size(episodes: Any) -> tuple[int, int]:
+    """校验单集/全剧字符上限，返回 (全剧总字符, 单集最大字符)。
+
+    上限按 episodes[].content 统计，不含提示词/角色/场景/行号；超时另按实际
+    prompt 长度计算，避免把固定提示词开销漏掉。
+    """
+    sizes = []
+    for index, episode in enumerate(episodes or [], start=1):
+        if not isinstance(episode, dict):
+            continue
+        number = episode.get("episode_number") or index
+        sizes.append((number, len(str(episode.get("content", "")))))
+    if not sizes:
+        return 0, 0
+    total = sum(size for _number, size in sizes)
+    number, largest = max(sizes, key=lambda item: item[1])
+    if largest > SCRIPT_REVIEW_MAX_CHARS:
+        raise ValueError(
+            f"第{number}集约 {largest} 字符，超出单集质检上限 {SCRIPT_REVIEW_MAX_CHARS}；"
+            "请缩短该集，或等待分批质检支持"
+        )
+    if total > SCRIPT_REVIEW_MAX_TOTAL_CHARS:
+        raise ValueError(
+            f"全剧约 {total} 字符（单集最长 {largest}，未超 {SCRIPT_REVIEW_MAX_CHARS}），"
+            f"超出单次质检总上限 {SCRIPT_REVIEW_MAX_TOTAL_CHARS}；"
+            "请减少集数/缩短剧本，或等待分批质检支持"
+        )
+    return total, largest
 
 # 片子类型规范枚举：meta.film_type 的唯一合法取值（openspec: script-stage-promo-type-rework）
 FILM_TYPES = ("介绍", "宣传", "营销")
@@ -306,8 +367,9 @@ class ScriptWriterAgent(AgentInterface):
         loop = asyncio.get_running_loop()
 
         async def _call(prompt: str) -> str:
+            # 修订会写回正文：safe_content=False 禁止 full_to_half 改写原文标点
             return await asyncio.to_thread(
-                self._cancellable_query, llm, prompt, [], llm_model, True, sid, web_search
+                self._cancellable_query, llm, prompt, [], llm_model, False, sid, web_search
             )
 
         async def _call_with_heartbeat(prompt: str, start: float, cap: float, message: str) -> str:
@@ -459,6 +521,7 @@ class ScriptWriterAgent(AgentInterface):
         preview.update(preview_body)
 
         payload = copy.deepcopy(current)
+        payload.pop("pending_review", None)
         payload["pending_revision"] = preview
         _log(100, "修订预览已生成")
         return {"payload": payload, "requires_intervention": True, "stage_completed": False}
@@ -575,6 +638,221 @@ class ScriptWriterAgent(AgentInterface):
         _log(90, "正在保存剧本产物...")
         self._save_result(updated, input_data.get("session_id", ""), True)
         _log(100, "修订已应用")
+        return {
+            "payload": updated,
+            "requires_intervention": False,
+            "stage_completed": True,
+            "revision_applied": True,
+        }
+
+    async def _run_review_script(self, input_data: Dict[str, Any], intervention: Dict[str, Any]) -> Dict:
+        """剧本 AI 质检：只产出逐行修改建议预览，不写产物。"""
+        import copy
+
+        floor = 0.0
+
+        def _log(percent: float, message: str):
+            nonlocal floor
+            floor = max(floor, float(percent))
+            self._report_progress("剧本AI质检", message, floor)
+
+        _log(5, "正在读取剧本产物...")
+        sid = input_data.get("session_id", "")
+        current = self._session_artifact(input_data, "script_generation")
+        if not current:
+            raise ValueError("剧本产物不存在，无法质检")
+        current_meta = current.get("meta") if isinstance(current.get("meta"), dict) else {}
+        if not current_meta.get("source_format"):
+            raise ValueError("剧本AI质检仅支持导入剧本")
+        episodes = current.get("episodes") or []
+        if not episodes:
+            raise ValueError("剧本产物不包含剧集")
+        _total_chars, _max_episode_chars = review_episode_size(episodes)
+
+        is_zh = self._session_language(input_data) == "zh"
+        llm_model = self._require_input(input_data, "llm_model")
+        web_search = input_data.get("web_search", False)
+
+        from models.llm_client import LLM
+
+        llm = LLM()
+
+        async def _call(prompt: str) -> str:
+            # 质检建议会写回正文：safe_content=False 禁止 full_to_half 改写原文标点
+            return await asyncio.to_thread(
+                self._cancellable_query, llm, prompt, [], llm_model, False, sid, web_search,
+                timeout=review_timeout,
+            )
+
+        _log(10, "正在构建质检提示词...")
+        template = _get_script_prompt("review_script", "zh" if is_zh else "en")
+        prompt = template.format(
+            episodes=script_review.build_numbered_episodes(episodes),
+            characters=json.dumps(current.get("characters") or [], ensure_ascii=False),
+            settings=json.dumps(current.get("settings") or [], ensure_ascii=False),
+        )
+        # 超时按实际 prompt 长度（正文+角色/场景/行号/提示词）计算，不再重复叠加正文
+        review_timeout = script_review_timeout_for_chars(len(prompt))
+
+        parsed: Optional[dict] = None
+        for attempt in range(2):
+            _log(20 if attempt == 0 else 82, "正在请求模型质检...")
+            raw = await self._await_with_heartbeat(
+                _call(prompt),
+                start=20 if attempt == 0 else 82,
+                cap=78 if attempt == 0 else 88,
+                message="模型正在逐行检查剧本，请稍候...",
+                log=_log,
+            )
+            _log(80 if attempt == 0 else 90, "正在解析质检结果...")
+            candidate = self._extract_json_from_text(raw)
+            if isinstance(candidate, dict):
+                normalized = script_review.normalize_review(candidate, episodes)
+                if normalized is not None:
+                    parsed = normalized
+                    break
+            logger.warning("[ScriptReview] 质检结果解析失败 attempt=%s", attempt + 1)
+
+        if parsed is None:
+            raise ValueError("质检结果解析失败，请重试")
+
+        _log(96, "正在生成质检预览...")
+        preview = {
+            "summary": parsed.get("summary") or "",
+            "issues": parsed.get("issues") or [],
+            "base_version": script_revision.content_fingerprint(current),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        payload = copy.deepcopy(current)
+        # 修订预览与质检预览互斥：新质检结果出现时，旧修订预览不得继续悬挂
+        payload.pop("pending_revision", None)
+        payload["pending_review"] = preview
+        _log(100, "质检完成，请选择要应用的修改")
+        return {
+            "payload": payload,
+            "requires_intervention": True,
+            "stage_completed": False,
+        }
+
+    async def _run_apply_script_review(self, input_data: Dict[str, Any], intervention: Dict[str, Any]) -> Dict:
+        """应用用户勾选的质检建议：只改正文，不调用 LLM。"""
+        floor = 0.0
+
+        def _log(percent: float, message: str):
+            nonlocal floor
+            floor = max(floor, float(percent))
+            self._report_progress("剧本AI质检", message, floor)
+
+        _log(10, "正在读取质检结果...")
+        current = self._session_artifact(input_data, "script_generation")
+        if not current:
+            current = {
+                key: value for key, value in input_data.items()
+                if not str(key).startswith("_")
+            }
+        preview = current.get("pending_review")
+        if not isinstance(preview, dict):
+            # 编排器物化按 PREVIEW_KEYS 剥离预览（split_preview），
+            # 干预入口的顶层快照仍带质检预览，从这里回退读取。
+            fallback = input_data.get("pending_review")
+            preview = fallback if isinstance(fallback, dict) else None
+        if not isinstance(preview, dict):
+            raise ValueError("没有待应用的质检结果")
+        current_meta = current.get("meta") if isinstance(current.get("meta"), dict) else {}
+        if not current_meta.get("source_format"):
+            raise ValueError("剧本AI质检仅支持导入剧本")
+
+        _log(30, "正在校验质检结果是否仍然有效...")
+        if preview.get("base_version") != script_revision.content_fingerprint(current):
+            raise ValueError("质检结果已过期或剧本已变化，请重新发起质检")
+
+        issues = script_review.select_issues(preview, intervention.get("selected_issue_ids"))
+        if not issues:
+            raise ValueError("请至少选择一条质检建议")
+
+        _log(60, "正在应用所选质检建议...")
+        # 最小快照：只保留正文与派生字段，避免把整份 artifact 再复制一遍；
+        # 应用历史仍在 current.revision_history 中，撤销时追加一条后保留完整审计链。
+        rollback_snapshot = {
+            "episodes": copy.deepcopy(current.get("episodes") or []),
+            "summary": current.get("summary") or "",
+            "before_version": preview.get("base_version") or script_revision.content_fingerprint(current),
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+            "issue_ids": [str(issue.get("id")) for issue in issues],
+        }
+        for key in ("line_annotations", "scene_spans", "import_review"):
+            if key in current:
+                rollback_snapshot[key] = copy.deepcopy(current[key])
+        new_episodes = script_review.apply_issue_edits(
+            current.get("episodes") or [], issues
+        )
+
+        _log(80, "正在保存剧本产物...")
+        summary = str(preview.get("summary") or "").strip()
+        updated = script_revision.apply_preview_to_artifact(
+            current,
+            {"episodes": new_episodes, "summary": summary},
+            instruction="剧本AI质检：" + (summary or f"应用 {len(issues)} 条建议"),
+            scope="all",
+            episode_number=None,
+        )
+        updated.pop("pending_review", None)
+        updated.pop("review_rollback", None)
+        # 撤销校验只看用户可编辑内容，忽略服务端回写的 line_start/end/主键等派生字段
+        rollback_snapshot["after_version"] = script_revision.structure_fingerprint(updated)
+        rollback_snapshot["after_aux_version"] = _review_aux_fingerprint(updated)
+        updated["review_rollback"] = rollback_snapshot
+        _log(100, "质检修改已应用")
+        return {
+            "payload": updated,
+            "requires_intervention": False,
+            "stage_completed": True,
+            "revision_applied": True,
+        }
+
+    async def _run_rollback_script_review(self, input_data: Dict[str, Any], intervention: Dict[str, Any]) -> Dict:
+        """撤销上一次剧本 AI 质检写入：恢复质检前正文快照，不调用 LLM。"""
+        current = self._session_artifact(input_data, "script_generation")
+        if not current:
+            current = {
+                key: value for key, value in input_data.items()
+                if not str(key).startswith("_")
+            }
+        rollback = current.get("review_rollback")
+        if not isinstance(rollback, dict):
+            raise ValueError("没有可撤销的剧本AI质检")
+        if rollback.get("after_version") != script_revision.structure_fingerprint(current):
+            raise ValueError("剧本已再次修改，无法自动撤销本次质检")
+        if rollback.get("after_aux_version") != _review_aux_fingerprint(current):
+            raise ValueError("剧本摘要/标注已修改，无法自动撤销本次质检")
+        episodes = rollback.get("episodes")
+        if not isinstance(episodes, list) or not episodes:
+            raise ValueError("质检撤销快照无效")
+        updated = copy.deepcopy(current)
+        updated["episodes"] = copy.deepcopy(episodes)
+        updated["summary"] = str(rollback.get("summary") or "")
+        for key in ("line_annotations", "scene_spans", "import_review"):
+            if key in rollback:
+                updated[key] = copy.deepcopy(rollback[key])
+            else:
+                updated.pop(key, None)
+        history = updated.get("revision_history")
+        if not isinstance(history, list):
+            history = []
+        history.append(
+            {
+                "instruction": "撤销剧本AI质检",
+                "scope": "all",
+                "episode_number": None,
+                "summary": "恢复质检前正文",
+                "applied_at": datetime.now(timezone.utc).isoformat(),
+                "base_version": rollback.get("after_version", ""),
+            }
+        )
+        updated["revision_history"] = history[-script_revision.REVISION_HISTORY_LIMIT:]
+        updated.pop("review_rollback", None)
+        updated.pop("pending_review", None)
+        updated.pop("pending_revision", None)
         return {
             "payload": updated,
             "requires_intervention": False,
@@ -703,50 +981,10 @@ class ScriptWriterAgent(AgentInterface):
         except Exception:
             logger.warning("[ScriptImport] 元信息提取失败，使用默认值", exc_info=True)
 
-        # 文生视频质检：默认关闭；长文自动触发或用户勾选，只建议不改正文
-        requested_review = bool(
-            session_meta.get("run_quality_check") or input_data.get("run_quality_check")
-        )
-        auto_review = len(raw_text) >= script_import.IMPORT_REVIEW_AUTO_MIN_CHARS
-        review_mode = "manual" if requested_review else ("auto" if auto_review else "off")
-        review_coverage = {"covered_lines": 0, "total_lines": 0, "truncated": False}
-        review_data: Dict[str, Any] = {}
-        if review_mode != "off":
-            self._report_progress("剧本导入", "正在检查剧本节奏...", 80)
-            try:
-                chunks: List[str] = []
-                used = 0
-                for index, line in enumerate(lines):
-                    if not line.strip():
-                        continue
-                    item = f"{index}: {line}"
-                    if used + len(item) + 1 > 60000:
-                        break
-                    chunks.append(item)
-                    used += len(item) + 1
-                total_lines = sum(1 for line in lines if line.strip())
-                review_coverage = {
-                    "covered_lines": len(chunks),
-                    "total_lines": total_lines,
-                    "truncated": len(chunks) < total_lines,
-                }
-                if review_coverage["truncated"]:
-                    logger.warning(
-                        "[ScriptImport] 剧本 %d 字符，质检仅覆盖前 %d/%d 行",
-                        len(raw_text),
-                        len(chunks),
-                        total_lines,
-                    )
-                if chunks:
-                    prompt = _get_script_prompt("import_review", lang).format(
-                        numbered_script="\n".join(chunks)
-                    )
-                    parsed = self._extract_json_from_text(await _call(prompt))
-                    if isinstance(parsed, dict):
-                        review_data = parsed
-            except Exception:
-                logger.warning("[ScriptImport] 剧本质检失败，跳过质检建议", exc_info=True)
-
+        # 导入阶段不再执行剧本质检：质检改为剧本阶段的显式「剧本AI质检」，
+        # 质检建议只作用于剧本正文，不再为分镜预置行级时长。
+        # 四条质量约束（内容/时序、时长、视听节奏、总时长灵活）落在 review_script
+        # 与分镜提示词中；导入本身保持保真，不把质量改写规则混入提取提示词。
         inferred_characters = meta_data.get("characters") if isinstance(meta_data.get("characters"), list) else []
         meta_settings = meta_data.get("settings") if isinstance(meta_data.get("settings"), list) else []
         existing_names = {
@@ -780,24 +1018,9 @@ class ScriptWriterAgent(AgentInterface):
             inferred_settings=inferred_settings,
             setting_by_heading_line=heading_mapping,
         )
-        import_review, reviewed_annotations = None, artifact.get("line_annotations") or []
-        try:
-            import_review, reviewed_annotations = script_import.apply_import_review(
-                review_data, artifact.get("line_annotations") or []
-            )
-        except Exception:
-            logger.warning("[ScriptImport] 质检结果处理失败，跳过质检建议", exc_info=True)
         meta = artifact.setdefault("meta", {})
         # 导入剧本以内容完整与节奏舒适优先：原文目标时长只作提示，不再硬压分镜
         meta["duration_budget"] = "advisory"
-        meta["import_review_mode"] = review_mode
-        if import_review:
-            import_review["mode"] = review_mode
-            import_review["coverage"] = review_coverage
-            artifact["import_review"] = import_review
-            artifact["line_annotations"] = reviewed_annotations
-            if import_review.get("suggested_total_seconds"):
-                meta["suggested_total_seconds"] = import_review["suggested_total_seconds"]
         artifact.pop("source_episode_count", None)
         self._save_result(artifact, sid, is_zh)
         self._report_progress("剧本导入", "剧本解析完成", 100)
@@ -922,6 +1145,12 @@ class ScriptWriterAgent(AgentInterface):
             return await self._run_revise_script(input_data, intervention)
         if intervention and intervention.get("action") == "apply_revision":
             return await self._run_apply_revision(input_data, intervention)
+        if intervention and intervention.get("action") == "review_script":
+            return await self._run_review_script(input_data, intervention)
+        if intervention and intervention.get("action") == "apply_script_review":
+            return await self._run_apply_script_review(input_data, intervention)
+        if intervention and intervention.get("action") == "rollback_script_review":
+            return await self._run_rollback_script_review(input_data, intervention)
 
         if intervention and "modified_script" in intervention:
             modified = intervention["modified_script"]

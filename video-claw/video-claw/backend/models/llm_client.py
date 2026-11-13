@@ -93,8 +93,12 @@ class LLM:
             
         return text.translate(translation_table)
 
-    def query(self, prompt, image_urls=[], model="qwen3.6-max-preview", safe_content=True, task_id=None, web_search=False):
-        """统一入口：记录一次文本模型调用（观测失败不影响调用）。"""
+    def query(self, prompt, image_urls=[], model="qwen3.6-max-preview", safe_content=True, task_id=None, web_search=False, timeout=None):
+        """统一入口：记录一次文本模型调用（观测失败不影响调用）。
+
+        timeout: 仅自定义模型（OpenAI 兼容 chat/completions）生效；
+        长输出场景（如剧本质检）可显式放宽，未传时沿用客户端默认 300s。
+        """
         import time
 
         from core.observability import prompt_hash, record_call
@@ -104,6 +108,7 @@ class LLM:
             result = self._query_impl(
                 prompt, image_urls=image_urls, model=model,
                 safe_content=safe_content, task_id=task_id, web_search=web_search,
+                timeout=timeout,
             )
         except Exception as exc:
             record_call(
@@ -120,7 +125,7 @@ class LLM:
         )
         return result
 
-    def _query_impl(self, prompt, image_urls=[], model="qwen3.6-max-preview", safe_content=True, task_id=None, web_search=False):
+    def _query_impl(self, prompt, image_urls=[], model="qwen3.6-max-preview", safe_content=True, task_id=None, web_search=False, timeout=None):
         """
         Query the LLM with a prompt and optional image URLs.
         Selects the backend (GPT or Gemini) based on the model name.
@@ -155,7 +160,7 @@ class LLM:
         if entry_kind == "custom":
             from models.custom_llm import CustomChatClient
 
-            custom_client = CustomChatClient(entry_meta)
+            custom_client = CustomChatClient(entry_meta, timeout=timeout or 300.0)
             try:
                 result = custom_client.query(
                     prompt, image_urls=image_urls, model=model, web_search=web_search

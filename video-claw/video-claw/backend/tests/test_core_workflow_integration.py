@@ -438,6 +438,64 @@ def test_revision_preview_lives_in_preview_layer_and_can_be_cancelled(monkeypatc
     assert "pending_revision" not in workflow_engine.get_artifact_snapshot(sid, "script_generation")
 
 
+def test_script_review_preview_lives_in_preview_layer_and_can_be_cancelled(monkeypatch):
+    """剧本 AI 质检与修订共用预览层：预览不晋升，取消后不残留。"""
+    from core import script_revision
+
+    sid = _new_session()
+    base = {"episodes": [{"episode_number": 1, "content": "正文"}], "characters": [], "settings": [],
+            "meta": {"source_format": "episode"}}
+    workflow_engine.update_artifact(sid, "script_generation", base)
+    version = StageArtifactRepo().get(sid, "script_generation")["version"]
+    preview = {
+        "summary": "改一处",
+        "base_version": script_revision.content_fingerprint(base),
+        "issues": [{
+            "id": "qr_1", "episode_number": 1, "line": 1, "action": "replace",
+            "original": "正文", "text": "新的正文", "problem": "太短",
+        }],
+    }
+
+    def review(_agent, input_data, _intervention):
+        payload = {k: v for k, v in input_data.items() if k in ("episodes", "characters", "settings")}
+        return {"payload": {**payload, "pending_review": preview}, "requires_intervention": True}
+
+    _use_agent(monkeypatch, WorkflowStage.SCRIPT_GENERATION, review)
+    state = workflow_engine.get_state(sid)
+    asyncio.run(workflow_engine.execute_stage(state, WorkflowStage.SCRIPT_GENERATION, dict(base),
+                                              intervention={"action": "review_script"}))
+    working = load_working(sid, "script_generation")
+    assert working["preview_json"]["pending_review"]["summary"] == "改一处"
+    assert StageArtifactRepo().get(sid, "script_generation")["version"] == version  # 预览不晋升
+    artifact = workflow_engine.get_artifact_snapshot(sid, "script_generation")
+    assert artifact["pending_review"]["issues"][0]["text"] == "新的正文"
+    assert artifact["episodes"] == base["episodes"]
+
+    workflow_engine.update_artifact(sid, "script_generation", {"pending_review": None})
+    assert load_working(sid, "script_generation")["preview_json"] is None
+    assert "pending_review" not in workflow_engine.get_artifact_snapshot(sid, "script_generation")
+
+    # 应用质检修改（无预览的普通完成路径）必须清理预览键且推进检查点
+    def apply(_agent, _input_data, _intervention):
+        return {
+            "payload": {
+                "episodes": [{"episode_number": 1, "content": "新的正文"}],
+                "characters": [],
+                "settings": [],
+            },
+            "stage_completed": True,
+            "revision_applied": True,
+        }
+
+    _use_agent(monkeypatch, WorkflowStage.SCRIPT_GENERATION, apply)
+    state = workflow_engine.get_state(sid)
+    asyncio.run(workflow_engine.execute_stage(state, WorkflowStage.SCRIPT_GENERATION, {},
+                                              intervention={"action": "apply_script_review"}))
+    applied = workflow_engine.get_artifact_snapshot(sid, "script_generation")
+    assert applied["episodes"][0]["content"] == "新的正文"
+    assert "pending_review" not in applied
+
+
 # ── 14.5 user edits during a run win ─────
 def test_user_selection_during_run_is_not_overwritten(monkeypatch):
     sid = _new_session()

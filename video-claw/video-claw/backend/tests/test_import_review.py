@@ -137,8 +137,8 @@ IMPORT_SCRIPT = "\n".join([
 ])
 
 
-def test_import_pipeline_attaches_review_without_touching_text(monkeypatch):
-    """质检结果进入产物、时长进入标注，正文仍逐字保真。"""
+def test_import_pipeline_never_runs_quality_review(monkeypatch):
+    """导入阶段不再触发质检：请求带 run_quality_check 时也只做导入解析。"""
     import asyncio
     import json
 
@@ -159,26 +159,13 @@ def test_import_pipeline_attaches_review_without_touching_text(monkeypatch):
         },
         ensure_ascii=False,
     )
-    review_reply = json.dumps(
-        {
-            "summary": "台词偏长，节奏基本可控",
-            "issues": [
-                {"line": 1, "type": "timing", "severity": "medium",
-                 "problem": "单句台词偏长", "suggestion": "保留完整表达并给足时长"},
-            ],
-            "unit_durations": [{"line": 1, "seconds": 8}, {"line": 2, "seconds": 4}],
-            "suggested_total_seconds": 30,
-            "duration_reason": "按台词字数与动作停留估算",
-        },
-        ensure_ascii=False,
-    )
 
     agent = ScriptWriterAgent()
     prompts: list[str] = []
 
     def fake_query(llm, prompt, *args):
         prompts.append(prompt)
-        return review_reply if "剧本质检" in prompt else meta_reply
+        return meta_reply
 
     monkeypatch.setattr(
         ScriptWriterAgent, "_resolve_uploaded_document",
@@ -194,18 +181,20 @@ def test_import_pipeline_attaches_review_without_touching_text(monkeypatch):
         "llm_model": "m1",
         "run_quality_check": True,
         "_session_owner": "alice",
-        "_session_meta": {"file_path": "fake-script.txt", "language": "zh"},
+        "_session_meta": {
+            "file_path": "fake-script.txt",
+            "language": "zh",
+            "run_quality_check": True,
+        },
     }))
     artifact = result["payload"]
 
     assert artifact["episodes"][0]["content"] == IMPORT_SCRIPT, "正文必须逐字保真"
-    assert artifact["import_review"]["summary"] == "台词偏长，节奏基本可控"
+    assert "import_review" not in artifact, "导入阶段不得再生成质检结论"
+    assert "import_review_mode" not in artifact["meta"]
     assert artifact["meta"]["duration_budget"] == "advisory"
-    assert artifact["meta"]["suggested_total_seconds"] == 30
-    by_line = {item["line"]: item for item in artifact["line_annotations"]}
-    assert by_line[1]["duration"] == 8
-    assert by_line[2]["duration"] == 4
-    assert len(prompts) == 2
+    assert "suggested_total_seconds" not in artifact["meta"]
+    assert len(prompts) == 1, "只应调用元信息提取，不得调用质检"
 
 
 def test_dialogue_duration_never_shorter_than_rule_estimate():
@@ -234,79 +223,6 @@ def test_non_finite_duration_is_ignored_without_crashing():
         _annotations(),
     )
     assert normalized is None, "非有限值必须被完整丢弃，不能只做部分过滤"
-
-
-def test_import_pipeline_en_path_applies_review(monkeypatch):
-    import asyncio
-    import json
-
-    import models.llm_client as llm_client
-    from core.agents.script_agent import ScriptWriterAgent
-    from models.file_reader import FileReader
-
-    meta_reply = json.dumps(
-        {
-            "title": "Test Script",
-            "logline": "Xiao Chen delivers the documents.",
-            "genre": ["workplace"],
-            "mood": "calm",
-            "film_type": "介绍",
-            "subject_mode": "人物故事",
-            "characters": [{"name": "小陈", "description": "young man, short hair, dark suit."}],
-            "settings": [{"name": "办公室", "description": "interior, daylight, desk and cabinet."}],
-        },
-        ensure_ascii=False,
-    )
-    review_reply = json.dumps(
-        {
-            "summary": "Dialogue is a bit long, pacing mostly under control",
-            "issues": [
-                {"line": 1, "type": "timing", "severity": "medium",
-                 "problem": "single line dialogue is long", "suggestion": "keep full expression with enough time"},
-            ],
-            "unit_durations": [{"line": 1, "seconds": 8}, {"line": 2, "seconds": 4}],
-            "suggested_total_seconds": 30,
-            "duration_reason": "estimated by dialogue length and action hold",
-        },
-        ensure_ascii=False,
-    )
-
-    agent = ScriptWriterAgent()
-    prompts: list[str] = []
-
-    def fake_query(llm, prompt, *args):
-        prompts.append(prompt)
-        if "剧本质检" in prompt or "quality checker" in prompt:
-            return review_reply
-        return meta_reply
-
-    monkeypatch.setattr(
-        ScriptWriterAgent, "_resolve_uploaded_document",
-        staticmethod(lambda path, owner: "/tmp/fake-script.txt"),
-    )
-    monkeypatch.setattr(FileReader, "extract_text", staticmethod(lambda path: IMPORT_SCRIPT))
-    monkeypatch.setattr(llm_client, "LLM", lambda: object())
-    monkeypatch.setattr(agent, "_cancellable_query", fake_query)
-    monkeypatch.setattr(agent, "_save_result", lambda *args, **kwargs: None)
-
-    result = asyncio.run(agent._run_import_script({
-        "session_id": "s2",
-        "llm_model": "m1",
-        "run_quality_check": True,
-        "_session_owner": "alice",
-        "_session_meta": {"file_path": "fake-script.txt", "language": "en"},
-    }))
-    artifact = result["payload"]
-
-    assert artifact["episodes"][0]["content"] == IMPORT_SCRIPT
-    assert artifact["import_review"]["summary"] == (
-        "Dialogue is a bit long, pacing mostly under control"
-    )
-    assert artifact["meta"]["duration_budget"] == "advisory"
-    by_line = {item["line"]: item for item in artifact["line_annotations"]}
-    assert by_line[1]["duration"] == 8
-    assert by_line[2]["duration"] == 4
-    assert len(prompts) == 2
 
 
 def _stub_import(monkeypatch, reply):
@@ -346,41 +262,9 @@ def test_quality_check_off_by_default_for_short_script(monkeypatch):
     }))
     artifact = result["payload"]
 
-    assert "import_review" not in artifact, "短剧本未勾选时不得额外调用质检"
-    assert artifact["meta"]["import_review_mode"] == "off"
+    assert "import_review" not in artifact, "短剧本不得额外调用质检"
+    assert "import_review_mode" not in artifact["meta"]
     assert len(prompts) == 1, "只应调用元信息提取"
-
-
-def test_long_script_auto_triggers_quality_check(monkeypatch):
-    import asyncio
-    import json
-
-    from core import script_import as script_import_module
-
-    monkeypatch.setattr(script_import_module, "IMPORT_REVIEW_AUTO_MIN_CHARS", 10)
-    review_reply = json.dumps({
-        "summary": "长文自动质检",
-        "unit_durations": [{"line": 1, "seconds": 6}],
-        "suggested_total_seconds": 30,
-    }, ensure_ascii=False)
-    agent, prompts = _stub_import(
-        monkeypatch,
-        lambda prompt: review_reply if "剧本质检" in prompt else "{}",
-    )
-
-    result = asyncio.run(agent._run_import_script({
-        "session_id": "s4",
-        "llm_model": "m1",
-        "file_path": "fake-script.txt",
-        "_session_owner": "alice",
-        "_session_meta": {"language": "zh"},
-    }))
-    artifact = result["payload"]
-
-    assert artifact["import_review"]["mode"] == "auto"
-    assert artifact["import_review"]["coverage"]["total_lines"] == 3
-    assert artifact["import_review"]["coverage"]["truncated"] is False
-    assert len(prompts) == 2
 
 
 def test_scene_desc_duration_merges_into_next_unit():

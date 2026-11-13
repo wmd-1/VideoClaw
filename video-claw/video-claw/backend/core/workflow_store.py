@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set,
 
 from core.media_refs import PUBLIC_PREFIX, ResolvedMedia, is_remote, owner_key, to_public
 
-PREVIEW_KEYS = ("pending_revision", "new_episodes", "new_characters", "new_settings", "sequel_idea")
+PREVIEW_KEYS = ("pending_revision", "pending_review", "new_episodes", "new_characters", "new_settings", "sequel_idea")
 
 ITEM_CONTAINERS: Dict[str, Tuple[str, ...]] = {
     "character_design": ("characters", "settings"),

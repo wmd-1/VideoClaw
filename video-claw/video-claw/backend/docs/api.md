@@ -253,7 +253,23 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
 ```
 
 - `stage`：要干预的阶段
-- `modifications`：修改内容，目前支持 `regenerate_scenes`（要重新生成的镜头 ID 列表）
+- `modifications`：修改内容，目前支持 `regenerate_scenes`（要重新生成的镜头 ID  列表）
+
+剧本阶段（`stage=script_generation`）支持的干预动作：
+
+| action | 主要参数 | 行为 |
+|---|---|---|
+| `revise_script` | `instruction`、`scope=all\|episode`、`episode_number` | 按自然语言修订剧本，只返回 `pending_revision` 预览 |
+| `apply_revision` | `confirm_removals`、`confirm_overwrites` | 应用修订预览 |
+| `review_script` | 无 | 对当前剧本逐行质检（仅导入剧本），只返回 `pending_review` 预览（逐行 `replace` / `insert_after` / `delete` 建议） |
+| `apply_script_review` | `selected_issue_ids`（字符串数组） | 应用勾选的质检建议（仅导入剧本）；正文变更同步清空行级标注并标记下游待重新确认 |
+
+```json
+{
+  "stage": "script_generation",
+  "modifications": { "action": "apply_script_review", "selected_issue_ids": ["qr_1", "qr_3"] }
+}
+```
 
 **响应**: SSE 流式返回，包含以下事件类型：
 - `progress`: 进度更新

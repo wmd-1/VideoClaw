@@ -1245,7 +1245,6 @@ export default function WorkflowPanel() {
         idea: params.idea,
         file_path: params.file_path, // 修复：将上传的文件路径传给后端
         script_source: params.script_source,
-        run_quality_check: params.run_quality_check,
         style: params.style,
         video_ratio: params.video_ratio,
         video_resolution: params.video_resolution,
@@ -1657,8 +1656,15 @@ export default function WorkflowPanel() {
             });
             commitSessionView(token, { globalStatusMap: statusMap });
             applyStatusMapToStages(token, statusMap);
-            // 分镜显式重跑会清理/更新参考图与改写条目：取一次只读快照让其它阶段产物同步
-            if (stageId === 'storyboard' && Array.isArray(modifications.regenerate_episodes)) {
+            // 分镜显式重跑会清理/更新参考图与改写条目；剧本结构变更（应用修订/质检）
+            // 会把分镜标为 reconfirm，也必须重取快照，否则剧本页的“分镜待重新确认”
+            // 依赖 stageStates.storyboard.staleEpisodes，当前回合不会出现。
+            const scriptStructureChanged = stageId === 'script_generation'
+              && statusMap.storyboard === 'reconfirm';
+            if (
+              (stageId === 'storyboard' && Array.isArray(modifications.regenerate_episodes))
+              || scriptStructureChanged
+            ) {
               await resyncSessionView(token, sessionId, { statusMap, refreshArtifacts: true });
             }
           }
