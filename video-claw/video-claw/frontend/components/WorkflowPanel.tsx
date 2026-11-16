@@ -17,6 +17,7 @@ import {
   deleteSession,
   saveSelections,
   ModelUnavailableError,
+  StreamIdleError,
   type ModelUnavailableDetail,
   type MissingInput,
   type ProjectStatus,
@@ -27,6 +28,7 @@ import {
   preserveRewriteBodies,
   type ArtifactLike,
 } from '@/lib/assetMerge';
+import { isStageSettled, isStageStillRunning } from '@/lib/chainGuard';
 import ModelFallbackDialog from './ModelFallbackDialog';
 import HomePage, { type ProjectParams } from './HomePage';
 import {
@@ -216,6 +218,17 @@ export function mapStageStatus(value?: string | null): StageStatus {
     case 'reconfirm':
     default:
       return 'waiting';
+  }
+}
+
+/**
+ * 执行流已断且未收到终态：已按 /status 对齐并转入轮询，调用链到此结束。
+ * 与 AbortError 同类处理（不当作业务失败、不写错误态）。
+ */
+class StreamLostError extends Error {
+  constructor() {
+    super('执行流中断，已转为状态轮询');
+    this.name = 'StreamLostError';
   }
 }
 
@@ -676,6 +689,36 @@ export default function WorkflowPanel() {
     pollRef.current.delete(key);
   }, [commitSessionView, commitStageState, currentToken, owns]);
 
+  /**
+   * 执行流中断后的补偿（design D4）：以 `/status` 为准对齐阶段状态与产物；
+   * 仍处于运行中则转为轮询，不把“流断了”当成“执行失败”。
+   */
+  const syncAfterStreamLoss = useCallback(async (token: SessionToken, sid: string, stageId: string) => {
+    try {
+      const status = await getProjectStatus(sid);
+      if (!owns(token)) return;
+      commitSessionView(token, { globalStatusMap: status.status || {} });
+      const raw = status.status?.[stageId] || 'idle';
+      const mapped = mapStageStatus(raw);
+      let artifact: unknown = null;
+      try { artifact = (await getArtifact(sid, stageId)).artifact; } catch { /* 无产物忽略 */ }
+      if (!owns(token)) return;
+      const update: Partial<StageState> = { status: mapped, reconfirm: raw === 'reconfirm' };
+      if (artifact) update.artifact = artifact;
+      if (mapped !== 'running') {
+        update.progressMessage = mapProgressMessage(mapped, undefined);
+        update.error = mapped === 'error' ? (status.error || '执行出错') : null;
+      }
+      commitStageState(token, stageId, update);
+      if (mapped === 'running') {
+        // 后端仍在执行：转为轮询继续跟踪，用户无需刷新页面
+        pollForCompletion(sid, stageId);
+      }
+    } catch {
+      // 后端不可达：保留现状，由用户刷新恢复
+    }
+  }, [commitSessionView, commitStageState, owns, pollForCompletion]);
+
   // ── 恢复历史项目 ──
   const handleResumeProject = async (sid: string, targetStage: string | null = null) => {
     // 已经在展示同一个会话（归属未被别的会话接管）：只移指针，不取数也不复位。
@@ -900,7 +943,7 @@ export default function WorkflowPanel() {
 
   // ── 停止执行 ──
   const handleStop = async () => {
-    // 令牌在**点击时**捕获：500ms 延迟回调不能读回调时的归属（design D9）
+    // 令牌在**点击时**捕获：异步回调不能读回调时的归属（design D9）
     const token = currentToken();
     stoppedRef.current = true;
     // 1. 断开前端 SSE 流
@@ -909,59 +952,33 @@ export default function WorkflowPanel() {
       abortRef.current = null;
     }
     // 2. 通知后端停止
-    if (sessionId) {
-      try { await stopProject(sessionId); } catch { /* ignore */ }
+    const stopSid = sessionId;
+    if (stopSid) {
+      try { await stopProject(stopSid); } catch { /* ignore */ }
     }
     setIsRunning(false);
-    // 3. 将所有 running 阶段标记为 stopped，保留已有的 artifact
+    // 3. 本地先写停止态（按钮点击后不得再显示执行中），随后以 /status 权威重同步
     commitStageStates(token, prev => {
       const next = { ...prev };
       for (const s of stageOrder) {
         if (next[s]?.status === 'running') {
-          // 如果已有 artifact 数据（如部分已生成的视频片段），保留为 waiting 状态以便用户操作
-          const hasArtifact = hasDoneArtifactItems(next[s]?.artifact);
-          if (hasArtifact) {
-            next[s] = { ...next[s], status: 'waiting', error: null, progressMessage: '已停止（保留已完成内容）', syncState: 'synced' };
-          } else {
-            next[s] = { ...next[s], status: 'error', error: '已手动停止', progressMessage: '已停止', syncState: 'synced' };
-          }
+          next[s] = { ...next[s], status: 'stopped', error: null, progressMessage: '已停止', syncState: 'synced' };
         }
       }
       return next;
     });
-    // 4. 尝试从后端获取最新 artifact（后端可能已保存部分结果）
-    const stopSid = sessionId;
-    if (stopSid) {
-      setTimeout(async () => {
-        for (const s of stageOrder) {
-          try {
-            const artResult = await getArtifact(stopSid, s);
-            if (artResult?.artifact) {
-              // 500ms 内用户可能已切会话：令牌不匹配则整批放弃，不得回填上一会话的"已停止"
-              if (!owns(token)) return;
-              commitStageStates(token, prev => {
-                const cur = prev[s];
-                if (!cur || cur.status === 'completed') return prev;
-                // 检查 artifact 是否含有效内容
-                const hasDone = hasDoneArtifactItems(artResult.artifact);
-                if (hasDone) {
-                  return { ...prev, [s]: { ...cur, status: 'waiting', artifact: artResult.artifact, error: null, progressMessage: '已停止（保留已完成内容）' } };
-                }
-                return prev;
-              });
-            }
-          } catch { /* 该阶段无 artifact，跳过 */ }
-        }
-        // 中断的执行摘要只读展示，不并入 artifact
-        try {
-          const status = await getProjectStatus(stopSid);
-          if (!owns(token)) return;
-          for (const [s, preview] of Object.entries(status.execution_preview || {})) {
-            commitStageState(token, s, { lastRun: preview });
-          }
-        } catch { /* ignore */ }
-      }, 500);
-    }
+    if (!stopSid) return;
+    // 4. 权威重同步：状态表 + 产物（必须排在本地写 stopped 之后，
+    //    否则 applyStatusMapToStages 会跳过仍是本地 running 的阶段）
+    await resyncSessionView(token, stopSid, { refreshArtifacts: true });
+    // 5. 中断执行的只读摘要（不并入 artifact）
+    try {
+      const status = await getProjectStatus(stopSid);
+      if (!owns(token)) return;
+      for (const [s, preview] of Object.entries(status.execution_preview || {})) {
+        commitStageState(token, s, { lastRun: preview });
+      }
+    } catch { /* ignore */ }
   };
 
   // 超时横幅专用“停止任务”：先探后端可达性——失败则保留超时横幅 + 错误反馈（MUST NOT 静默清除，tasks 4.3）；
@@ -1082,6 +1099,8 @@ export default function WorkflowPanel() {
 
     const controller = new AbortController();
     abortRef.current = controller;
+    // 是否已收到终态：流结束但没有终态时（代理截断/半开）需要用 /status 补偿
+    let terminalSeen = false;
 
     try {
       const response = await executeStage(sid, stageId, inputData, controller.signal);
@@ -1160,7 +1179,16 @@ export default function WorkflowPanel() {
             });
           }
         } else if (event.type === 'stage_complete') {
-          const newStatus: StageStatus = event.requires_intervention ? 'waiting' : 'completed';
+          terminalSeen = true;
+          // 终态以事件携带的状态表为准（与轮询/重同步同一口径）：
+          // 仅看 requires_intervention 会把“已停止”错写成“等待确认”。
+          const eventStatusMap = (event.status && typeof event.status === 'object')
+            ? event.status as Record<string, string>
+            : null;
+          const rawEventStatus = eventStatusMap?.[stageId];
+          const newStatus: StageStatus = rawEventStatus
+            ? mapStageStatus(rawEventStatus)
+            : (event.requires_intervention ? 'waiting' : 'completed');
 
           let artifact: unknown = null;
           try {
@@ -1176,11 +1204,12 @@ export default function WorkflowPanel() {
           commitStageState(token, stageId, {
             status: newStatus,
             progress: 100,
-            progressMessage: newStatus === 'waiting' ? '等待确认' : '已完成',
+            progressMessage: mapProgressMessage(newStatus, undefined),
             artifact,
           });
           if (artifact && owns(token)) maybeShowFallbackFromArtifact(stageId, artifact);
         } else if (event.type === 'error') {
+          terminalSeen = true;
           // 取消/停止类错误：尝试获取部分结果而不是直接报错
           const isCancelError = /cancel|取消|停止/i.test(event.content || '');
           if (isCancelError) {
@@ -1211,7 +1240,16 @@ export default function WorkflowPanel() {
           throw new Error(event.content);
         }
       }
+      if (!terminalSeen) {
+        // 流结束但未收到终态：以 /status 为准对齐；仍 running 则转轮询
+        await syncAfterStreamLoss(token, sid, stageId);
+      }
     } catch (error: unknown) {
+      if (error instanceof StreamIdleError) {
+        // 空闲超时判定为断流：不当作业务失败，先对齐状态再中断调用链
+        await syncAfterStreamLoss(token, sid, stageId);
+        throw new StreamLostError();
+      }
       if ((error as { name?: string }).name !== 'AbortError') {
         if (error instanceof ModelUnavailableError) {
           // 预检失败：刷新阶段产物（种子化条目）并弹出上传兜底引导
@@ -1325,6 +1363,18 @@ export default function WorkflowPanel() {
         // 写入由漏斗按令牌丢弃；即使用户已切走，本链仍必须跑完（后端继续执行，design D11）
         const stageStatus = status?.status?.[stageId];
         commitSessionView(token, { globalStatusMap: status.status || {} });
+        if (isStageStillRunning(stageStatus)) {
+          // 流未确认终态（已由补偿逻辑对齐）：不推进下一阶段，交给轮询跟踪
+          commitStageState(token, stageId, { status: 'running' });
+          pollForCompletion(result.session_id, stageId);
+          setIsRunning(false);
+          return;
+        }
+        if (!isStageSettled(stageStatus)) {
+          // 停止/失败/未确认：结束执行链，不得推进下一阶段
+          setIsRunning(false);
+          return;
+        }
         // waiting: 等待用户介入（如选择角色/图片），不能自动 continue
         // completed: 阶段完成，等待确认进入下一阶段
         if (stageStatus === 'completed' || stageStatus === 'session_completed') {
@@ -1347,7 +1397,10 @@ export default function WorkflowPanel() {
         }
       }
     } catch (error: unknown) {
-      if (!stoppedRef.current) console.error('Workflow error:', error);
+      // 断流已转为轮询（StreamLostError）：不当作工作流失败打印
+      if (!stoppedRef.current && (error as { name?: string } | null)?.name !== 'StreamLostError') {
+        console.error('Workflow error:', error);
+      }
     } finally {
       chainRunningRef.current = false;
       setIsRunning(false);
@@ -1456,6 +1509,16 @@ export default function WorkflowPanel() {
           // 写入统一经漏斗按令牌丢弃；本链 MUST NOT 因归属变化而提前 return（design D11）
           commitSessionView(token, { globalStatusMap: status.status || {} });
           const nStageStatus = status?.status?.[nextStage];
+          if (isStageStillRunning(nStageStatus)) {
+            // 未确认终态：不得再启动后续阶段（避免同一会话并行链）
+            commitStageState(token, nextStage, { status: 'running' });
+            pollForCompletion(sessionId, nextStage);
+            break;
+          }
+          if (!isStageSettled(nStageStatus)) {
+            // 停止/失败/未确认：终止执行链
+            break;
+          }
           // waiting: 等待用户介入（如选择角色/图片），不能自动 continue
           // completed: 阶段完成，等待确认进入下一阶段，可以自动 continue
           if (nStageStatus === 'completed' || nStageStatus === 'session_completed') {
@@ -1480,7 +1543,8 @@ export default function WorkflowPanel() {
       const err = error as { message?: string; name?: string } | null;
       const message = String(err?.message || '');
       const isInterrupted =
-        err?.name === 'AbortError' || /abort|stopped/i.test(message) || message === 'Stopped';
+        err?.name === 'AbortError' || err?.name === 'StreamLostError'
+        || /abort|stopped/i.test(message) || message === 'Stopped';
       if (isInterrupted) {
         // 流被中止（停止/刷新等），不当作错误：尽力同步后端真实状态
         console.warn('Continue interrupted:', message || err?.name);
@@ -1563,6 +1627,8 @@ export default function WorkflowPanel() {
     }
     try {
       const response = await intervene(sessionId, stageId, inputData);
+      // 与整阶段执行同一条流的同一套补偿：未收到终态就不猜失败
+      let terminalSeen = false;
       for await (const event of parseStreamEvents(response)) {
         if (event.type === 'progress') {
           if (!isBackgroundItemRegeneration) {
@@ -1636,6 +1702,7 @@ export default function WorkflowPanel() {
             });
           }
         } else if (event.type === 'stage_complete') {
+          terminalSeen = true;
           const artResult = await getArtifact(sessionId, stageId);
           if (isBackgroundItemRegeneration) {
             commitStageState(token, stageId, { artifact: artResult.artifact });
@@ -1669,6 +1736,7 @@ export default function WorkflowPanel() {
             }
           }
         } else if (event.type === 'error') {
+          terminalSeen = true;
           console.error('Intervention error:', event.content);
           // 介入失败同样要落地阶段状态：否则阶段停留在 running，进度条永久停在
           // 上一次上报的数值（应用修订无中间进度时就是 0%）。
@@ -1685,10 +1753,18 @@ export default function WorkflowPanel() {
           }
         }
       }
+      if (!terminalSeen) {
+        await syncAfterStreamLoss(token, sessionId as string, stageId);
+      }
     } catch (error: unknown) {
-      console.error('Intervention error:', error);
-      if (error instanceof ModelUnavailableError) {
-        showModelUnavailable(token, sessionId as string, stageId, error.detail);
+      if (error instanceof StreamIdleError) {
+        // 断流：对齐状态后静默结束（不写“执行失败”）
+        await syncAfterStreamLoss(token, sessionId as string, stageId);
+      } else {
+        console.error('Intervention error:', error);
+        if (error instanceof ModelUnavailableError) {
+          showModelUnavailable(token, sessionId as string, stageId, error.detail);
+        }
       }
     } finally {
       if (!isBackgroundItemRegeneration) {
@@ -1911,12 +1987,20 @@ export default function WorkflowPanel() {
       await runStage(token, sessionId, stageId, inputData);
 
       const status = await getProjectStatus(sessionId);
+      if (isStageStillRunning(status?.status?.[stageId])) {
+        // 流未确认终态：保持执行中并转为轮询，不误报失败/完成
+        commitStageState(token, stageId, { status: 'running' });
+        pollForCompletion(sessionId, stageId);
+        return;
+      }
       if (status?.status?.[stageId] === 'waiting') {
         commitStageState(token, stageId, { status: 'waiting' });
         commitSessionView(token, { activeStage: stageId });
       }
     } catch (error: unknown) {
-      if (!stoppedRef.current) console.error('Regenerate error:', error);
+      if (!stoppedRef.current && (error as { name?: string } | null)?.name !== 'StreamLostError') {
+        console.error('Regenerate error:', error);
+      }
     } finally {
       chainRunningRef.current = false;
       setIsRunning(false);

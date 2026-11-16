@@ -680,24 +680,60 @@ export async function continueWorkflow(
   return resp.json();
 }
 
-export async function* parseStreamEvents(response: Response): AsyncGenerator<StreamEvent> {
+/** 事件流空闲上限：后端心跳间隔 15s，取 3 倍作为断流判定阈值 */
+export const STREAM_IDLE_TIMEOUT_MS = 45000;
+
+/** 事件流长时间无数据（代理截断 / 半开连接）：按“未确认终态”处理，不得直接判失败 */
+export class StreamIdleError extends Error {
+  constructor() {
+    super('执行流长时间无数据（判定为断流）');
+    this.name = 'StreamIdleError';
+  }
+}
+
+export async function* parseStreamEvents(
+  response: Response,
+  idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
+): AsyncGenerator<StreamEvent> {
   if (!response.body) return;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || ''; // keep incomplete trailing line in buffer
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const event: StreamEvent = JSON.parse(line);
-        if (event.type !== 'heartbeat') yield event;
-      } catch { /* skip malformed */ }
+  const readOnce = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+    if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return reader.read();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new StreamIdleError()), idleTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
+  };
+  try {
+    while (true) {
+      const { done, value } = await readOnce();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // keep incomplete trailing line in buffer
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event: StreamEvent = JSON.parse(line);
+          if (event.type !== 'heartbeat') yield event;
+        } catch { /* skip malformed */ }
+      }
+    }
+  } catch (error) {
+    if (error instanceof StreamIdleError) {
+      // 放弃悬挂的读取，避免半开连接继续占用连接池
+      try { await reader.cancel(); } catch { /* ignore */ }
+    }
+    throw error;
   }
   // Process any remaining data in buffer after stream ends
   if (buffer.trim()) {

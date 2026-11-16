@@ -399,6 +399,12 @@ class _StageRun:
         self.publisher: Optional[workflow_store.ExecutionPublisher] = None
         self.active_registered = False
         self.finished = False
+        # 执行级停止令牌：停止置位后永不复位。会话级事件会被新请求复位（允许重做），
+        # 收尾/进度门/取消检查必须读执行级，否则旧执行会被新请求“复活”。
+        self.stop_event = threading.Event()
+        # 被新执行抢占：本次执行的迟到结果与收尾一律丢弃，也不得清理展示层
+        self.preempted = False
+        self.discarded = False
         self.staged: List[Any] = []
         self.lock = threading.RLock()
         self._seq: Dict[str, int] = {}
@@ -425,6 +431,8 @@ class WorkflowEngine:
         self.sessions: Dict[str, WorkflowState] = {}
         self._stop_events: Dict[str, threading.Event] = {}
         self._active_sessions: Set[str] = set()
+        # 活跃执行注册表（含后台单条重生成）：run 级停止事件与抢占判定共用
+        self._active_runs: Dict[str, Set[_StageRun]] = {}
         self._background_tasks: Set[Any] = set()
         self._state_lock = threading.RLock()
         # 旧 JSON 会话目录：仅显式 legacy 导入使用，引擎不再读写（DB 是唯一权威）。
@@ -693,6 +701,33 @@ class WorkflowEngine:
                 stages.pop(stage, None)
                 if not stages:
                     self._overlays.pop(session_id, None)
+
+    def _register_run(self, run: "_StageRun") -> None:
+        """登记活跃执行（含后台单条重生成）；停止与抢占判定靠它找到在途的 run。"""
+        with self._state_lock:
+            self._active_runs.setdefault(run.session_id, set()).add(run)
+
+    def _unregister_run(self, run: "_StageRun") -> None:
+        with self._state_lock:
+            runs = self._active_runs.get(run.session_id)
+            if runs is None:
+                return
+            runs.discard(run)
+            if not runs:
+                self._active_runs.pop(run.session_id, None)
+
+    def _owns_current_execution(self, run: "_StageRun") -> bool:
+        """本次执行是否仍是该阶段当前登记的执行（被新执行抢占后为 False）。
+
+        后台单条重生成不写执行层，不能参与该判定（否则会被误判为被抢占）。
+        """
+        if run.background:
+            return True
+        state = self.get_state(run.session_id)
+        if state is None:
+            return False
+        execution = state.executions.get(run.stage.value)
+        return str((execution or {}).get("execution_id") or "") == run.execution_id
 
     @classmethod
     def _merge_asset_update(cls, artifact: Dict[str, Any], asset_update: Dict[str, Any],
@@ -1520,26 +1555,44 @@ class WorkflowEngine:
 
     def stop_session(self, session_id: str):
         self.get_stop_event(session_id).set()
+        # 执行级令牌同样置位：会话级事件会被下一个 /execute、/intervene 复位，
+        # 在途执行只认自己的令牌才能保证“停止后立即重做”不会复活旧执行。
+        with self._state_lock:
+            active_runs = list(self._active_runs.get(session_id) or ())
+        for run in active_runs:
+            run.stop_event.set()
+
+        stopped_stages: List[str] = []
 
         def apply(after: WorkflowState) -> Any:
-            stage = after.current_stage.value
-            if after.status.get(stage) != "running":
+            changed = False
+            # 覆盖该会话全部运行态阶段，而不是只看 current_stage：
+            # 只要任一阶段仍在 running，停止就必须把它归一，否则界面永远停不下来。
+            for stage_value, current in list(after.status.items()):
+                if current != "running":
+                    continue
+                after.status[stage_value] = "stopped"
+                progress = after.stage_progress.get(stage_value)
+                after.stage_progress[stage_value] = {
+                    **(progress if isinstance(progress, dict) else {}),
+                    "step": "已停止",
+                    "message": "已停止",
+                    "updated_at": time.time(),
+                }
+                stopped_stages.append(stage_value)
+                changed = True
+            if not changed:
                 return _NO_COMMIT
-            after.status[stage] = "stopped"
             after.error = None  # 清除错误，因为是主动停止
-            current_progress = after.stage_progress.get(stage, {})
-            after.stage_progress[stage] = {
-                **current_progress,
-                "step": "已停止",
-                "message": "已停止",
-                "updated_at": time.time(),
-            }
             return None
 
         try:
             self._mutate(session_id, apply)
         except KeyError:
             pass
+        # 运行中展示层随停止一并清除：否则读模型仍会回吐 running 条目与运行中文案
+        for stage_value in stopped_stages:
+            self._clear_overlay(session_id, stage_value)
         with self._state_lock:
             self._errors.pop(session_id, None)
         logger.info(f"Session {session_id} stop signal sent")
@@ -2147,12 +2200,24 @@ class WorkflowEngine:
             intervention=intervention,
         )
         session_stop = self.get_stop_event(sid)
+        self._register_run(run)
 
         def combined_cancel_check():
-            return session_stop.is_set() or (cancellation_check and cancellation_check())
+            # 执行级令牌置位后不会被新请求复位：停止后立即重做不会把旧执行“复活”
+            return (
+                run.stop_event.is_set()
+                or session_stop.is_set()
+                or (cancellation_check and cancellation_check())
+            )
 
         if not run.background:
-            await asyncio.to_thread(self._begin_stage, run)
+            try:
+                await asyncio.to_thread(self._begin_stage, run)
+            except BaseException:
+                # 执行权登记失败（如“会话已有阶段在执行”）：本次 run 必须从活跃表注销，
+                # 否则它的 stop_event 未置位，会让后续每次重试都被拒绝，直到进程重启。
+                self._unregister_run(run)
+                raise
         inputs = None
         try:
             view = await asyncio.to_thread(self._require, sid)
@@ -2191,9 +2256,19 @@ class WorkflowEngine:
             if not isinstance(result, dict):
                 logger.error(f"[execute_stage] Agent {stage.value} returned non-dict result: {type(result)}")
                 result = {"payload": result}
+            # 被新执行抢占：在发布之前放弃，避免为无法提交的结果再生成一批孤儿对象
+            if run.preempted or not self._owns_current_execution(run):
+                run.discarded = True
+                logger.warning(
+                    "[execute_stage] result discarded (execution superseded): %s/%s/%s",
+                    sid, stage.value, run.execution_id,
+                )
+                return {"discarded": True, "payload": None, "requires_intervention": False}
             payload = workflow_store.strip_internal(result.get("payload", {}))
             mapped, published = await asyncio.to_thread(self._publish_stage_payload, run, payload)
             final_state = await asyncio.to_thread(self._finish_stage, run, result, mapped, published)
+            if final_state is None or run.discarded:
+                return {"discarded": True, "payload": None, "requires_intervention": False}
             result = dict(result)
             result["payload"] = copy.deepcopy(final_state.artifacts.get(stage.value))
             logger.info(
@@ -2205,20 +2280,29 @@ class WorkflowEngine:
 
         except asyncio.CancelledError:
             self._fail_stage(run, None)
+            if run.discarded:
+                # 被抢占的旧执行：不推任何终态（包括 error）
+                return {"discarded": True, "payload": None, "requires_intervention": False}
             raise
 
         except Exception as e:
             # 必需输入不可用时携带可定位清单（前端按条目标红并引导重新选择/重生成）
             as_dicts = getattr(e, "as_dicts", None)
             self._fail_stage(run, str(e), missing_inputs=as_dicts() if callable(as_dicts) else None)
+            if run.discarded:
+                return {"discarded": True, "payload": None, "requires_intervention": False}
             raise
         finally:
             if inputs is not None:
                 inputs.release()
             self._release_staging(run)
             self._cleanup_work_root(run)
-            self._clear_overlay(sid, stage.value)
-            if run.active_registered:
+            # 展示层按“会话+阶段”分键：被抢占的旧执行不得清掉新执行正在用的 overlay
+            if not run.preempted:
+                self._clear_overlay(sid, stage.value)
+            self._unregister_run(run)
+            # 执行权同样按归属释放：被抢占的 run 不能撤掉新 run 刚登记的闸门
+            if run.active_registered and not run.preempted:
                 with self._state_lock:
                     self._active_sessions.discard(sid)
 
@@ -2230,7 +2314,21 @@ class WorkflowEngine:
         with self._session_lock(sid):
             with self._state_lock:
                 if sid in self._active_sessions:
-                    raise RuntimeError(f"Session {sid} is already running a stage.")
+                    others = [
+                        item for item in (self._active_runs.get(sid) or ())
+                        if item is not run and not item.finished
+                    ]
+                    if others and not all(item.stop_event.is_set() for item in others):
+                        raise RuntimeError(f"Session {sid} is already running a stage.")
+                    # 旧执行已被用户停止（或闸门是残留）：允许抢占，旧执行的迟到结果由归属校验丢弃
+                    for item in others:
+                        item.preempted = True
+                    if others:
+                        logger.info(
+                            "[execute_stage] preempting stopped execution: session=%s old=%s new=%s",
+                            sid, ",".join(item.execution_id for item in others), run.execution_id,
+                        )
+                    self._active_sessions.discard(sid)
                 self._active_sessions.add(sid)
                 run.active_registered = True
             try:
@@ -2412,9 +2510,13 @@ class WorkflowEngine:
             safe_percent = 0
         message = f"{phase}: {step}" if phase and step else (step or phase or "")
         progress = {"phase": phase, "step": step, "message": message, "percent": safe_percent, "updated_at": time.time()}
+        # 执行级停止门：停止后不再登记/转发运行中进度与运行中条目（终态仍提交，不丢结果），
+        # 否则下一次进度上报会把“已停止”文案改回运行中。
+        stopped = run.stop_event.is_set()
         overlay = self._overlay(sid, stage_key)
         with self._state_lock:
-            overlay["progress"] = progress
+            if not stopped:
+                overlay["progress"] = progress
             # 运行中覆盖层的基线：本轮执行开始时的已提交快照，预览与条目事件共用（design D2）。
             # 只在本阶段覆盖层首次触达时登记：每份预览重取基线会让"上一次预览之后的用户写入"
             # 因与基线相等而被判为"无变化"，遮蔽会重新出现。
@@ -2430,14 +2532,16 @@ class WorkflowEngine:
             forwarded = dict(data)
             if data.get("assets_preview") is not None:
                 preview = workflow_store.map_media(stage_key, copy.deepcopy(data["assets_preview"]), run.publisher.display)
-                with self._state_lock:
-                    overlay["preview"] = workflow_store.strip_internal(preview)
-                forwarded["assets_preview"] = preview
-                if data.get("persist"):
-                    try:
-                        self._persist_partial(run, data["assets_preview"])
-                    except Exception:
-                        logger.warning("partial artifact persist failed: %s/%s", sid, stage_key, exc_info=True)
+                if not stopped:
+                    # 预览也属于“运行中展示层”：停止后不得重建 overlay，也不得再写工作层
+                    with self._state_lock:
+                        overlay["preview"] = workflow_store.strip_internal(preview)
+                    forwarded["assets_preview"] = preview
+                    if data.get("persist"):
+                        try:
+                            self._persist_partial(run, data["assets_preview"])
+                        except Exception:
+                            logger.warning("partial artifact persist failed: %s/%s", sid, stage_key, exc_info=True)
             asset = data.get("asset_complete")
             if isinstance(asset, dict):
                 if asset.get("status") in ("done", "failed"):
@@ -2448,15 +2552,26 @@ class WorkflowEngine:
                         mapped = workflow_store.map_item_media(stage_key, copy.deepcopy(asset), run.publisher.display)
                 else:
                     mapped = workflow_store.map_item_media(stage_key, copy.deepcopy(asset), run.publisher.display)
-                with self._state_lock:
-                    overlay["items"][(str(mapped.get("type")), str(mapped.get("id")))] = mapped
-                forwarded["asset_complete"] = mapped
-        if progress_callback:
+                if not stopped:
+                    with self._state_lock:
+                        overlay["items"][(str(mapped.get("type")), str(mapped.get("id")))] = mapped
+                    forwarded["asset_complete"] = mapped
+        if progress_callback and not stopped:
             progress_callback(phase, step, percent, forwarded)
 
     def _persist_partial(self, run: "_StageRun", preview: Any) -> None:
         """已完成的部分产物（如分镜逐集）写工作层，重启后可续；不伪造 completed。"""
         if not isinstance(preview, dict):
+            return
+        if run.stop_event.is_set():
+            # 停止后不得再用运行中预览写工作层（与展示层同一道门）
+            return
+        if not self._owns_current_execution(run):
+            run.discarded = True
+            logger.warning(
+                "partial persist discarded (execution superseded): %s/%s/%s",
+                run.session_id, run.stage.value, run.execution_id,
+            )
             return
         payload = workflow_store.strip_internal(copy.deepcopy(preview))
         with run.lock:
@@ -2520,13 +2635,26 @@ class WorkflowEngine:
         return mapped[stage_key], published
 
     def _finish_stage(self, run: "_StageRun", result: Dict[str, Any], payload: Any,
-                      published: Optional[Dict[str, Any]]) -> WorkflowState:
+                      published: Optional[Dict[str, Any]]) -> Optional[WorkflowState]:
         stage = run.stage
         stage_key = stage.value
         requires_intervention = bool(result.get("requires_intervention", False))
+        if run.preempted or not self._owns_current_execution(run):
+            # 被新执行抢占：迟到收尾一律丢弃（不写状态、不覆盖产物）
+            run.discarded = True
+            run.finished = True
+            logger.warning(
+                "late finish discarded (execution superseded): %s/%s/%s",
+                run.session_id, stage_key, run.execution_id,
+            )
+            return self.get_state(run.session_id)
+        stop_requested = run.stop_event.is_set()
 
         def apply(after: WorkflowState) -> None:
             nonlocal payload
+            # 停止态改写的判定基准：必须在重置 running 与重算之前取，
+            # 重算会把 stopped 归一为 waiting/completed（“停止不是粘滞状态”）。
+            status_before = after.status.get(stage_key)
             before_script = None
             if stage == WorkflowStage.SCRIPT_GENERATION:
                 payload = self._drop_injected_params(after.artifacts.get(stage_key), payload)
@@ -2600,7 +2728,10 @@ class WorkflowEngine:
             # 重算前的状态基线：下游阶段里 `stopped`/`waiting` 不得因本次重跑被误标
             status_baseline = dict(after.status)
             self._recalculate_all_statuses(after)
-            if result.get("stage_completed") and not requires_intervention:
+            if stop_requested and status_before == "stopped":
+                # 用户停止后没有后续写入：收尾保持停止态，不得改回“等待确认”
+                after.status[stage_key] = "stopped"
+            elif result.get("stage_completed") and not requires_intervention:
                 if after.status.get(stage_key) != "waiting":
                     after.status[stage_key] = "completed"
             elif requires_intervention:
@@ -2624,10 +2755,14 @@ class WorkflowEngine:
                         baseline=status_baseline,
                     )
             waiting = after.status.get(stage_key) == "waiting"
+            if stop_requested and after.status.get(stage_key) == "stopped":
+                message = "已停止"
+            else:
+                message = "等待确认" if waiting else "已完成"
             after.stage_progress[stage_key] = {
                 "phase": stage_key,
-                "step": "等待确认" if waiting else "已完成",
-                "message": "等待确认" if waiting else "已完成",
+                "step": message,
+                "message": message,
                 "percent": 100,
                 "updated_at": time.time(),
             }
@@ -2643,7 +2778,8 @@ class WorkflowEngine:
             final_leaves = {str(value) for value in workflow_store.iter_media(stage_key, after.artifacts.get(stage_key))}
             merged = [key for key in (execution.get("version_candidates") or {}) if key in final_leaves]
             return {stage_key: {"action": "finish", "execution_id": run.execution_id,
-                                "status": "completed", "merged_candidates": merged}}
+                                "status": "interrupted" if stop_requested else "completed",
+                                "merged_candidates": merged}}
 
         with run.lock:
             state, _ = self._mutate(
@@ -2659,24 +2795,56 @@ class WorkflowEngine:
         if run.finished:
             return
         stage_key = run.stage.value
-        stopped = error is None or self.get_stop_event(run.session_id).is_set()
+        if run.preempted or not self._owns_current_execution(run):
+            # 被新执行抢占：迟到失败同样丢弃，不得把新执行改判为失败
+            run.discarded = True
+            run.finished = True
+            logger.warning(
+                "late failure discarded (execution superseded): %s/%s/%s",
+                run.session_id, stage_key, run.execution_id,
+            )
+            return
+        if not run.background and not run.active_registered:
+            # 从未取得执行权（新执行被拒）：不得改写阶段状态/进度/错误，
+            # 否则会把正在运行的阶段改成 error，并污染 /status 的 error 字段
+            run.finished = True
+            logger.warning(
+                "stage start rejected without execution rights: %s/%s: %s",
+                run.session_id, stage_key, error,
+            )
+            return
+        stopped = error is None or run.stop_event.is_set() or self.get_stop_event(run.session_id).is_set()
         message = "已取消" if stopped else "执行失败"
 
         def apply(after: WorkflowState) -> None:
             previous = (after.stage_progress.get(stage_key) or {}).get("percent", 0)
             if not run.background:
-                after.status[stage_key] = "stopped" if stopped else "error"
+                # 停止收尾只在“阶段已不归本次执行所有”时保留现状：
+                # stopped 视为幂等；waiting/completed 说明停止后用户写入已把它归一（“停止不是粘滞状态”）；
+                # running 必须写停止/失败，否则失败的新执行会把阶段永远停在运行中。
+                keep_normalized = stopped and after.status.get(stage_key) not in ("stopped", "running")
+                if not keep_normalized:
+                    after.status[stage_key] = "stopped" if stopped else "error"
                 after.boot_id = None
+                if not keep_normalized:
+                    after.stage_progress[stage_key] = {
+                        "phase": stage_key,
+                        "step": message,
+                        "message": message,
+                        "percent": previous,
+                        "updated_at": time.time(),
+                    }
+                    if missing_inputs and not stopped:
+                        after.stage_progress[stage_key]["missing_inputs"] = copy.deepcopy(missing_inputs)
+            else:
+                after.stage_progress[stage_key] = {
+                    "phase": stage_key,
+                    "step": message,
+                    "message": message,
+                    "percent": previous,
+                    "updated_at": time.time(),
+                }
             after.error = None if stopped else error
-            after.stage_progress[stage_key] = {
-                "phase": stage_key,
-                "step": message,
-                "message": message,
-                "percent": previous,
-                "updated_at": time.time(),
-            }
-            if missing_inputs and not stopped:
-                after.stage_progress[stage_key]["missing_inputs"] = copy.deepcopy(missing_inputs)
 
         states = {} if run.background or not run.active_registered else {stage_key: {
             "action": "finish", "execution_id": run.execution_id,

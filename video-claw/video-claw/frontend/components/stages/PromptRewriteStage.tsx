@@ -19,6 +19,10 @@ interface RewriteItem {
   input_mode?: string;
   duration?: number;
   status?: 'done' | 'failed' | 'pending' | 'running';
+  /** 校验未通过但结构可用的最优候选（后端采用后仍为 done） */
+  best_effort?: boolean;
+  /** 采用最优候选时未通过的校验项（与 best_effort 同时出现） */
+  validation_violations?: string[];
   /** WF-04：读时派生（不落库）——当前输入已变化，建议重跑 */
   needs_regeneration?: boolean;
   regeneration_reasons?: string[];
@@ -293,6 +297,14 @@ export default function PromptRewriteStage({
               {item.input_mode && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-600">{item.input_mode}</span>
               )}
+              {item.best_effort ? (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+                  title={(item.validation_violations || []).join('\n') || '校验未通过，已采用最优候选'}
+                >
+                  校验未通过·已用最优候选
+                </span>
+              ) : null}
               {item.needs_regeneration ? (
                 <span
                   className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700"
@@ -320,6 +332,18 @@ export default function PromptRewriteStage({
             )}
             {item.status === 'failed' && item.error && (
               <p className="text-xs text-red-500">错误：{item.error}</p>
+            )}
+            {item.best_effort && (item.validation_violations?.length ?? 0) > 0 && (
+              <details className="text-xs text-amber-700">
+                <summary className="cursor-pointer">
+                  已采用最优候选，未通过的校验项（{item.validation_violations?.length}）
+                </summary>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                  {(item.validation_violations || []).map((text, index) => (
+                    <li key={`${item.id}-violation-${index}`}>{text}</li>
+                  ))}
+                </ul>
+              </details>
             )}
 
             {/* 改写结果（可编辑） */}

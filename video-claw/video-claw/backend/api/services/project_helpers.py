@@ -113,7 +113,16 @@ async def stream_workflow_task(
                 break
 
         result = task.result()
+        if isinstance(result, dict) and result.get("discarded"):
+            # 被新执行抢占的旧执行：不推任何终态事件（既不推 stage_complete，也不推 error），
+            # 只关闭流；前端按“无终态”补偿回读后端，不会收到一个假终态。
+            return
         status_snapshot = workflow_engine.persist_session_snapshot(state.session_id)
+        if str(status_snapshot.get(stage) or "") == "stopped":
+            # 停止是用户动作，不是本次执行的正常终态：不推 stage_complete，
+            # 避免半开/多标签连接把它当成 requires_intervention 写成“等待确认”。
+            # 前端会按“无终态”补偿回读 /status（仍为 stopped）。
+            return
 
         payload = {
             "type": "stage_complete",

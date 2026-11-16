@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 # 校验失败重试上限（含首次共 1 + MAX 次调用）
 MAX_VALIDATE_RETRIES = 2
+# 整轮补跑轮数（首轮之外再跑几轮）：只针对“校验未通过且存在被拒草稿”的条目，
+# 单条目生成调用总预算 = (1 + MAX_VALIDATE_RETRIES) * (1 + EXTRA_REWRITE_ROUNDS)。
+EXTRA_REWRITE_ROUNDS = 1
 
 # 条目完成事件里改写正文的传输上限（**仅作用于增量事件，不影响也不落入服务端持久化产物**）。
 # 这是集中定义的工程默认值：本仓库尚无真实推理输出的长度分布样本（历史会话中 prompt_rewrite 条目为 0），
@@ -90,6 +93,19 @@ _GROUNDING_PROMPT = (
 _GROUNDING_POLICY_VERSION = content_version(_GROUNDING_PROMPT)
 
 
+# 候选“结构不可用”的致命违规标记：命中则不得作为最优候选采用
+_BEST_EFFORT_FATAL_MARKERS = ("缺少必填字段", "改写结果为空")
+
+
+def _is_usable_best_effort(violations: List[str]) -> bool:
+    """末轮择优的门槛：非空违规清单且不包含致命违规（防止把废稿送进视频阶段）。"""
+    if not violations:
+        return False
+    return not any(
+        marker in text for text in violations for marker in _BEST_EFFORT_FATAL_MARKERS
+    )
+
+
 def _event_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
     """条目完成事件的增量载荷：让前端在阶段完成前就能渲染该条。
 
@@ -109,6 +125,11 @@ def _event_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
     }
     if item.get("grounding") is not None:
         summary["grounding"] = item["grounding"]
+    if item.get("best_effort"):
+        # 最优候选条目的标识与违规清单随事件下发：否则执行期界面要等 stage_complete
+        # 后重新拉 artifact 才看得到徽标（与“失败→完成”的修正不同步）。
+        summary["best_effort"] = True
+        summary["validation_violations"] = list(item.get("validation_violations") or [])
     if body:
         summary["rewritten_prompt"] = body[:EVENT_BODY_LIMIT]
     return summary
@@ -148,6 +169,89 @@ def _normalize_keyframe_spacing(text: str, mode: str) -> str:
         lines.insert(1, "")
         return "\n".join(lines)
     return text
+
+
+# 镜头边界处的 cut time：只规范化时间“写法”，不改数值、不补造缺失的时间点。
+_CUT_TIME_CLOCK_RE = re.compile(
+    r"(\[Shot\s+(\d+)\]\s*At\s+)(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?", re.IGNORECASE,
+)
+_CUT_TIME_SECONDS_RE = re.compile(
+    r"(\[Shot\s+(\d+)\]\s*At\s+)(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds)\b", re.IGNORECASE,
+)
+
+
+def _normalize_cut_time_format(text: str) -> str:
+    """把镜头开头 cut time 的写法统一为官方 `At MM:SS.mmm`（确定性规范化）。
+
+    只处理 `[Shot N]` 之后的第一个 `At` 时间点：`At 3.5s` / `At 3.5 seconds` /
+    `At 0:03.5` / `At 00:03` / `At 00:03:500` → `At 00:03.500`。
+    不改变时间值、不新增缺失的切点、不删首个镜头的时间戳（后者仍由校验器判违规）。
+    """
+    if not text:
+        return text
+
+    def _clock(match: re.Match) -> str:
+        minutes, seconds = int(match.group(3)), int(match.group(4))
+        fraction = str(match.group(5) or "0")
+        millis = int((fraction + "000")[:3])
+        return f"{match.group(1)}{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+    def _seconds_form(match: re.Match) -> str:
+        try:
+            total_ms = int(round(float(match.group(3)) * 1000))
+        except ValueError:
+            return match.group(0)
+        minutes, rest = divmod(total_ms, 60000)
+        seconds, millis = divmod(rest, 1000)
+        if minutes > 59:
+            return match.group(0)
+        return f"{match.group(1)}{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+    normalized = _CUT_TIME_CLOCK_RE.sub(_clock, text)
+    return _CUT_TIME_SECONDS_RE.sub(_seconds_form, normalized)
+
+
+def _shot_plan_text(segment: Dict[str, Any], duration: int) -> str:
+    """本分镜的镜头表 + 建议切点（来自分镜产物的确定性数据）。
+
+    少于 2 个镜头或时长不可用时返回空串：不得编造切点。
+    """
+    rows = [row for row in (segment.get("shots") or []) if isinstance(row, dict)]
+    if len(rows) < 2:
+        return ""
+    durations: List[float] = []
+    for row in rows:
+        try:
+            value = float(row.get("duration") or 0)
+        except (TypeError, ValueError):
+            return ""
+        if value <= 0:
+            return ""
+        durations.append(value)
+
+    lines = [
+        "【镜头规划（来自分镜设计，供切点参考；允许合并相邻镜头，不得编造切点）】",
+        f"本分镜共 {len(rows)} 个镜头，目标总时长 {duration} 秒。",
+    ]
+    elapsed = 0.0
+    for index, value in enumerate(durations, 1):
+        start = elapsed
+        elapsed += value
+        if index == 1:
+            lines.append(f"- [Shot 1] 0.00s–{value:.2f}s（约 {value:g} 秒），不得写时间戳")
+            continue
+        if start >= duration:
+            break
+        total_ms = int(round(start * 1000))
+        minutes, rest = divmod(total_ms, 60000)
+        seconds, millis = divmod(rest, 1000)
+        lines.append(
+            f"- [Shot {index}] 起点必须写 `At {minutes:02d}:{seconds:02d}.{millis:03d}`（约 {value:g} 秒）"
+        )
+    if elapsed < duration:
+        lines.append(f"- 若需补足到 {duration} 秒，在最后一个镜头内延展动作，不得新增超出目标时长的切点。")
+    lines.append("- 保留的每个 [Shot N]（N≥2）都必须带严格递增的 `At MM:SS.mmm` 切点。")
+    return "\n".join(lines) + "\n"
 
 
 def _validate_keyframe_alignment(text: str, mode: str, duration: int) -> List[str]:
@@ -627,10 +731,12 @@ class PromptRewriteAgent(AgentInterface):
     @staticmethod
     def _render_sections(authoritative: str, shot_content: str, user_section: str,
                          continuity_summaries: List[str], grounding_desc: str,
-                         revision_section: str = "") -> Dict[str, str]:
+                         revision_section: str = "", shot_plan: str = "") -> Dict[str, str]:
         sections = {
             "authoritative_section": authoritative,
             "current_section": f"【当前分镜】\n{shot_content}\n" if shot_content else "",
+            # 镜头表位于“当前分镜”之后、“参考图实际内容”之前：不改变五级优先级顺序
+            "shot_plan_section": shot_plan,
             "user_section": user_section,
             "continuity_section": "",
             "grounding_section": "",
@@ -777,12 +883,19 @@ class PromptRewriteAgent(AgentInterface):
         judged = False
         quality: Optional[Dict[str, Any]] = None
         judge_enabled = bool(Config.H3_REWRITE_JUDGE_ENABLED)
+        # 末轮择优：候选按“违规数最少、并列取最后”，供补跑轮回喂与最终采用
+        best_text = ""
+        best_violations: List[str] = ["改写结果为空"]
+        best_count = 1 << 30
         for attempt in range(1 + MAX_VALIDATE_RETRIES):
             self._check_cancel()
             # 收敛保护：连续两轮问题清单相同说明带草稿修订未生效，回退为完整重写。
             revision_section = ""
             if draft and violations and violations != prev_feedback:
                 revision_section = _build_revision_section(draft, violations, mode)
+            elif not draft:
+                # 补跑轮：首轮即携带上一轮的最优草稿与违规清单（经 sections 传入，不改签名）
+                revision_section = str(sections.get("revision_section") or "")
             request_text = self._build_request_text(
                 segment, mode, {**sections, "revision_section": revision_section},
             )
@@ -790,12 +903,16 @@ class PromptRewriteAgent(AgentInterface):
                 self._query_llm, system_prompt, guide, request_text, llm_model
             )
             rewritten = _normalize_keyframe_spacing(_extract_prompt(assistant_text), mode)
+            rewritten = _normalize_cut_time_format(rewritten)
             last_output = rewritten or last_output
             prev_feedback = violations
             violations = _validate_h3_prompt(
                 rewritten, mode, segment["duration"], picture_count=picture_count,
             )
             draft = rewritten or draft
+            if rewritten:
+                if len(violations) <= best_count:
+                    best_text, best_violations, best_count = rewritten, list(violations), len(violations)
             if rewritten and not violations:
                 last_valid = rewritten
                 if judge_enabled and not judged:
@@ -825,6 +942,9 @@ class PromptRewriteAgent(AgentInterface):
             _mark_quality_applies(quality, last_valid)
             return last_valid, [], "", quality
         _mark_quality_applies(quality, "")
+        if best_text:
+            # 返回“最优候选”作为 rejected：补跑轮回喂与末轮择优都用它（而非最后一次输出）
+            return "", best_violations or ["改写结果为空"], best_text, quality
         return "", violations or ["改写结果为空"], last_output, quality
 
     # ─── 条目构造 ───
@@ -908,8 +1028,23 @@ class PromptRewriteAgent(AgentInterface):
         continuity_summaries: List[str] = list(continuity_seeds or [])
         results: Dict[str, Dict[str, Any]] = {}
         total = len(segments)
-        grounding_degraded = 0  # M-d：text_only 降级条目计数，阶段完成时汇总可见
-        for i, segment in enumerate(segments):
+        grounding_degraded = 0  # M-d：text_only 降级条目计数，阶段完成时汇总可 见
+        # 两轮执行：首轮全部条目；轮末只把“校验未通过且有被拒草稿”的条目补跑一轮。
+        # 补跑轮首轮即携带上一轮最优草稿与违规清单（经 sections 传入，不改 _rewrite_one 签名）。
+        repair_feedback: Dict[str, Tuple[str, List[str]]] = {}
+        # 跨轮择优：记录“违规最少（并列取最后）”的候选，不能被补跑轮的更差候选覆盖
+        best_candidates: Dict[str, Dict[str, Any]] = {}
+        # 执行队列：首轮铺满全部条目；轮末只把“校验未通过且有被拒草稿”的条目入队补跑
+        queue: List[Tuple[int, int, Dict[str, Any]]] = [
+            (0, index, segment) for index, segment in enumerate(segments)
+        ]
+        cursor = 0
+        while cursor < len(queue):
+            pass_index, i, segment = queue[cursor]
+            cursor += 1
+            if pass_index > 0:
+                # 补跑轮只发进度文案（不发“执行中”、不发重复失败事件），百分比不回退
+                self._report_progress("提示词改写", f"校验未通过补跑：分镜 {segment['id']}", 100)
             self._check_cancel()
             prev_item = prev_items_by_id.get(segment["id"])
             # mode resolver：素材角色来自参考图阶段产物（start_end_frame 的尾帧 = 下一分镜选中图，
@@ -965,7 +1100,11 @@ class PromptRewriteAgent(AgentInterface):
                 user_section=(user_sections or {}).get(segment["id"], ""),
                 continuity_summaries=continuity_summaries,
                 grounding_desc=grounding_desc,
+                shot_plan=_shot_plan_text(segment, segment["duration"]),
             )
+            feedback = repair_feedback.get(segment["id"])
+            if pass_index > 0 and feedback:
+                sections["revision_section"] = _build_revision_section(feedback[0], feedback[1], mode)
 
             item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
             # 条目级「改写中」事件：进入 _rewrite_one（含 1+2 次调用的重试环）之前发一次，
@@ -977,19 +1116,21 @@ class PromptRewriteAgent(AgentInterface):
                 for key, value in _event_item_summary(item).items()
                 if key not in ("rewritten_prompt", "truncated")
             }
-            self._report_progress(
-                "提示词改写",
-                f"分镜 {segment['id']} 改写中",
-                round(i / total * 100),
-                data={
-                    "asset_complete": {
-                        "type": "items",
-                        "id": segment['id'],
-                        "status": "running",
-                        **running_summary,
-                    }
-                },
-            )
+            if pass_index == 0:
+                # 补跑轮不再发“执行中”：整轮最多一次 running，避免状态抖动
+                self._report_progress(
+                    "提示词改写",
+                    f"分镜 {segment['id']} 改写中",
+                    round(i / total * 100),
+                    data={
+                        "asset_complete": {
+                            "type": "items",
+                            "id": segment['id'],
+                            "status": "running",
+                            **running_summary,
+                        }
+                    },
+                )
             quality: Optional[Dict[str, Any]] = None
             try:
                 with call_context(
@@ -1004,15 +1145,27 @@ class PromptRewriteAgent(AgentInterface):
                     item = self._make_item(segment, rewritten, mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
                     self._append_version(item, rewritten, source="agent")
                     item["continuity"] = _continuity_from_prompt(rewritten, mode)
-                    continuity_summaries.append(item["continuity"])
+                    if pass_index == 0:
+                        continuity_summaries.append(item["continuity"])
                 else:
                     item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
                     item["status"] = "failed"
                     item["error"] = "结构校验未通过：" + "；".join(violations)
+                    item["validation_violations"] = list(violations)
                     if rejected:
-                        # 保留最后被拒输出供诊断/人工采用；超长时截断并显式标记
+                        # 保留被拒输出供诊断/人工采用；超长时截断并显式标记
                         item["rejected_output"] = rejected[:REJECTED_OUTPUT_LIMIT]
                         item["rejected_output_truncated"] = len(rejected) > REJECTED_OUTPUT_LIMIT
+                        # 跨轮择优：只有“违规更少或并列”才替换（并列取最后产出者）
+                        previous = best_candidates.get(segment["id"])
+                        if previous is None or len(violations) <= previous["count"]:
+                            best_candidates[segment["id"]] = {
+                                "count": len(violations),
+                                "text": rejected,
+                                "violations": list(violations),
+                            }
+                        best = best_candidates[segment["id"]]
+                        repair_feedback[segment["id"]] = (best["text"], list(best["violations"]))
             except Exception as exc:  # noqa: BLE001 - 单条目失败不阻塞其他条目
                 logger.warning("prompt_rewrite: 分镜 %s 改写失败: %s", segment["id"], exc)
                 item = self._make_item(segment, "", mode, grounding_meta, prev_item, fingerprint=fingerprint, dimensions=dimensions)
@@ -1021,20 +1174,71 @@ class PromptRewriteAgent(AgentInterface):
             if quality is not None:
                 item["quality"] = quality
             results[segment["id"]] = item
-            self._report_progress(
-                "提示词改写",
-                f"分镜 {segment['id']} {'完成' if item['status'] == 'done' else '失败'}",
-                round((i + 1) / total * 100),
-                data={
-                    "asset_complete": {
-                        "type": "items",
-                        "id": segment["id"],
-                        "status": item["status"],
-                        "error": item.get("error"),
-                        **_event_item_summary(item),
-                    }
-                },
-            )
+            if pass_index == 0 or item["status"] == "done":
+                # 补跑轮仍失败时不重复发失败事件；成功时允许一次“失败→完成”修正
+                self._report_progress(
+                    "提示词改写",
+                    f"分镜 {segment['id']} {'完成' if item['status'] == 'done' else '失败'}",
+                    100 if pass_index > 0 else round((i + 1) / total * 100),
+                    data={
+                        "asset_complete": {
+                            "type": "items",
+                            "id": segment["id"],
+                            "status": item["status"],
+                            "error": item.get("error"),
+                            **_event_item_summary(item),
+                        }
+                    },
+                )
+            # 轮末：只把“失败且有被拒草稿”的条目补跑一轮（异常/取消/空输出不补跑）
+            if (
+                pass_index == 0
+                and EXTRA_REWRITE_ROUNDS > 0
+                and item.get("status") == "failed"
+                and repair_feedback.get(segment["id"])
+            ):
+                queue.append((1, 0, segment))
+        # 末轮择优：跨轮选出“违规最少”的候选；结构可用则采用，否则保留失败
+        adopted: List[Dict[str, Any]] = []
+        for seg_id, item in results.items():
+            best = best_candidates.get(seg_id)
+            if not best:
+                continue
+            # 产物中的诊断字段一律以“最优候选”为准，不残留最后一轮的更差结果
+            item["validation_violations"] = list(best["violations"])
+            item["rejected_output"] = best["text"][:REJECTED_OUTPUT_LIMIT]
+            item["rejected_output_truncated"] = len(best["text"]) > REJECTED_OUTPUT_LIMIT
+            if item.get("status") != "failed":
+                continue
+            if not _is_usable_best_effort(best["violations"]):
+                item["error"] = "结构校验未通过：" + "；".join(best["violations"])
+                continue
+            item["rewritten_prompt"] = best["text"]
+            item["status"] = "done"
+            item["best_effort"] = True
+            # 派生字段同步：正文变了，连续性摘要要重算；"已完成"条目不得带着失败文案
+            item["continuity"] = _continuity_from_prompt(best["text"], str(item.get("input_mode") or ""))
+            item.pop("error", None)
+            self._append_version(item, best["text"], source="agent")
+            adopted.append(item)
+        if adopted:
+            logger.info("prompt_rewrite: %d 条采用最优候选（校验未通过但结构可用）", len(adopted))
+            # 实时事件早于择优发送，这里补一条完成事件，避免执行期界面仍停在“失败”
+            for item in adopted:
+                self._report_progress(
+                    "提示词改写",
+                    f"分镜 {item['id']} 已采用最优候选",
+                    100,
+                    data={
+                        "asset_complete": {
+                            "type": "items",
+                            "id": item["id"],
+                            "status": "done",
+                            "error": None,
+                            **_event_item_summary(item),
+                        }
+                    },
+                )
         if grounding_degraded:
             logger.info(
                 "prompt_rewrite: grounding 降级 %d/%d 条目（text_only，H3 模式不变；检查 VLM 配置或看图服务）",

@@ -56,9 +56,18 @@ def resolve_style_key(input_data: Optional[Dict[str, Any]],
     return str(data.get("style") or meta.get("style") or "").strip()
 
 
+def _positive_duration(value: Any) -> float:
+    """镜头时长归一：非数值/非正数一律归 0（0 表示不可用，不参与切点推算）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if number > 0 else 0.0
+
+
 def collect_segments(storyboard_artifact: Optional[Dict[str, Any]], model: str = "",
                      session_override: Any = None) -> List[Dict[str, Any]]:
-    """storyboard → H3 分镜条目（id/描述/有效时长/角色/场景），按 id 排序。
+    """storyboard → H3 分镜条目（id/描述/有效时长/角色/场景/镜头表），按 id 排序。
 
     H3 改写与视频阶段算指纹必须共用此归一化，否则 `shot_content` 取法不同会恒 stale。
     注意：视频侧执行用的原始 segment 仍应保留自己的形状，不要用它替换。
@@ -83,6 +92,10 @@ def collect_segments(storyboard_artifact: Optional[Dict[str, Any]], model: str =
                 str(sh.get("content") or sh.get("plot") or "").strip()
                 for sh in shots if isinstance(sh, dict)
             ).strip()
+            shot_rows = [
+                {"index": index, "duration": _positive_duration(sh.get("duration"))}
+                for index, sh in enumerate(shots, 1) if isinstance(sh, dict)
+            ]
             total_duration = seg.get("total_duration") or sum(
                 sh.get("duration", 0) for sh in shots if isinstance(sh, dict)
             )
@@ -97,6 +110,8 @@ def collect_segments(storyboard_artifact: Optional[Dict[str, Any]], model: str =
                 "episode": ep_n,
                 "shot_content": shot_content,
                 "duration": duration,
+                # 镜头表（个数/时长）只用于改写提示与切点参考；不进入指纹 payload
+                "shots": shot_rows,
                 "duration_adjustments": duration_adjustments,
                 "characters": [str(c) for c in (seg.get("characters") or []) if c],
                 "location": location,

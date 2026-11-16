@@ -63,6 +63,7 @@ def clean_state():
             )
     workflow_engine.sessions.clear()
     workflow_engine._active_sessions.clear()
+    workflow_engine._active_runs.clear()
     workflow_engine._overlays.clear()
     workflow_engine._errors.clear()
     workflow_engine._persist.cache.clear()

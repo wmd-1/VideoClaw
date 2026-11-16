@@ -53,6 +53,11 @@ export function mergeAssetUpdateItem(item: Record<string, unknown>, assetUpdate:
   // 失败类别与 error 同位合并：否则事件里带 error_type 而客户端产物丢了它，
   // 执行期看得到原因、刷新后反而消失（openspec design D6）
   if (assetUpdate.error_type !== undefined) merged.error_type = assetUpdate.error_type;
+  // 最优候选标识随事件下发：执行期即可展示“校验未通过·已用最优候选”而非等阶段收尾
+  if (assetUpdate.best_effort !== undefined) merged.best_effort = assetUpdate.best_effort;
+  if (assetUpdate.validation_violations !== undefined) {
+    merged.validation_violations = assetUpdate.validation_violations;
+  }
   return merged;
 }
 
@@ -68,6 +73,10 @@ export function rewriteItemFromUpdate(assetUpdate: Record<string, unknown>): Rec
   }
   if (assetUpdate.error !== undefined) item.error = assetUpdate.error;
   if (assetUpdate.error_type !== undefined) item.error_type = assetUpdate.error_type;
+  if (assetUpdate.best_effort !== undefined) item.best_effort = assetUpdate.best_effort;
+  if (assetUpdate.validation_violations !== undefined) {
+    item.validation_violations = assetUpdate.validation_violations;
+  }
   return item;
 }
 
