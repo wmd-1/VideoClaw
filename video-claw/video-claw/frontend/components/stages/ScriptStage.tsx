@@ -247,7 +247,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const [showApplyConfirm, setShowApplyConfirm] = useState(false);
   const [dismissedReviewKey, setDismissedReviewKey] = useState('');
   const [reviewSelectionByKey, setReviewSelectionByKey] = useState<Record<string, string[]>>({});
-  const [reviewActionError, setReviewActionError] = useState('');
   const [reviewApplyKey, setReviewApplyKey] = useState('');
   // 质检结果弹窗与勾选状态均由 pending_review 派生，不靠 effect 写 state（新结果自动弹出）。
   // 质检仅导入模式开放：灵感生成会话即使携带历史 pending_review 也不弹窗、不显示入口。
@@ -256,9 +255,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const selectedReviewIds = reviewSelectionByKey[reviewKey] ?? [];
   // 应用失败只展示本次质检触发的错误；弹窗打开期间其它动作失败不误报为“应用失败”
   const reviewApplyAttempted = Boolean(reviewKey) && reviewApplyKey === reviewKey;
-  const reviewDisplayError = reviewActionError || (
-    reviewApplyAttempted && state.status === 'error' ? (state.error || '应用失败，请重试') : ''
-  );
+  const reviewDisplayError = reviewApplyAttempted && state.status === 'error'
+    ? (state.error || '应用失败，请重试')
+    : '';
   /**
    * 集级/成片过期提示全部取 `stageStates` 派生的 props（openspec: stage-view-resync）：
    * 保存与确认都会走一次 `resyncSessionView({ refreshArtifacts: true })` 重算它们。
@@ -290,6 +289,12 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const revision = data.pending_revision;
   const revisionEpisodes = Array.isArray(data.episodes) ? data.episodes : [];
+
+  const openRevisionDialogForEpisode = (episodeNumber: number) => {
+    setRevisionScope('episode');
+    setRevisionEpisode(episodeNumber);
+    setShowRevisionDialog(true);
+  };
 
   const submitRevision = () => {
     const instruction = revisionInstruction.trim();
@@ -333,22 +338,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const startScriptReview = () => {
     setDismissedReviewKey('');
-    setReviewActionError('');
     setReviewApplyKey('');
     onIntervene({ action: 'review_script' });
-  };
-
-  const cancelReview = async () => {
-    setReviewActionError('');
-    setReviewApplyKey('');
-    try {
-      await patchScriptArtifact({ pending_review: null });
-      onUpdateArtifact?.({ pending_review: undefined });
-      setDismissedReviewKey(reviewKey);
-    } catch (error) {
-      console.error('取消质检失败:', error);
-      setReviewActionError('取消质检失败，请重试');
-    }
   };
 
   const toggleReviewIssue = (issueId: string) => {
@@ -374,7 +365,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
     if (!selectedReviewIds.length) return;
     // 不提前收起弹窗：应用成功由 pending_review 消失自动关闭；失败时弹窗留在原处
     // 展示 state.error，用户可直接重试。
-    setReviewActionError('');
     setReviewApplyKey(reviewKey);
     onIntervene({ action: 'apply_script_review', selected_issue_ids: selectedReviewIds });
   };
@@ -385,9 +375,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const createCharacter = async () => {
     const nextCharacter: ScriptCharacter = {
-      name: '新角色',
+      name: '新人物',
       species: '',
-      description: '请填写角色描述。',
+      description: '请填写人物描述。',
     };
     const nextCharacters = [...(data.characters || []), nextCharacter];
     try {
@@ -403,7 +393,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const deleteCharacter = async (index: number) => {
     const target = data.characters?.[index];
     if (!target) return;
-    const confirmText = `确认删除角色「${target.name || index + 1}」吗？\n\n该条目将从角色/场景阶段产物中移除（已生成的图片/视频文件不会被删除，只移除引用）。`;
+    const confirmText = `确认删除人物「${target.name || index + 1}」吗？\n\n该条目将从人物/场景阶段产物中移除（已生成的图片/视频文件不会被删除，只移除引用）。`;
     if (!window.confirm(confirmText)) return;
     try {
       const nextCharacters = (data.characters || []).filter((_, itemIndex) => itemIndex !== index);
@@ -606,11 +596,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
     <div className="flex h-full min-w-0 flex-col">
       <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6">
 
-        {/* 标题栏 */}
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
-          <h2 className="text-lg font-semibold text-gray-800">剧本生成</h2>
-        </div>
-        <p className="text-sm text-gray-500 mb-2">多轮 LLM 交互，生成结构化剧本数据</p>
         {!!data.meta?.source_format && (
           <div className="mb-4 space-y-1">
             <p className="text-xs text-gray-400">
@@ -885,11 +870,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
         {hasContent && (
           <div className="space-y-8">
 
-            {/* Logline 六要素摘要 */}
-            {data.logline_data && (
-              <LoglineSummaryBar logline={data.logline_data} />
-            )}
-
             {/* 标题 / Logline / 标签 */}
             {data.title && (
               <section className="bg-white border border-gray-200 rounded-xl p-5">
@@ -908,219 +888,13 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               </section>
             )}
 
-            {/* 角色 */}
-            {Array.isArray(data.characters) && (
-              <section>
-                <div className="flex items-center gap-2 mb-3">
-                  <Users className="w-4 h-4 text-blue-500" />
-                  <h3 className="text-sm font-semibold text-gray-700">角色</h3>
-                  <button
-                    onClick={createCharacter}
-                    className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
-                  >
-                    <Plus className="w-3 h-3" />
-                    新建
-                  </button>
-                  <button
-                    onClick={() => toggleDeleteMode('characters')}
-                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                      deleteMode.characters
-                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                        : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
-                    }`}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    删除
-                  </button>
-                </div>
-                <p className="-mt-1 mb-3 text-xs text-gray-400">所有的人物以及非人物主体，包括产品、logo、人物等</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {data.characters.map((c, i) => {
-                    const isCharacterEditing = editingCharacterIndex === i;
-                    const isCharacterSaving = savingCharacterIndex === i;
-                    return (
-                    <div key={i} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition-shadow">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="min-w-0">
-                          {isCharacterEditing ? (
-                            <input
-                              value={characterDraft.name}
-                              onChange={e => setCharacterDraft(prev => ({ ...prev, name: e.target.value }))}
-                              className="w-full rounded-lg border border-blue-100 px-2 py-1 text-sm font-medium text-gray-800 outline-none focus:ring-2 focus:ring-blue-200"
-                            />
-                          ) : (
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium text-gray-800">{c.name}</span>
-                              {c.species && c.species !== '人类' && c.species !== 'human' && (
-                                <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 text-[10px] rounded">{c.species}</span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        {isCharacterEditing ? (
-                          <div className="flex flex-shrink-0 items-center gap-1">
-                            <button
-                              onClick={cancelCharacterEdit}
-                              disabled={isCharacterSaving}
-                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
-                            >
-                              <X className="w-3 h-3" />取消
-                            </button>
-                            <button
-                              onClick={() => saveCharacterEdit(i)}
-                              disabled={isCharacterSaving || !characterDraft.name.trim() || !characterDraft.description.trim()}
-                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed"
-                            >
-                              <Save className="w-3 h-3" />{isCharacterSaving ? '保存中' : '保存'}
-                            </button>
-                          </div>
-                        ) : deleteMode.characters ? (
-                          <button
-                            onClick={() => deleteCharacter(i)}
-                            className="flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
-                            title="删除角色"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => startCharacterEdit(c, i)}
-                            className="flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
-                          >
-                            <Edit3 className="w-3 h-3" />修改
-                          </button>
-                        )}
-                      </div>
-                      {isCharacterEditing ? (
-                        <div className="space-y-2">
-                          <label className="flex flex-col gap-1 text-xs">
-                            <span className="text-gray-500 font-medium">物种/类型</span>
-                            <input
-                              value={characterDraft.species}
-                              onChange={e => setCharacterDraft(prev => ({ ...prev, species: e.target.value }))}
-                              className="rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-200"
-                            />
-                          </label>
-                          <label className="flex flex-col gap-1 text-xs">
-                            <span className="text-gray-500 font-medium">描述</span>
-                            <textarea
-                              value={characterDraft.description}
-                              onChange={e => setCharacterDraft(prev => ({ ...prev, description: e.target.value }))}
-                              rows={3}
-                              className="resize-y rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-200"
-                            />
-                          </label>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-gray-500 leading-relaxed mb-2">{c.description}</p>
-                      )}
-                    </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-
-            {/* 场景设置 */}
-            {Array.isArray(data.settings) && (
-              <section>
-                <div className="flex items-center gap-2 mb-3">
-                  <MapPin className="w-4 h-4 text-green-500" />
-                  <h3 className="text-sm font-semibold text-gray-700">场景</h3>
-                  <button
-                    onClick={createSetting}
-                    className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
-                  >
-                    <Plus className="w-3 h-3" />
-                    新建
-                  </button>
-                  <button
-                    onClick={() => toggleDeleteMode('settings')}
-                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
-                      deleteMode.settings
-                        ? 'text-red-600 bg-red-50 hover:bg-red-100'
-                        : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
-                    }`}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    删除
-                  </button>
-                </div>
-                <p className="-mt-1 mb-3 text-xs text-gray-400">背景地点图片</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {data.settings.map((s, i) => {
-                    const isSettingEditing = editingSettingIndex === i;
-                    const isSettingSaving = savingSettingIndex === i;
-                    return (
-                    <div key={i} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition-shadow">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        {isSettingEditing ? (
-                          <input
-                            value={settingDraft.name}
-                            onChange={e => setSettingDraft(prev => ({ ...prev, name: e.target.value }))}
-                            className="min-w-0 flex-1 rounded-lg border border-green-100 px-2 py-1 text-sm font-medium text-gray-800 outline-none focus:ring-2 focus:ring-green-200"
-                          />
-                        ) : (
-                          <div className="font-medium text-gray-800">{s.name}</div>
-                        )}
-                        {isSettingEditing ? (
-                          <div className="flex flex-shrink-0 items-center gap-1">
-                            <button
-                              onClick={cancelSettingEdit}
-                              disabled={isSettingSaving}
-                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
-                            >
-                              <X className="w-3 h-3" />取消
-                            </button>
-                            <button
-                              onClick={() => saveSettingEdit(i)}
-                              disabled={isSettingSaving || !settingDraft.name.trim() || !settingDraft.description.trim()}
-                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-green-500 hover:bg-green-600 disabled:bg-green-300 disabled:cursor-not-allowed"
-                            >
-                              <Save className="w-3 h-3" />{isSettingSaving ? '保存中' : '保存'}
-                            </button>
-                          </div>
-                        ) : deleteMode.settings ? (
-                          <button
-                            onClick={() => deleteSetting(i)}
-                            className="flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
-                            title="删除场景"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => startSettingEdit(s, i)}
-                            className="flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
-                          >
-                            <Edit3 className="w-3 h-3" />修改
-                          </button>
-                        )}
-                      </div>
-                      {isSettingEditing ? (
-                        <textarea
-                          value={settingDraft.description}
-                          onChange={e => setSettingDraft(prev => ({ ...prev, description: e.target.value }))}
-                          rows={4}
-                          className="w-full resize-y rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-green-200"
-                        />
-                      ) : (
-                        <p className="text-sm text-gray-500 leading-relaxed">{s.description}</p>
-                      )}
-                    </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-
-            {/* 故事线 */}
+            {/* 剧本内容 */}
             {Array.isArray(data.episodes) ? (
           <section className="bg-gray-50 p-4 rounded-xl border border-gray-100">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Film className="w-5 h-5 text-purple-500" />
-                <h3 className="text-sm font-bold text-gray-800">分集剧本</h3>
+                <h3 className="text-sm font-bold text-gray-800">剧本内容</h3>
                 <button
                   onClick={createEpisode}
                   className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors"
@@ -1215,13 +989,22 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         <X className="w-4 h-4" />
                       </button>
                     ) : (
-                      <button
-                        onClick={() => startEpisodeEdit(ep, i)}
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        修改
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => startEpisodeEdit(ep, i)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          手工修改
+                        </button>
+                        <button
+                          onClick={() => openRevisionDialogForEpisode(episodeNumber)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-fuchsia-600 bg-fuchsia-50 hover:bg-fuchsia-100 transition-colors"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          剧本AI修改
+                        </button>
+                      </div>
                     )}
                   </div>
                   {isEpisodeEditing ? (
@@ -1301,37 +1084,242 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 </button>
               </div>
             )}
-            {state.status !== 'running' && !revision && (
-              <div
-                className={`mt-8 flex flex-wrap items-center gap-3 ${isImportMode ? 'justify-between' : 'justify-center'}`}
-              >
-                <button
-                  onClick={() => setShowRevisionDialog(true)}
-                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-purple-600 hover:to-purple-700 transition-all font-medium text-sm"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  剧本AI修改
-                </button>
-                {isImportMode && (
-                  pendingReview ? (
-                    <button
-                      onClick={() => setDismissedReviewKey('')}
-                      className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
-                    >
-                      <ShieldCheck className="w-4 h-4" />
-                      查看质检结果{reviewIssues.length ? `（${reviewIssues.length}）` : ''}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={startScriptReview}
-                      className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
-                    >
-                      <ShieldCheck className="w-4 h-4" />
-                      剧本AI质检
-                    </button>
-                  )
+            {isImportMode && state.status !== 'running' && !revision && (
+              <div className="mt-2 flex justify-center">
+                {pendingReview ? (
+                  <button
+                    onClick={() => setDismissedReviewKey('')}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    查看质检结果{reviewIssues.length ? `（${reviewIssues.length}）` : ''}
+                  </button>
+                ) : (
+                  <button
+                    onClick={startScriptReview}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    剧本AI质检
+                  </button>
                 )}
               </div>
+            )}
+
+            {/* 剧本人物与场景 */}
+            {(Array.isArray(data.characters) || Array.isArray(data.settings)) && (
+              <section>
+                <div className="flex items-center gap-2 mb-3">
+                  <Users className="w-4 h-4 text-blue-500" />
+                  <h3 className="text-sm font-semibold text-gray-700">剧本人物与场景</h3>
+                </div>
+                <div className="space-y-6">
+                  {Array.isArray(data.characters) && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <Users className="w-4 h-4 text-blue-500" />
+                        <h4 className="text-sm font-semibold text-gray-700">人物</h4>
+                        <button
+                          onClick={createCharacter}
+                          className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          新建
+                        </button>
+                        <button
+                          onClick={() => toggleDeleteMode('characters')}
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                            deleteMode.characters
+                              ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                              : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
+                          }`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          删除
+                        </button>
+                      </div>
+                      <p className="-mt-1 mb-3 text-xs text-gray-400">所有的人物以及非人物主体，包括产品、logo、人物等</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {data.characters.map((c, i) => {
+                          const isCharacterEditing = editingCharacterIndex === i;
+                          const isCharacterSaving = savingCharacterIndex === i;
+                          return (
+                            <div key={i} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition-shadow">
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <div className="min-w-0">
+                                  {isCharacterEditing ? (
+                                    <input
+                                      value={characterDraft.name}
+                                      onChange={e => setCharacterDraft(prev => ({ ...prev, name: e.target.value }))}
+                                      className="w-full rounded-lg border border-blue-100 px-2 py-1 text-sm font-medium text-gray-800 outline-none focus:ring-2 focus:ring-blue-200"
+                                    />
+                                  ) : (
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="font-medium text-gray-800">{c.name}</span>
+                                      {c.species && c.species !== '人类' && c.species !== 'human' && (
+                                        <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 text-[10px] rounded">{c.species}</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                                {isCharacterEditing ? (
+                                  <div className="flex flex-shrink-0 items-center gap-1">
+                                    <button
+                                      onClick={cancelCharacterEdit}
+                                      disabled={isCharacterSaving}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                                    >
+                                      <X className="w-3 h-3" />取消
+                                    </button>
+                                    <button
+                                      onClick={() => saveCharacterEdit(i)}
+                                      disabled={isCharacterSaving || !characterDraft.name.trim() || !characterDraft.description.trim()}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed"
+                                    >
+                                      <Save className="w-3 h-3" />{isCharacterSaving ? '保存中' : '保存'}
+                                    </button>
+                                  </div>
+                                ) : deleteMode.characters ? (
+                                  <button
+                                    onClick={() => deleteCharacter(i)}
+                                    className="flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                                    title="删除人物"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => startCharacterEdit(c, i)}
+                                    className="flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+                                  >
+                                    <Edit3 className="w-3 h-3" />修改
+                                  </button>
+                                )}
+                              </div>
+                              {isCharacterEditing ? (
+                                <div className="space-y-2">
+                                  <label className="flex flex-col gap-1 text-xs">
+                                    <span className="text-gray-500 font-medium">物种/类型</span>
+                                    <input
+                                      value={characterDraft.species}
+                                      onChange={e => setCharacterDraft(prev => ({ ...prev, species: e.target.value }))}
+                                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-200"
+                                    />
+                                  </label>
+                                  <label className="flex flex-col gap-1 text-xs">
+                                    <span className="text-gray-500 font-medium">描述</span>
+                                    <textarea
+                                      value={characterDraft.description}
+                                      onChange={e => setCharacterDraft(prev => ({ ...prev, description: e.target.value }))}
+                                      rows={3}
+                                      className="resize-y rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-200"
+                                    />
+                                  </label>
+                                </div>
+                              ) : (
+                                <p className="text-sm text-gray-500 leading-relaxed mb-2">{c.description}</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 场景 */}
+                  {Array.isArray(data.settings) && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <MapPin className="w-4 h-4 text-green-500" />
+                        <h4 className="text-sm font-semibold text-gray-700">场景</h4>
+                        <button
+                          onClick={createSetting}
+                          className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          新建
+                        </button>
+                        <button
+                          onClick={() => toggleDeleteMode('settings')}
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
+                            deleteMode.settings
+                              ? 'text-red-600 bg-red-50 hover:bg-red-100'
+                              : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
+                          }`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          删除
+                        </button>
+                      </div>
+                      <p className="-mt-1 mb-3 text-xs text-gray-400">背景地点图片</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {data.settings.map((s, i) => {
+                          const isSettingEditing = editingSettingIndex === i;
+                          const isSettingSaving = savingSettingIndex === i;
+                          return (
+                            <div key={i} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition-shadow">
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                {isSettingEditing ? (
+                                  <input
+                                    value={settingDraft.name}
+                                    onChange={e => setSettingDraft(prev => ({ ...prev, name: e.target.value }))}
+                                    className="min-w-0 flex-1 rounded-lg border border-green-100 px-2 py-1 text-sm font-medium text-gray-800 outline-none focus:ring-2 focus:ring-green-200"
+                                  />
+                                ) : (
+                                  <div className="font-medium text-gray-800">{s.name}</div>
+                                )}
+                                {isSettingEditing ? (
+                                  <div className="flex flex-shrink-0 items-center gap-1">
+                                    <button
+                                      onClick={cancelSettingEdit}
+                                      disabled={isSettingSaving}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                                    >
+                                      <X className="w-3 h-3" />取消
+                                    </button>
+                                    <button
+                                      onClick={() => saveSettingEdit(i)}
+                                      disabled={isSettingSaving || !settingDraft.name.trim() || !settingDraft.description.trim()}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-green-500 hover:bg-green-600 disabled:bg-green-300 disabled:cursor-not-allowed"
+                                    >
+                                      <Save className="w-3 h-3" />{isSettingSaving ? '保存中' : '保存'}
+                                    </button>
+                                  </div>
+                                ) : deleteMode.settings ? (
+                                  <button
+                                    onClick={() => deleteSetting(i)}
+                                    className="flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                                    title="删除场景"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => startSettingEdit(s, i)}
+                                    className="flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
+                                  >
+                                    <Edit3 className="w-3 h-3" />修改
+                                  </button>
+                                )}
+                              </div>
+                              {isSettingEditing ? (
+                                <textarea
+                                  value={settingDraft.description}
+                                  onChange={e => setSettingDraft(prev => ({ ...prev, description: e.target.value }))}
+                                  rows={4}
+                                  className="w-full resize-y rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-green-200"
+                                />
+                              ) : (
+                                <p className="text-sm text-gray-500 leading-relaxed">{s.description}</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
             )}
           </div>
         )}
@@ -1425,9 +1413,10 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               剧本AI质检结果
               <span className="ml-auto text-xs font-normal text-gray-400">默认不勾选，请选择要接受的修改；红=删除，绿=新增</span>
             </h3>
-            {pendingReview.summary && (
-              <p className="mt-2 text-sm leading-relaxed text-gray-600">{pendingReview.summary}</p>
-            )}
+            <p className="mt-2 text-sm leading-relaxed text-gray-600">
+              <span className="font-semibold text-gray-700">整体结果：</span>
+              {pendingReview.summary || '（模型未返回摘要）'}
+            </p>
             {reviewIssues.length === 0 ? (
               <div className="py-10 text-center text-sm text-gray-400">本次质检未发现需要修改的问题。</div>
             ) : (
@@ -1486,13 +1475,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 {REVIEW_ACTION_LABEL[issue.action] || '改写'}
                               </span>
                             </div>
-                            <p className="mt-1.5 text-sm leading-relaxed text-gray-700">{issue.problem}</p>
-                            {issue.suggestion && (
-                              <p className="mt-0.5 text-xs leading-relaxed text-gray-500">建议：{issue.suggestion}</p>
-                            )}
                             <div className="mt-2 space-y-1 text-xs">
-                              <p className="whitespace-pre-wrap rounded bg-gray-50 px-2 py-1 text-gray-500">
-                                原文：
+                              <p className="whitespace-pre-wrap rounded bg-gray-50 px-2 py-1 text-gray-600">
+                                <span className="font-semibold text-gray-500">剧本原文：</span>
                                 {originalParts.map((part, idx) => (
                                   <span
                                     key={`${issue.id}-old-${idx}`}
@@ -1502,12 +1487,11 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                   </span>
                                 ))}
                               </p>
-                              {issue.action === 'delete' ? (
-                                <p className="rounded bg-red-50 px-2 py-1 text-red-600">删除此行</p>
-                              ) : (
-                                <p className="whitespace-pre-wrap rounded bg-emerald-50 px-2 py-1 text-emerald-700">
-                                  {issue.action === 'insert_after' ? '插入：' : '改为：'}
-                                  {newParts.map((part, idx) => (
+                              <p className="whitespace-pre-wrap rounded bg-emerald-50 px-2 py-1 text-emerald-700">
+                                <span className="font-semibold text-emerald-800">修改后：</span>
+                                {issue.action === 'delete'
+                                  ? '删除此行'
+                                  : newParts.map((part, idx) => (
                                     <span
                                       key={`${issue.id}-new-${idx}`}
                                       className={part.type === 'add' ? 'rounded bg-emerald-200/70 text-emerald-900' : undefined}
@@ -1515,8 +1499,11 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                       {part.text}
                                     </span>
                                   ))}
-                                </p>
-                              )}
+                              </p>
+                              <p className="whitespace-pre-wrap rounded bg-gray-50 px-2 py-1 text-gray-600">
+                                <span className="font-semibold text-gray-500">修改原因：</span>
+                                {issue.problem || '（模型未返回原因）'}
+                              </p>
                             </div>
                           </div>
                         </label>
@@ -1532,16 +1519,9 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 disabled={state.status === 'running'}
                 className="px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold disabled:opacity-50"
               >
-                收起
+                忽略质检
               </button>
               <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={cancelReview}
-                  disabled={state.status === 'running'}
-                  className="rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-bold text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
-                >
-                  取消质检
-                </button>
                 {reviewIssues.length > 0 && (
                   <button
                     onClick={applySelectedReview}
