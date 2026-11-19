@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * 身份缺失阻断页：URL ?User=、本机缓存与 GUIP SDK 都拿不到登录名时显示。
- * 不提供手工输入入口；身份必须由部署环境（GUIP/反代）提供。
+ * 身份缺失阻断页：GUIP SDK 与 `?User=` 都拿不到登录名时显示。
+ * 不提供手工输入入口；身份必须由部署环境（GUIP）提供。
  */
 export default function IdentityMissing() {
   return (
@@ -14,14 +14,7 @@ export default function IdentityMissing() {
         </p>
         <button
           type="button"
-          onClick={() => {
-            try {
-              window.localStorage.removeItem("video-claw.login-name");
-            } catch {
-              // 存储不可用时无需清理
-            }
-            window.location.reload();
-          }}
+          onClick={() => window.location.reload()}
           className="mt-5 rounded-lg border border-slate-300 bg-slate-50 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
         >
           重试

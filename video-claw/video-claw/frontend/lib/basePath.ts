@@ -8,19 +8,10 @@
  * 设为空字符串即关闭前缀（回到根路径部署）。
  */
 
+import { BASE_PATH } from './basePathConfig';
 import { getLoginName } from './identityState';
 
-function normalizeBasePath(raw: string | undefined): string {
-  const value = String(raw ?? '').trim();
-  // '/' 与空值等价：不挂在任何前缀下
-  if (!value || value === '/') return '';
-  const withLeading = value.startsWith('/') ? value : `/${value}`;
-  return withLeading.replace(/\/+$/, '');
-}
-
-export const BASE_PATH = normalizeBasePath(
-  process.env.NEXT_PUBLIC_BASE_PATH ?? '/Bocom_Video_Generation',
-);
+export { BASE_PATH };
 
 /**
  * 给站内绝对路径补上部署前缀；外部 URL、协议相对地址、相对路径原样返回。

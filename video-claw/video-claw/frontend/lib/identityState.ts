@@ -1,19 +1,30 @@
 /**
- * 前端有效身份解析（无 React 依赖）。
+ * 前端有效身份解析（无 React 依赖，纯内存）。
  *
  * 单一来源：API 头（`identityHeaders`）与媒体 URL（`basePath` 的 `?user_login=`）
- * MUST 都读本模块的 `getLoginName()`。曾经媒体侧直接读 localStorage，而 API 侧每次
- * 重新解析 `?User` 并回写存储，导致 single 模式下 API 固定 `local`、媒体 URL 却变成
- * `alice`，媒体网关按 owner 比对后 404。
+ * MUST 都读本模块的 `getLoginName()`。身份不落盘：刷新 / 重开标签页重新解析，
+ * 避免共享机器串号。
  *
- * 解析顺序：single 固定 `local` → 已解析身份（`/api/identity/me` 的结论） →
- * 首次解析前的 `?User` 调试参数 → 本机缓存。
+ * 解析顺序：single 固定 `local` → `IdentityProvider` 写入的有效身份。
+ * `?User=` 仅由引导流程通过 `getUrlLogin()` 读取；本模块不再回退 URL 或本机存储。
  */
-export const LOGIN_KEY = "video-claw.login-name";
+export const LEGACY_LOGIN_KEY = "video-claw.login-name";
 export const SINGLE_LOGIN = "local";
 
 let resolvedMode: "guip" | "single" | null = null;
 let resolvedLogin: string | null = null;
+
+/** 清理历史版本遗留的身份缓存键；只清身份键，不触碰 UI 偏好。 */
+function purgeLegacyLoginKey(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(LEGACY_LOGIN_KEY);
+  } catch {
+    // 存储不可用时无需清理
+  }
+}
+
+purgeLegacyLoginKey();
 
 export function getUrlLogin(): string {
   if (typeof window === "undefined") return "";
@@ -25,41 +36,15 @@ export function getUrlLogin(): string {
   }
 }
 
-export function getStoredLogin(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(LOGIN_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-export function setStoredLogin(login: string) {
-  if (typeof window === "undefined") return;
-  const value = login.trim();
-  try {
-    if (value) window.localStorage.setItem(LOGIN_KEY, value);
-    else window.localStorage.removeItem(LOGIN_KEY);
-  } catch {
-    // 隐私模式下 localStorage 不可写：身份仍以内存解析结果为准
-  }
-}
-
+/** 当前有效身份；未解析时为空串，不回退 `?User=` 或本机存储。 */
 export function getLoginName(): string {
   if (typeof window === "undefined") return "";
   if (resolvedMode === "single") return SINGLE_LOGIN;
-  if (resolvedLogin !== null) return resolvedLogin;
-  const urlLogin = getUrlLogin();
-  if (urlLogin) {
-    setStoredLogin(urlLogin);
-    return urlLogin;
-  }
-  return getStoredLogin();
+  return resolvedLogin ?? "";
 }
 
 /** 身份模式确认后固定有效身份；此后不再被 `?User` 重新覆盖。 */
 export function setResolvedIdentity(mode: "guip" | "single", login: string): void {
   resolvedMode = mode;
   resolvedLogin = mode === "single" ? SINGLE_LOGIN : login.trim();
-  setStoredLogin(resolvedLogin);
 }

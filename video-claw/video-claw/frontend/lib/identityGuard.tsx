@@ -5,11 +5,11 @@ import IdentityMissing from "@/components/IdentityMissing";
 import { withBasePath } from "@/lib/basePath";
 import {
   getLoginName,
+  getUrlLogin,
   setResolvedIdentity,
-  setStoredLogin,
 } from "@/lib/identityState";
 
-export { getLoginName, setStoredLogin };
+export { getLoginName };
 
 type IdentityState = {
   ready: boolean;
@@ -42,27 +42,53 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   return fetch(resolveRequestTarget(input), { ...init, headers: identityHeaders(init?.headers) });
 }
 
+type GuipGlobalInfo = { userInfo?: { loginName?: string } };
+
 type GuipWindow = Window & {
-  globalInfo?: () => { userInfo?: { loginName?: string } };
-  promise?: { globalInfo?: () => Promise<{ userInfo?: { loginName?: string } }> };
+  globalInfo?: () => GuipGlobalInfo;
+  promise?: { globalInfo?: () => Promise<GuipGlobalInfo> };
 };
 
-/** GUIP 内网环境：优先异步 globalInfo，再同步兜底。 */
+/** SDK 解析总预算：短轮询与 promise.globalInfo() 共用，不叠加。 */
+const GUIP_RESOLVE_BUDGET_MS = 1500;
+const GUIP_POLL_INTERVAL_MS = 100;
+
+function readGuipLogin(info: GuipGlobalInfo | null | undefined): string {
+  const login = info?.userInfo?.loginName;
+  return typeof login === "string" ? login.trim() : "";
+}
+
+/** 等待 SDK 挂载全局方法；耗时计入总预算。 */
+async function waitForGuipApi(deadline: number): Promise<GuipWindow> {
+  let guip = window as GuipWindow;
+  while (Date.now() < deadline) {
+    if (typeof guip.promise?.globalInfo === "function" || typeof guip.globalInfo === "function") {
+      return guip;
+    }
+    await new Promise<void>((resolve) => window.setTimeout(resolve, GUIP_POLL_INTERVAL_MS));
+    guip = window as GuipWindow;
+  }
+  return guip;
+}
+
+/** GUIP 内网环境：异步 globalInfo 优先，同步兜底；总预算 1.5s。 */
 async function detectGuipLogin(): Promise<string> {
   if (typeof window === "undefined") return "";
-  const guip = window as GuipWindow;
+  const deadline = Date.now() + GUIP_RESOLVE_BUDGET_MS;
   try {
+    const guip = await waitForGuipApi(deadline);
     if (typeof guip.promise?.globalInfo === "function") {
+      const remaining = Math.max(0, deadline - Date.now());
       const info = await Promise.race([
         guip.promise.globalInfo(),
-        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1500)),
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), remaining)),
       ]);
-      const login = info?.userInfo?.loginName;
-      if (login?.trim()) return login.trim();
+      const login = readGuipLogin(info);
+      if (login) return login;
     }
     if (typeof guip.globalInfo === "function") {
-      const login = guip.globalInfo()?.userInfo?.loginName;
-      if (login?.trim()) return login.trim();
+      const login = readGuipLogin(guip.globalInfo());
+      if (login) return login;
     }
   } catch {
     // 无 GUIP SDK / SDK 异常时按无身份处理
@@ -102,15 +128,31 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // 身份来源优先级：URL ?User > 本机缓存 > GUIP SDK。
-      if (!getLoginName()) {
-        const guipLogin = await detectGuipLogin();
-        if (guipLogin) setStoredLogin(guipLogin);
+      // 身份来源优先级：?User（受 allow_url_user 约束） > GUIP SDK。
+      const allowUrlUser = modeBody.allow_url_user !== false;
+      const urlLogin = allowUrlUser ? getUrlLogin() : "";
+      const login = urlLogin || (await detectGuipLogin());
+      if (!login) {
+        setResolvedIdentity("guip", "");
+        setState((prev) => ({
+          ...prev,
+          ready: true,
+          mode,
+          login: "",
+          isAdmin: false,
+          error: "未获取到用户身份",
+        }));
+        return;
       }
 
-      // 即使没有明文登录名也请求 /me：GUIP/反代可能已在请求上注入身份头。
+      // 必须先写入内存有效身份，/me 才能带上 X-User-Login-Name。
+      setResolvedIdentity("guip", login);
       const me = await loadMe();
-      // /me 的结论即为有效身份，此后不再被 URL 改写
+      if (me.login !== login) {
+        console.warn(
+          `[identity] /me 返回身份 ${me.login} 与解析值 ${login} 不一致，以后端为准`,
+        );
+      }
       setResolvedIdentity(mode, me.login);
       setState({
         ready: true,

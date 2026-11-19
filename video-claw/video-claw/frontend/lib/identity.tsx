@@ -11,6 +11,5 @@ export {
   getLoginName,
   identityHeaders,
   IdentityProvider,
-  setStoredLogin,
   useIdentity,
 } from "@/lib/identityGuard";

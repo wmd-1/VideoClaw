@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import AppShell from "@/components/AppShell";
+import { BASE_PATH } from "@/lib/basePathConfig";
 import { IdentityProvider } from "@/lib/identityGuard";
 import "./globals.css";
 
@@ -15,6 +17,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
+      <head>
+        <Script
+          src={`${BASE_PATH}/GuipAPI.xc2.js`}
+          strategy="beforeInteractive"
+        />
+      </head>
       <body
         className="antialiased"
       >

@@ -333,7 +333,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
   const [unavailableFeature, setUnavailableFeature] = useState('');
-  const { login, isAdmin, logout } = useIdentity();
+  const { login, isAdmin } = useIdentity();
 
   useEffect(() => {
     // 延后到微任务执行：effect 体内同步 setState 会触发级联渲染（react-hooks/set-state-in-effect）
@@ -413,17 +413,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 <>
                   {settingsMenuOpen && (
                     <div className="absolute bottom-[62px] left-3 right-3 rounded-xl border border-gray-200 bg-white p-2 shadow-lg">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSettingsMenuOpen(false);
-                          router.push(SETTINGS_ITEM.href);
-                        }}
-                        className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-600"
-                      >
-                        <Settings className="h-4 w-4" />
-                        修改配置
-                      </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettingsMenuOpen(false);
+                            router.push(SETTINGS_ITEM.href);
+                          }}
+                          className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-600"
+                        >
+                          <Settings className="h-4 w-4" />
+                          修改配置
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleClearCache()}
@@ -452,18 +454,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               );
             })()}
           </div>
-          <div className="flex items-center justify-between gap-2 border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
+          <div className="flex items-center gap-2 border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
             <span className="truncate" title={`当前身份：${login}`}>
               {login}
               {isAdmin ? ' · 管理员' : ''}
             </span>
-            <button
-              type="button"
-              onClick={logout}
-              className="rounded px-2 py-1 text-gray-500 hover:bg-gray-50 hover:text-gray-800"
-            >
-              切换身份
-            </button>
           </div>
         </div>
       </aside>
