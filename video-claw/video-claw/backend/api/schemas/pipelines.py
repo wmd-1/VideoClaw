@@ -13,6 +13,8 @@ class StandardPipelineRequest(BaseModel):
     llm_model: str
     image_model: str
     video_model: Optional[str] = None
+    video_dispatch_mode: Literal["auto", "manual"] = "manual"
+    video_profile_id: Optional[str] = None
     video_mode: str = Field("image_concat", description="image_concat or dynamic_video")
     video_ratio: str = "9:16"
     image_resolution: str = "1080P"
@@ -37,7 +39,9 @@ class ActionTransferPipelineRequest(BaseModel):
     prompt_text: str
     image_path: str
     video_path: str
-    video_model: str
+    video_model: Optional[str] = None
+    video_dispatch_mode: Literal["auto", "manual"] = "manual"
+    video_profile_id: Optional[str] = None
     duration: int = 5
     video_ratio: str = "9:16"
     video_resolution: Optional[str] = None
@@ -56,7 +60,9 @@ class DigitalHumanPipelineRequest(BaseModel):
     llm_model: str
     image_model: str
     image_resolution: str = "1080P"
-    video_model: str
+    video_model: Optional[str] = None
+    video_dispatch_mode: Literal["auto", "manual"] = "manual"
+    video_profile_id: Optional[str] = None
     duration: int = 5
     video_ratio: str = "9:16"
     video_resolution: Optional[str] = None

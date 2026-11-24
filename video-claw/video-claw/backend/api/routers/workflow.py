@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -97,6 +98,285 @@ def _active_video_model(values: dict) -> str:
     return values.get(model_field) or values.get("video_model") or getattr(settings, default_attr, "") or ""
 
 
+def _is_auto_dispatch(values: dict) -> bool:
+    # 会话/请求缺省即 auto；只有显式 manual 才走具体模型链，未知值按默认 auto 处理。
+    return str(values.get("video_dispatch_mode") or "auto").strip().lower() != "manual"
+
+
+def _preflight_auto_video_pool(stage: str, values: dict) -> None:
+    """auto 只判池配置，不读具体模型字段，也不回退 settings 默认模型。
+
+    拒绝统一返回 VideoDispatchDetail：code 固定 video_dispatch_error，
+    error_code 区分未就绪/不兼容/所选池未就绪/下线/运维停用。
+    """
+    from core.video_dispatch_errors import (
+        ACTION_CONFIGURE_POOL,
+        ACTION_EDIT_PARAMETERS,
+        ACTION_SELECT_POOL,
+        ACTION_USE_MANUAL_ONCE,
+        DISPATCH_DISABLED,
+        POOL_CONFIGURATION_ERROR,
+        POOL_DRAINING,
+        QUEUE_FULL,
+        POOL_INCOMPATIBLE,
+        POOL_NOT_READY,
+        POOL_UNAVAILABLE,
+        SELECTED_POOL_NOT_READY,
+        VideoDispatchDetail,
+        missing_item,
+    )
+    from core.video_pool_config import VideoPoolConfigError, load_pool_config
+
+    mode = str(values.get("video_generation_mode") or "first_frame")
+    mode = "reference" if mode == "reference" else "first_frame"
+    explicit = str(values.get("video_profile_id") or "").strip() or None
+
+    from core.video_dispatch_runtime import get_dispatch_runtime
+
+    runtime = get_dispatch_runtime()
+    service = runtime.service if runtime is not None else None
+    if service is not None and service.stopped:
+        raise HTTPException(
+            status_code=409,
+            detail=VideoDispatchDetail(
+                error_code=DISPATCH_DISABLED,
+                reason="资源池调度已由管理员停用；请使用高级手动模型或联系管理员",
+                mode="auto",
+                stage=stage,
+                field_name="VC_VIDEO_DISPATCH__ENABLED",
+                profile_id=explicit,
+                actions=[ACTION_USE_MANUAL_ONCE],
+            ).payload(),
+        )
+    if service is not None:
+        try:
+            from db.repositories.video_dispatch import VideoDispatchRepo
+
+            runtime_view = service.runtime()
+            if VideoDispatchRepo().count_queued() >= runtime_view.max_queued_jobs:
+                raise HTTPException(
+                    status_code=429,
+                    detail=VideoDispatchDetail(
+                        error_code=QUEUE_FULL,
+                        reason="视频调度队列已满，请稍后重试",
+                        mode="auto",
+                        stage=stage,
+                        field_name="video_profile_id",
+                        profile_id=explicit,
+                        actions=[ACTION_RETRY],
+                    ).payload(),
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    if service is not None and explicit and explicit in service.draining_profiles:
+        raise HTTPException(
+            status_code=409,
+            detail=VideoDispatchDetail(
+                error_code=POOL_DRAINING,
+                reason="所选资源池正在排空，暂不接单",
+                mode="auto",
+                stage=stage,
+                field_name="video_profile_id",
+                profile_id=explicit,
+                actions=[ACTION_SELECT_POOL],
+            ).payload(),
+        )
+
+    if not bool(getattr(settings, "VIDEO_DISPATCH_ENABLED", True)):
+        raise HTTPException(
+            status_code=409,
+            detail=VideoDispatchDetail(
+                error_code=DISPATCH_DISABLED,
+                reason="资源池调度已由运维停用；请使用高级手动模型或联系管理员",
+                mode="auto",
+                stage=stage,
+                field_name="VC_VIDEO_DISPATCH__ENABLED",
+                profile_id=explicit,
+                actions=[ACTION_USE_MANUAL_ONCE],
+            ).payload(),
+        )
+    path = Path(str(getattr(settings, "VIDEO_PROFILES_FILE", "") or ""))
+    try:
+        snapshot = load_pool_config(path)
+    except VideoPoolConfigError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=VideoDispatchDetail(
+                error_code=POOL_CONFIGURATION_ERROR,
+                reason=f"池配置不合法：{exc}",
+                mode="auto",
+                stage=stage,
+                field_name="video_profiles",
+                profile_id=explicit,
+                actions=[ACTION_CONFIGURE_POOL],
+            ).payload(),
+        ) from exc
+    from core.video_qualification import qualification_is_valid
+    from core.video_async_impact import (
+        ASYNC_CONFIRM_KEY,
+        collect_async_impact,
+        parse_confirmed_models,
+        unconfirmed_async_models,
+    )
+    from db.repositories.video_dispatch import VideoDispatchRepo
+
+    repo = VideoDispatchRepo()
+    config_values = settings.CONFIG if isinstance(settings.CONFIG, dict) else {}
+    providers = config_values.get("api_providers") if isinstance(config_values.get("api_providers"), dict) else {}
+    models = {
+        str(item.get("id")): item
+        for item in config_values.get("custom_models") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    confirmed_async = parse_confirmed_models(repo.get_system_meta(ASYNC_CONFIRM_KEY))
+    impacts = collect_async_impact(
+        snapshot.data,
+        models=models,
+        providers=providers,
+        confirmed_models=confirmed_async,
+    )
+    blocked_models = set(
+        unconfirmed_async_models(impacts, confirmed_models=confirmed_async)
+    )
+    qualified_instances: set[str] = set()
+    instance_by_id: dict[str, dict] = {}
+    for row in snapshot.data.get("video_instances") or []:
+        instance_id = str(row.get("instance_id") or "")
+        if not instance_id:
+            continue
+        instance_by_id[instance_id] = row
+        if not row.get("enabled"):
+            continue
+        if str(row.get("model_id") or "") in blocked_models:
+            continue
+        evidence = repo.get_qualification(
+            instance_id=instance_id,
+            resource_key=str(row.get("resource_key") or ""),
+        )
+        if qualification_is_valid(
+            evidence,
+            config_revision=snapshot.revision,
+            boot_id=str(getattr(settings, "BOOT_ID", "")),
+            now=time.time(),
+        ):
+            qualified_instances.add(instance_id)
+    profiles = [
+        profile
+        for profile in snapshot.data.get("video_profiles") or []
+        if isinstance(profile, dict) and profile.get("id")
+    ]
+
+    def ready_members(profile: dict) -> list[str]:
+        return [
+            member
+            for member in profile.get("instances") or []
+            if member in qualified_instances and instance_by_id.get(member, {}).get("enabled")
+        ]
+
+    if explicit:
+        profile = next((item for item in profiles if item.get("id") == explicit), None)
+        if profile is None or not profile.get("enabled", True):
+            raise HTTPException(
+                status_code=409,
+                detail=VideoDispatchDetail(
+                    error_code=POOL_UNAVAILABLE,
+                    reason="所选择的资源池不存在或已由管理员下线",
+                    mode="auto",
+                    stage=stage,
+                    profile_id=explicit,
+                    missing=[
+                        missing_item(
+                            f"video_profiles.{explicit}",
+                            "not_found" if profile is None else "disabled",
+                            "请改选其他池或清空显式偏好",
+                        )
+                    ],
+                    actions=[ACTION_SELECT_POOL, ACTION_USE_MANUAL_ONCE],
+                ).payload(),
+            )
+        if not ready_members(profile):
+            raise HTTPException(
+                status_code=409,
+                detail=VideoDispatchDetail(
+                    error_code=SELECTED_POOL_NOT_READY,
+                    reason="所选择的资源池暂无已启用且资格有效的实例",
+                    mode="auto",
+                    stage=stage,
+                    profile_id=explicit,
+                    missing=[
+                        missing_item(
+                            f"video_profiles.{explicit}.instances",
+                            "no_qualified_member",
+                            "请完成实例配置及资格验证，或改选其他池",
+                        )
+                    ],
+                    actions=[ACTION_CONFIGURE_POOL, ACTION_SELECT_POOL, ACTION_USE_MANUAL_ONCE],
+                ).payload(),
+            )
+        if mode not in (profile.get("contracts") or {}):
+            raise HTTPException(
+                status_code=409,
+                detail=VideoDispatchDetail(
+                    error_code=POOL_INCOMPATIBLE,
+                    reason=f"所选资源池未声明 {mode} 生成契约",
+                    mode="auto",
+                    stage=stage,
+                    field_name="video_generation_mode",
+                    profile_id=explicit,
+                    missing=[
+                        missing_item(
+                            f"video_profiles.{explicit}.contracts.{mode}",
+                            "mode_not_supported",
+                            "请改选兼容池或调整生成方式",
+                        )
+                    ],
+                    actions=[ACTION_SELECT_POOL, ACTION_EDIT_PARAMETERS],
+                ).payload(),
+            )
+        return
+
+    ready_profiles = [profile for profile in profiles if profile.get("enabled", True) and ready_members(profile)]
+    if not ready_profiles:
+        raise HTTPException(
+            status_code=409,
+            detail=VideoDispatchDetail(
+                error_code=POOL_NOT_READY,
+                reason="资源池已开启但暂无就绪实例",
+                mode="auto",
+                stage=stage,
+                missing=[
+                    missing_item(
+                        "video_instances",
+                        "no_enabled_qualified_member",
+                        "请完成实例配置及资格验证",
+                    )
+                ],
+                actions=[ACTION_CONFIGURE_POOL, ACTION_USE_MANUAL_ONCE],
+            ).payload(),
+        )
+    if not any(mode in (profile.get("contracts") or {}) for profile in ready_profiles):
+        raise HTTPException(
+            status_code=409,
+            detail=VideoDispatchDetail(
+                error_code=POOL_INCOMPATIBLE,
+                reason=f"当前没有支持 {mode} 生成方式的就绪资源池",
+                mode="auto",
+                stage=stage,
+                field_name="video_generation_mode",
+                missing=[
+                    missing_item(
+                        "video_profiles",
+                        "no_compatible_pool",
+                        "请管理员配置对应生成契约，或调整本次生成方式",
+                    )
+                ],
+                actions=[ACTION_EDIT_PARAMETERS, ACTION_USE_MANUAL_ONCE],
+            ).payload(),
+        )
+
+
 def _require_model_fields(values: dict) -> None:
     required = REQUIRED_MODEL_FIELDS
     mode = str(values.get("video_generation_mode") or "first_frame")
@@ -105,7 +385,7 @@ def _require_model_fields(values: dict) -> None:
         # 文生图仍必需（角色/场景设计依赖）。本函数无阶段参数，故按会话模式放行。
         required = tuple(field for field in REQUIRED_MODEL_FIELDS if field != "image_it2i_model")
     missing = [field for field in required if not values.get(field)]
-    if not _active_video_model(values):
+    if not _is_auto_dispatch(values) and not _active_video_model(values):
         missing.append("video_model")
     if missing:
         raise HTTPException(
@@ -211,6 +491,9 @@ def _preflight_stage_models(stage: str, values: dict) -> None:
         # reference 模式下参考图阶段跳过（reference-mode-skip-scene-images）：不校验图像模型字段
         return
     if stage == "video_generation":
+        if _is_auto_dispatch(values):
+            _preflight_auto_video_pool(stage, values)
+            return
         # 只校验本次生成方式实际会用的那一个视频模型（含 legacy 回退后的真实来源）
         field_pairs = ((_active_video_model_field(values), _active_video_model(values)),)
     else:
@@ -266,6 +549,8 @@ async def start_project(req: ProjectStartRequest, user: CurrentUser = Depends(ge
     _require_model_fields(req.model_dump())
 
     session_id = str(int(time.time() * 1000))
+    dispatch_mode = (req.video_dispatch_mode or "auto").strip().lower()
+    auto_dispatch = dispatch_mode == "auto"
     meta = {
         "idea": final_idea,
         "user_textbox_input": req.idea,
@@ -282,11 +567,17 @@ async def start_project(req: ProjectStartRequest, user: CurrentUser = Depends(ge
         "vlm_model": req.vlm_model,
         "image_t2i_model": req.image_t2i_model,
         "image_it2i_model": req.image_it2i_model,
-        # Legacy request/session compatibility: clients created before the split only send video_model.
-        "video_first_frame_model": req.video_first_frame_model or req.video_model or getattr(settings, "VIDEO_FIRST_FRAME_MODEL", ""),
-        "video_start_end_model": req.video_start_end_model or getattr(settings, "VIDEO_START_END_MODEL", ""),
-        "video_reference_model": req.video_reference_model or getattr(settings, "VIDEO_REFERENCE_MODEL", ""),
+        # auto 只保留用户显式值或空，不读 settings 具体模型；manual 才走设置链。
+        "video_first_frame_model": req.video_first_frame_model
+        or req.video_model
+        or ("" if auto_dispatch else getattr(settings, "VIDEO_FIRST_FRAME_MODEL", "")),
+        "video_start_end_model": req.video_start_end_model
+        or ("" if auto_dispatch else getattr(settings, "VIDEO_START_END_MODEL", "")),
+        "video_reference_model": req.video_reference_model
+        or ("" if auto_dispatch else getattr(settings, "VIDEO_REFERENCE_MODEL", "")),
         "video_generation_mode": req.video_generation_mode or getattr(settings, "VIDEO_GENERATION_MODE", "first_frame"),
+        "video_dispatch_mode": dispatch_mode,
+        "video_profile_id": req.video_profile_id,
         "video_model": req.video_model,
         "enable_concurrency": req.enable_concurrency if req.enable_concurrency is not None else True,
         "web_search": req.web_search if req.web_search is not None else False,
@@ -314,7 +605,9 @@ async def start_project(req: ProjectStartRequest, user: CurrentUser = Depends(ge
             raise HTTPException(404, detail=f"音频参考不属于当前用户: {exc}") from exc
         except MediaInputError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
-    meta["video_model"] = _active_video_model(meta)
+    # auto 不消费也不回写具体 video_model；仅 manual 才从设置链解析具体模型。
+    if not _is_auto_dispatch(meta):
+        meta["video_model"] = _active_video_model(meta)
     session = await _engine_call(workflow_engine.create_session, session_id, meta, owner=user.login)
 
     return {
@@ -421,6 +714,11 @@ async def update_models(
 ):
     body = await request.json()
     body = _canonical_payload(body if isinstance(body, dict) else {}, session_id, user)
+    if "video_dispatch_mode" in body:
+        mode = str(body.get("video_dispatch_mode") or "auto").strip().lower()
+        if mode not in {"auto", "manual"}:
+            raise HTTPException(400, detail="video_dispatch_mode 必须是 auto 或 manual")
+        body["video_dispatch_mode"] = mode
     allowed_keys = (
         "llm_model",
         "vlm_model",
@@ -431,6 +729,8 @@ async def update_models(
         "video_start_end_model",
         "video_reference_model",
         "video_generation_mode",
+        "video_dispatch_mode",
+        "video_profile_id",
         "video_ratio",
         "video_resolution",
         "video_duration",

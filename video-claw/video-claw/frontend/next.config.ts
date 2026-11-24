@@ -157,6 +157,10 @@ export default function nextConfig(phase: string): NextConfig {
           destination: `${backendUrl}/api/upload_file`,
         },
         {
+          source: "/api/video/:path*",
+          destination: `${backendUrl}/api/video/:path*`,
+        },
+        {
           source: "/api/models",
           destination: `${backendUrl}/api/models`,
         },

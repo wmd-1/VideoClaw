@@ -10,6 +10,7 @@ import {
   CustomProvidersSection,
   type EnvOverrides,
 } from '@/components/settings/CustomModelsSection';
+import VideoPoolSection from '@/components/settings/VideoPoolSection';
 import {
   VIDEO_RATIOS,
   VIDEO_RESOLUTIONS,
@@ -449,6 +450,7 @@ export default function SettingsPage() {
 
             <CustomProvidersSection config={config} savedConfig={savedConfig} setConfig={setConfig} envOverrides={envOverrides} />
             <CustomModelsSection config={config} savedConfig={savedConfig} setConfig={setConfig} envOverrides={envOverrides} />
+            <VideoPoolSection isAdmin={isAdmin} />
 
             <div className="sticky bottom-4 flex items-center gap-3 rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-lg backdrop-blur">
               {message && (

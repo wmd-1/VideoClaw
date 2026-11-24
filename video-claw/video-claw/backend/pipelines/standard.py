@@ -232,8 +232,9 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
     dynamic_video = video_mode == "dynamic_video" or bool(params.get("generate_videos", False))
     video_model = params.get("video_model")
     video_resolution = params.get("video_resolution") or params.get("resolution") or "720P"
-    if (dynamic_video or template_video_mode) and not video_model:
-        raise ValueError("standard pipeline video generation requires video_model")
+    video_dispatch_mode = str(params.get("video_dispatch_mode") or "manual").lower()
+    if (dynamic_video or template_video_mode) and video_dispatch_mode == "manual" and not video_model:
+        raise ValueError("standard pipeline manual video generation requires video_model")
     video_duration = clamp_segment_count(params.get("video_duration") or params.get("duration") or 5, default=5)
 
     update_task(task_id, progress=9, message="Generating image prompts")
@@ -353,6 +354,8 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
                     duration=max(video_duration, int(duration + 0.999)),
                     video_ratio=media_video_ratio,
                     video_resolution=video_resolution,
+                    video_dispatch_mode=video_dispatch_mode,
+                    video_profile_id=params.get("video_profile_id"),
                 )
                 storyboard["frames"][idx - 1]["template_media_video_path"] = media_video_path
 
@@ -421,6 +424,8 @@ async def run(task_id: str, params: dict) -> tuple[dict, list[dict]]:
                 duration=max(video_duration, int(duration + 0.999)),
                 video_ratio=video_ratio,
                 video_resolution=video_resolution,
+                video_dispatch_mode=video_dispatch_mode,
+                video_profile_id=params.get("video_profile_id"),
             )
             motion_artifact = artifact(video_only_segment_path, "video", f"video_{idx:02d}_motion")
             artifacts.append(motion_artifact)

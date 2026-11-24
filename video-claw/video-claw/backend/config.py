@@ -2,6 +2,7 @@ import copy
 import logging
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1006,9 +1007,41 @@ def _resolve_media_ref_base_url() -> str:
     return str(_get(CONFIG_VALUES, "server.media_ref_base_url") or "").strip().rstrip("/")
 
 
+def _resolve_video_dispatch_enabled() -> bool:
+    env = _load_env_sources()
+    raw = env.get("VC_VIDEO_DISPATCH__ENABLED")
+    if raw is None or str(raw).strip() == "":
+        return True
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("VC_VIDEO_DISPATCH__ENABLED ignored: invalid boolean %r; using true", raw)
+    return True
+
+
+def _resolve_video_profiles_file() -> str:
+    env = _load_env_sources()
+    raw = str(env.get("VC_VIDEO_PROFILES_FILE") or "").strip()
+    if raw:
+        return str(Path(raw).expanduser())
+    return str(CONFIG_PATH.parent / "data" / "video_profiles.yaml")
+
+
+VIDEO_DISPATCH_ENABLED = _resolve_video_dispatch_enabled()
+VIDEO_PROFILES_FILE = _resolve_video_profiles_file()
+
+
+BOOT_ID = uuid.uuid4().hex
+
+
 class Config:
     CONFIG = CONFIG_VALUES
     ENV_OVERRIDES = CONFIG_ENV_INFO
+    BOOT_ID = BOOT_ID
+    VIDEO_DISPATCH_ENABLED = VIDEO_DISPATCH_ENABLED
+    VIDEO_PROFILES_FILE = VIDEO_PROFILES_FILE
 
     DATABASE = _get(CONFIG, "database", {})
     STORAGE = _get(CONFIG, "storage", {})

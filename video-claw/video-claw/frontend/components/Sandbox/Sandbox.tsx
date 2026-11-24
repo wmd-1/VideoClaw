@@ -10,6 +10,7 @@ import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/mo
 
 import { apiFetch } from "@/lib/identityGuard";
 import { mediaUrl } from "@/lib/basePath";
+import { fetchVideoProfiles, type VideoProfile } from "@/lib/videoPools";
 // 辅助函数：将后端媒体路径转换为同源 + 部署前缀的 URL（见 lib/basePath）
 const toMediaUrl = (path: string) => {
   if (!path) return '';
@@ -556,6 +557,9 @@ export default function SandboxPage() {
   };
 
   const [selectedModel, setSelectedModel] = useState('');
+  const [videoDispatchMode, setVideoDispatchMode] = useState<'auto' | 'manual'>('auto');
+  const [videoProfileId, setVideoProfileId] = useState('');
+  const [videoPools, setVideoPools] = useState<VideoProfile[]>([]);
   const [videoRatio, setVideoRatio] = useState('16:9');
   const [videoResolution, setVideoResolution] = useState('720P');
   const [videoDuration, setVideoDuration] = useState(5);
@@ -744,6 +748,12 @@ export default function SandboxPage() {
     setVideoRefPaths([]);
   };
 
+  useEffect(() => {
+    fetchVideoProfiles()
+      .then(payload => setVideoPools(payload.profiles || []))
+      .catch(() => setVideoPools([]));
+  }, []);
+
   // 监听工具变化，确保模型选择同步：工具/模型组/当前选中变化即校正（渲染期完成，
   // 替代 effect 内同步 setState；触发面与原 effect 依赖 [activeTool, modelGroups,
   // selectedModel] 一致——含 selectedModel 才能把历史回填的失效模型纠回默认）
@@ -763,7 +773,7 @@ export default function SandboxPage() {
 
   // 检查是否可以提交
   const canSubmit = () => {
-    if (!selectedModel) return false;
+    if (activeTool === 'video' ? (videoDispatchMode === 'manual' && !selectedModel) : !selectedModel) return false;
     if (!prompt.trim() && activeTool !== 't2i') return false;
     if ((activeTool === 'i2i') && !imageUrl) return false;
     return true;
@@ -783,6 +793,10 @@ export default function SandboxPage() {
         model: selectedModel,
         prompt: prompt,
       };
+      if (activeTool === 'video') {
+        body.video_dispatch_mode = videoDispatchMode;
+        if (videoProfileId) body.video_profile_id = videoProfileId;
+      }
 
       switch (activeTool) {
         case 'llm':
@@ -915,6 +929,29 @@ export default function SandboxPage() {
             {/* 输入区域 */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
               {/* 模型选择 */}
+              {activeTool === 'video' && (
+                <div className="mb-4 rounded-xl bg-gray-50 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-gray-600">视频调度</span>
+                    <div className="inline-flex rounded-lg bg-white p-0.5">
+                      <button onClick={() => setVideoDispatchMode('auto')} className={`px-2 py-0.5 rounded text-[11px] ${videoDispatchMode === 'auto' ? 'bg-indigo-50 text-indigo-600' : 'text-gray-500'}`}>自动</button>
+                      <button onClick={() => setVideoDispatchMode('manual')} className={`px-2 py-0.5 rounded text-[11px] ${videoDispatchMode === 'manual' ? 'bg-indigo-50 text-indigo-600' : 'text-gray-500'}`}>手动</button>
+                    </div>
+                  </div>
+                  {videoDispatchMode === 'auto' ? (
+                    <div className="mt-2 space-y-1">
+                      <select value={videoProfileId} onChange={e => setVideoProfileId(e.target.value)} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700">
+                        <option value="">后端默认推荐</option>
+                        {videoPools.map(pool => (
+                          <option key={pool.id} value={pool.id} disabled={pool.state === 'not_ready'}>{pool.name || pool.id} · {pool.state}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-gray-400">自动模式按资源池排队；t2va 无池时请切到手动并选择模型。</p>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+              {(activeTool !== 'video' || videoDispatchMode === 'manual') && (
               <div className="mb-4">
                 <div className="flex items-center justify-between">
                   <div className="flex-1">
@@ -931,6 +968,7 @@ export default function SandboxPage() {
                   </div>
                 </div>
               </div>
+              )}
 
               {activeTool === 'video' && (
                 <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">

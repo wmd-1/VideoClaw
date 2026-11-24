@@ -1,0 +1,435 @@
+# 视频自动调度设计样例：4 个 vLLM-Omni + 4 个 SGLang 自部署实例。
+# 本样例共 4 个 pool（video_profiles 中的一条配置档就是一个 pool），每池 2 个实例。
+# pool 与实例归属（以每个 profile 的 instances 列表为唯一配置依据）：
+#   h3-omni-fl2va   → omni-01、omni-03       → 首帧 / 首尾帧
+#   h3-omni-ref2va  → omni-02、omni-04       → 参考图
+#   h3-sglang-fl2va → sglang-01、sglang-03   → 首帧 / 首尾帧
+#   h3-sglang-ref2va→ sglang-02、sglang-04   → 参考图
+# 会话 video_dispatch_mode 缺省 auto；manual 仅在“高级：手动指定模型”中显式选择。
+# 会话只保存用户显式 video_profile_id 偏好（默认 null），系统推荐不回写会话或 video_*_model。
+# 每次新执行：有显式偏好只校验原池；无偏好则管理员就绪兼容推荐 → 首个就绪兼容池。
+# 执行快照保存池、契约修订和 selection_source=user|admin_default|fallback，来源由后端计算。
+# 上次 fallback 不绑定下次执行；失效时新执行可重解并提示，busy/瞬时探针异常不触发换池。
+# fallback 也包含正常的“无推荐映射取首个就绪池”，原因是 no_default，本身不是异常。
+# 默认池 busy 时仍选默认池排队，即使其他池空闲也不自动改选。
+# 已受理入队的批次固定 pool，尚未发远端也不重解；池满不自动跨池。
+# 入队后临时 not_ready 仍在原池等待到原 queue_deadline_at，超时以 queue_timeout 结束。
+# 管理员显式下线整池（profile.enabled=false）以 pool_unavailable 提前结束未派发项，
+# 在途任务继续安全收尾，不能立即释放其占用；单实例维护不等于下线整池。
+# 本样例首帧/首尾帧可选两个 fl2va 池，参考图可选两个 ref2va 池。
+# 若另外配置的四个池都支持同一生成方式，则该方式可列出四个池供选一个。
+# 配套设计：docs/designs/视频生成自动调度与实例池方案-2026-11-19.md。
+# 状态：待实现契约；当前版本尚未支持 video_dispatch/video_profiles/video_instances
+# 和 video_api_mode，不要提前合并启用，不代表复制后就获得单并发保护。
+# 运行时路径由 .env 的 VC_VIDEO_PROFILES_FILE 指定；Docker 下为
+# data/config/video_profiles.yaml（容器内 /app/data/video_profiles.yaml）。
+# 本 .example 不会被自动加载；复制到运行时路径后再按真实地址修改。
+# 开关在 .env 的 VC_VIDEO_DISPATCH__ENABLED（缺省 true），本文件不重复维护 enabled。
+# 管理员可在“设置 → 视频自动调度”在线修改运行时文件，保存后热生效；.env 路径只读。
+#
+# 使用前：替换示例地址、服务端模型名、真实物理资源键、权重与契约修订、探针标签。
+# 八个 resource_key 假设八份独立算力；共用单并发 GPU 的服务必须使用相同资源键。
+# 多 pool 不是多份算力：即使同一实例被多个 profile 引用，也不能重复计算槽位。
+# exclusive/shared 仅演示部署边界，按真实调用方调整。
+# exclusive 资格有效、当前启动核对完成且无未决占位时可直接派发，不等健康探针。
+# shared 需两次近期 idle（间隔至少 5 秒）+ 提交前刷新；按需检查单轮预算 3 秒并合并限频。
+# 两类实例的未知提交/取消未确认都保持隔离；exclusive 不是遗留任务的放行开关。
+# 开关口径：全局开关在 .env（VC_VIDEO_DISPATCH__ENABLED，缺省 true），本文件不写 enabled；
+# 八个实例保持 enabled: false。这是“模式默认开、占位地址不启用”；就绪状态由运行期计算，
+# 不能写进本配置。
+# URL 只按解析后的 hostname 校验：IDNA/小写/去末尾根点后等于 example 或以 .example 结尾。
+# api.example.internal 不因含 example 被拒；不扫描注释和显示名称。
+# CHANGE_ME 按指定字段去空白并转大写后的完整值匹配：服务端 model、三类契约修订、
+# resource_key、必需的 URL 和 SGLang role/replica；样例资源键 example-gpu-数字也必须替换。
+# 草稿（实例 enabled=false）可保存缺项；启用时拒绝写入不合格配置，文件/内存不变。
+# 手工启用但仍含占位值的配置可展示缺项，有效启用为 false，不允许派发或探测。
+# 完整判据见设计 §4.1.3；资格证据也必须与当前修订一致。
+# 功能实施后导入本样例为“已开启 / 未就绪（零就绪池）”，按设计 §4.1.2 引导：
+# “管理员完成配置”或“本次改用手动模型”；只有用户确认才执行本次 manual。
+# 零就绪池不派发、不创建调度作业、不排队；不向占位地址发出任何自动探测请求。
+# 配置补齐后保持 auto 的新执行直接进入池，无需再开模式，不自动发起生成。
+# 最小启用清单：替换 base_url/jobs_url/metrics_url → 填服务端真实模型名及资源键
+#   → 清除 CHANGE_ME、补齐契约/标签 → 管理员资格验证 → 启用同池两个实例 → 双槽就绪。
+# 也可先启用一个合格实例获得单槽；disabled 的真实实例允许管理员显式资格检查。
+# 资格检查不能绕过占位；真实生成测试需单独确认，保存配置本身不生成。
+# 不含真实密钥；api_key 为空不发送 Authorization。
+# 本文件是固定教学/回归样例，不兼作 staging；填真实地址的运行配置不适用本校验器。
+
+api_providers:
+  pool_omni_01:
+    protocol: vllm-omni
+    base_url: http://video-omni-01.example:8002/v1
+    api_key: ''
+    enable_proxy: false
+  pool_omni_02:
+    protocol: vllm-omni
+    base_url: http://video-omni-02.example:8003/v1
+    api_key: ''
+    enable_proxy: false
+  pool_sglang_01:
+    protocol: sglang
+    base_url: http://video-sglang-01.example:30010/v1
+    api_key: ''
+    enable_proxy: false
+  pool_sglang_02:
+    protocol: sglang
+    base_url: http://video-sglang-02.example:30011/v1
+    api_key: ''
+    enable_proxy: false
+  pool_omni_03:
+    protocol: vllm-omni
+    base_url: http://video-omni-03.example:8004/v1
+    api_key: ''
+    enable_proxy: false
+  pool_omni_04:
+    protocol: vllm-omni
+    base_url: http://video-omni-04.example:8005/v1
+    api_key: ''
+    enable_proxy: false
+  pool_sglang_03:
+    protocol: sglang
+    base_url: http://video-sglang-03.example:30012/v1
+    api_key: ''
+    enable_proxy: false
+  pool_sglang_04:
+    protocol: sglang
+    base_url: http://video-sglang-04.example:30013/v1
+    api_key: ''
+    enable_proxy: false
+
+# 每种协议有两个 fl2va 和两个 ref2va 实例，不假定一个实例加载所有 partition。
+# video_api_mode 是拟新增字段；受管实例固定 async，不在异常后自动切换 sync。
+# 以下服务端模型名沿用当前 H3 模板样式，实际部署名称不同时必须修改。
+custom_models:
+  - id: pool-h3-omni-fl2va
+    name: H3 首尾帧实例 Omni-01
+    provider: pool_omni_01
+    model: /models/MiniMax-H3
+    types: [video]
+    abilities: [first_frame_i2v, start_end_frame_i2v]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [fl2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+  - id: pool-h3-omni-ref2va
+    name: H3 参考图实例 Omni-02
+    provider: pool_omni_02
+    model: /models/MiniMax-H3
+    types: [video]
+    abilities: [reference_to_video]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [ref2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+  - id: pool-h3-sglang-fl2va
+    name: H3 首尾帧实例 SGLang-01
+    provider: pool_sglang_01
+    model: MiniMaxAI/MiniMax-H3
+    types: [video]
+    abilities: [first_frame_i2v, start_end_frame_i2v]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [fl2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+  - id: pool-h3-sglang-ref2va
+    name: H3 参考图实例 SGLang-02
+    provider: pool_sglang_02
+    model: MiniMaxAI/MiniMax-H3
+    types: [video]
+    abilities: [reference_to_video]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [ref2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+
+  - id: pool-h3-omni-fl2va-03
+    name: H3 首尾帧实例 Omni-03
+    provider: pool_omni_03
+    model: /models/MiniMax-H3
+    types: [video]
+    abilities: [first_frame_i2v, start_end_frame_i2v]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [fl2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+  - id: pool-h3-omni-ref2va-04
+    name: H3 参考图实例 Omni-04
+    provider: pool_omni_04
+    model: /models/MiniMax-H3
+    types: [video]
+    abilities: [reference_to_video]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [ref2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+  - id: pool-h3-sglang-fl2va-03
+    name: H3 首尾帧实例 SGLang-03
+    provider: pool_sglang_03
+    model: MiniMaxAI/MiniMax-H3
+    types: [video]
+    abilities: [first_frame_i2v, start_end_frame_i2v]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [fl2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+  - id: pool-h3-sglang-ref2va-04
+    name: H3 参考图实例 SGLang-04
+    provider: pool_sglang_04
+    model: MiniMaxAI/MiniMax-H3
+    types: [video]
+    abilities: [reference_to_video]
+    concurrency: 1
+    video_api_mode: async
+    capabilities:
+      tasks: [ref2va]
+      allow_frame_as_reference: false
+      short_edge: 768
+      resolutions: ['768P']
+      duration: {min: 4, max: 15}
+      fps: [24]
+
+video_dispatch:
+  # 开关只在 .env：VC_VIDEO_DISPATCH__ENABLED（缺省 true）。本文件出现 enabled 视为配置错误，
+  # 避免“env 已关闭、YAML 仍写 true”的双来源。
+  # 开启不等于就绪；本例实例停用且有占位值，零就绪按 §4.1.2 引导，不派发不排队。
+  # 停用语义（env 关闭）：拒绝新的受管派发，未提交队列停止，在途继续核对且保留占位。
+  # 不会自动切 manual，受管 manual 也不能绕过该闸门；与 video_api_mode 独立。
+  default_mode: auto
+  # 入队时固定批次期限；临时 not_ready 或反复探测不重置这 3600 秒。
+  queue_timeout_seconds: 3600
+  max_queued_jobs: 1000
+  max_running_jobs: 8
+  # max_running_jobs：所有受管在途尝试的全局上限（1–8 的整数）。
+  # auto 单执行并发来自池合格槽位/策略，不使用任一成员的 concurrency=1。
+  # 仅供无用户显式偏好的新执行解析；不覆盖偏好，不改变已入队作业。
+  # 运行时 YAML 默认必须为 default_profiles: {}、两个资源列表为空，
+  # 不能从默认常量带回悬空推荐；本八实例样例保留下面的有效推荐。
+  # 缺省映射正常归一成 {}，has_default_recommendation=false，不能显示“默认池未就绪”。
+  # 非空悬空 ID 是配置错误，不视为未设置。三个方式映射共引用两个不同的池 ID。
+  # 零就绪走引导；有就绪池但无兼容项则报不兼容，不降参；busy 不触发改选。
+  default_profiles:
+    first_frame: h3-sglang-fl2va
+    start_end_frame: h3-sglang-fl2va
+    reference: h3-sglang-ref2va
+
+# pool = 一个 video_profiles 条目；只有用户主动选中才将 id 写入会话 video_profile_id。
+# profile.enabled 缺省 true，表示允许接单而非已经就绪；管理员显式下线才设 false。
+# 该池级开关与下方八个实例 enabled:false 分开，不会自动启用任何实例。
+# 可选 max_concurrency_per_execution 缺省 8（1–8）；enable_concurrency=false 时执行上限为 1。
+# 快照成员 ∩ 当前仍属本池、满足原契约且启用/资格有效的成员，才可接新片段；新增成员不扩批次。
+# 本例按“协议 + 任务”分四池，便于演示，不表示协议不同必须分池。
+# 同能力跨协议实例通过验收后也可由管理员合并到同一个 profile。
+# 未声明采样字段不代表服务默认值相同；启用前核对权重、提示词、采样和输出能力，
+# 必要时在各模型 capabilities 中显式配置相同语义的采样参数。
+video_profiles:
+  # 池一：omni-01 + omni-03，最多两个首帧/首尾帧片段并行。
+  - id: h3-omni-fl2va
+    name: H3 首尾帧池 · vLLM-Omni
+    revision: 1
+    model_family: MiniMax-H3
+    artifact_revision: CHANGE_ME
+    prompt_contract_revision: CHANGE_ME
+    sampling_contract_revision: CHANGE_ME
+    instances: [omni-01, omni-03]
+    contracts:
+      first_frame:
+        task: fl2va
+        resolutions: ['768P']
+        short_edge: 768
+        ratios: ['16:9', '9:16']
+        duration: {min: 4, max: 15}
+        fps: [24]
+      start_end_frame:
+        task: fl2va
+        resolutions: ['768P']
+        short_edge: 768
+        ratios: ['16:9', '9:16']
+        duration: {min: 4, max: 15}
+        fps: [24]
+  # 池二：omni-02 + omni-04，最多两个参考图片段并行。
+  - id: h3-omni-ref2va
+    name: H3 参考图池 · vLLM-Omni
+    revision: 1
+    model_family: MiniMax-H3
+    artifact_revision: CHANGE_ME
+    prompt_contract_revision: CHANGE_ME
+    sampling_contract_revision: CHANGE_ME
+    instances: [omni-02, omni-04]
+    contracts:
+      reference:
+        task: ref2va
+        resolutions: ['768P']
+        short_edge: 768
+        ratios: ['16:9', '9:16']
+        duration: {min: 4, max: 15}
+        fps: [24]
+  # 池三：sglang-01 + sglang-03，最多两个首帧/首尾帧片段并行。
+  - id: h3-sglang-fl2va
+    name: H3 首尾帧池 · SGLang
+    revision: 1
+    model_family: MiniMax-H3
+    artifact_revision: CHANGE_ME
+    prompt_contract_revision: CHANGE_ME
+    sampling_contract_revision: CHANGE_ME
+    instances: [sglang-01, sglang-03]
+    contracts:
+      first_frame:
+        task: fl2va
+        resolutions: ['768P']
+        short_edge: 768
+        ratios: ['16:9', '9:16']
+        duration: {min: 4, max: 15}
+        fps: [24]
+      start_end_frame:
+        task: fl2va
+        resolutions: ['768P']
+        short_edge: 768
+        ratios: ['16:9', '9:16']
+        duration: {min: 4, max: 15}
+        fps: [24]
+  # 池四：sglang-02 + sglang-04，最多两个参考图片段并行。
+  - id: h3-sglang-ref2va
+    name: H3 参考图池 · SGLang
+    revision: 1
+    model_family: MiniMax-H3
+    artifact_revision: CHANGE_ME
+    prompt_contract_revision: CHANGE_ME
+    sampling_contract_revision: CHANGE_ME
+    instances: [sglang-02, sglang-04]
+    contracts:
+      reference:
+        task: ref2va
+        resolutions: ['768P']
+        short_edge: 768
+        ratios: ['16:9', '9:16']
+        duration: {min: 4, max: 15}
+        fps: [24]
+
+# probe.kind 为拟新增的内建探针类型，不是推理服务的新增接口。
+# vllm_omni 指标：vllm_omni:num_requests_running / vllm_omni:num_requests_waiting。
+# sglang_diffusion 指标：sglang:diffusion_num_running_reqs / sglang:diffusion_num_queue_reqs。
+# jobs_url 与 metrics_url 分开，反向代理有路径前缀时必须保留。
+# 共享 Omni 实例若外部使用 sync，仅 jobs 列表为空不能判空闲。
+# SGLang 必须开启 metrics；labels 按真实 role/replica 填写，缺指标不是 0。
+# 资格证据由系统存 DB，不通过在样例中填写 qualified=true 自报通过。
+# 实例 enabled 全为 false：池"未就绪"，全局开关仍为开启；就绪判定见 §4.1.2，不要求打开全局开关。
+video_instances:
+  - instance_id: omni-01
+    model_id: pool-h3-omni-fl2va
+    resource_key: example-gpu-01
+    access_mode: exclusive
+    enabled: false
+    driver: vllm_omni_async
+    probe:
+      kind: vllm_omni
+      jobs_url: http://video-omni-01.example:8002/v1/videos
+      metrics_url: http://video-omni-01.example:8002/metrics
+  - instance_id: omni-02
+    model_id: pool-h3-omni-ref2va
+    resource_key: example-gpu-02
+    access_mode: shared
+    enabled: false
+    driver: vllm_omni_async
+    probe:
+      kind: vllm_omni
+      jobs_url: http://video-omni-02.example:8003/v1/videos
+      metrics_url: http://video-omni-02.example:8003/metrics
+  - instance_id: sglang-01
+    model_id: pool-h3-sglang-fl2va
+    resource_key: example-gpu-03
+    access_mode: exclusive
+    enabled: false
+    driver: sglang_async
+    probe:
+      kind: sglang_diffusion
+      jobs_url: http://video-sglang-01.example:30010/v1/videos
+      metrics_url: http://video-sglang-01.example:30010/metrics
+      labels: {role: monolithic, replica: CHANGE_ME}
+  - instance_id: sglang-02
+    model_id: pool-h3-sglang-ref2va
+    resource_key: example-gpu-04
+    access_mode: shared
+    enabled: false
+    driver: sglang_async
+    probe:
+      kind: sglang_diffusion
+      jobs_url: http://video-sglang-02.example:30011/v1/videos
+      metrics_url: http://video-sglang-02.example:30011/metrics
+      labels: {role: monolithic, replica: CHANGE_ME}
+  - instance_id: omni-03
+    model_id: pool-h3-omni-fl2va-03
+    resource_key: example-gpu-05
+    access_mode: exclusive
+    enabled: false
+    driver: vllm_omni_async
+    probe:
+      kind: vllm_omni
+      jobs_url: http://video-omni-03.example:8004/v1/videos
+      metrics_url: http://video-omni-03.example:8004/metrics
+  - instance_id: omni-04
+    model_id: pool-h3-omni-ref2va-04
+    resource_key: example-gpu-06
+    access_mode: exclusive
+    enabled: false
+    driver: vllm_omni_async
+    probe:
+      kind: vllm_omni
+      jobs_url: http://video-omni-04.example:8005/v1/videos
+      metrics_url: http://video-omni-04.example:8005/metrics
+  - instance_id: sglang-03
+    model_id: pool-h3-sglang-fl2va-03
+    resource_key: example-gpu-07
+    access_mode: exclusive
+    enabled: false
+    driver: sglang_async
+    probe:
+      kind: sglang_diffusion
+      jobs_url: http://video-sglang-03.example:30012/v1/videos
+      metrics_url: http://video-sglang-03.example:30012/metrics
+      labels: {role: monolithic, replica: CHANGE_ME}
+  - instance_id: sglang-04
+    model_id: pool-h3-sglang-ref2va-04
+    resource_key: example-gpu-08
+    access_mode: exclusive
+    enabled: false
+    driver: sglang_async
+    probe:
+      kind: sglang_diffusion
+      jobs_url: http://video-sglang-04.example:30013/v1/videos
+      metrics_url: http://video-sglang-04.example:30013/metrics
+      labels: {role: monolithic, replica: CHANGE_ME}

@@ -56,6 +56,15 @@ _PIPELINE_MEDIA_KEYS = (
 )
 
 
+
+
+def _validate_video_dispatch_params(params: dict, *, needs_video: bool) -> None:
+    mode = str(params.get("video_dispatch_mode") or "manual").lower()
+    if mode not in ("auto", "manual"):
+        raise HTTPException(400, detail="video_dispatch_mode 必须是 auto 或 manual")
+    if needs_video and mode == "manual" and not str(params.get("video_model") or "").strip():
+        raise HTTPException(400, detail="手动模式必须选择视频模型")
+
 def _guard_pipeline_media_params(params: dict, user: CurrentUser) -> None:
     """在创建任务/复制文件之前校验媒体入参；失败抛 ValueError（路由转 400）。"""
     for key in _PIPELINE_MEDIA_KEYS:
@@ -308,9 +317,14 @@ async def start_standard_pipeline(
     background_tasks: BackgroundTasks,
     user: CurrentUser = Depends(get_current_user),
 ):
-    return _start_task(
-        background_tasks, "standard", req.model_dump(exclude_none=True), user.login
+    params = req.model_dump(exclude_none=True)
+    needs_video = (
+        str(params.get("video_mode") or "image_concat") == "dynamic_video"
+        or bool(params.get("generate_videos"))
+        or str(params.get("template_media_kind") or "image") == "video"
     )
+    _validate_video_dispatch_params(params, needs_video=needs_video)
+    return _start_task(background_tasks, "standard", params, user.login)
 
 
 @router.post("/api/pipelines/action_transfer/tasks")
@@ -324,6 +338,7 @@ async def start_action_transfer_pipeline(
         _guard_pipeline_media_params(params, user)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
+    _validate_video_dispatch_params(params, needs_video=True)
     return _start_task(background_tasks, "action_transfer", params, user.login)
 
 
@@ -338,6 +353,7 @@ async def start_digital_human_pipeline(
         _guard_pipeline_media_params(params, user)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
+    _validate_video_dispatch_params(params, needs_video=True)
     return _start_task(background_tasks, "digital_human", params, user.login)
 
 

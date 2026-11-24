@@ -25,6 +25,10 @@ import httpx  # noqa: E402 - sys.path 引导后导入
 
 from api.media_paths import remote_media_kind  # noqa: E402 - sys.path 引导后导入
 from config import Config  # noqa: E402 - sys.path 引导后导入
+from core.video_job_lifecycle import (  # noqa: E402 - sys.path 引导后导入
+    SUBMIT_UNKNOWN,
+    classify_submit_exception,
+)
 from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
     DEFAULT_VIDEO_POLL_INTERVAL,
     RETRYABLE_STATUS_CODES,
@@ -43,6 +47,11 @@ from models.custom_common import (  # noqa: E402 - sys.path 引导后导入
 )
 
 logger = logging.getLogger(__name__)
+
+
+class VideoSubmissionUnknown(RuntimeError):
+    """提交结果未知（可能已被远端受理）；禁止换创建形态重发。"""
+
 
 _FORM_LABELS = {
     "http://": "http",
@@ -81,6 +90,11 @@ class CustomVideoClient:
         self._meta = meta
         self._model = str(meta.get("request_model") or meta.get("id") or "")
         self._protocol = str(meta.get("protocol") or "")
+        # vLLM-Omni 默认异步；只有显式 sync 才走池外同步排障路径。
+        self._api_mode = str(
+            meta.get("video_api_mode")
+            or ("async" if self._protocol == "vllm-omni" else "")
+        ).strip().lower()
         self._base_url = str(meta.get("base_url") or "")
         self._poll_interval = poll_interval
         # 生成与轮询超时：默认取 Config.TIMEOUT_VIDEO（.env VC_TIMEOUT_VIDEO，缺省 3 小时）
@@ -88,6 +102,7 @@ class CustomVideoClient:
         self._poll_timeout = float(poll_timeout if poll_timeout is not None else Config.TIMEOUT_VIDEO)
         # 参数夹取/忽略记录：外部传入列表时同步写入（供 API 响应透出），否则仅内部收集
         self._adjustments = adjustments if adjustments is not None else []
+        self._managed = bool(meta.get("managed"))
         self._client = make_http_client(**build_custom_client_kwargs(meta, timeout=resolved_timeout))
 
     # 与内置 VideoClient.generate_video 保持签名/约定一致（调用方零改动）
@@ -120,6 +135,8 @@ class CustomVideoClient:
         audio: Optional[bool] = None,
         fps: Optional[int] = None,
         short_edge: Optional[int] = None,
+        dispatch_grant: Any = None,
+        dispatch_job_id: Optional[str] = None,
         **_ignored: Any,
     ) -> str:
         """生成视频：写入 save_path 并返回远端标识（视频 URL/任务下载地址）。
@@ -128,31 +145,41 @@ class CustomVideoClient:
         fps/short_edge 为高级参数：仅在显式提供或模型能力声明触发时注入协议字段；
         缺省时请求与既有实现完全一致（向后兼容）。
         """
-        duration = self._clamp_duration(duration)
-        # 参考输入按协议能力矩阵前置分流：不支持远程形态时在任何 open()/HTTP 前失败
-        self._assert_reference_support(
-            image_path, last_image_path, reference_image_paths, reference_video_paths
-        )
-        # 服务实例可能只加载单个 DiT partition（vllm-omni `--task-type fl2va|ref2va`）：
-        # 按能力声明的支持任务收敛输入布局，避免 task 与 partition 不符被服务端 500 拒绝
-        image_path, last_image_path, reference_image_paths = self._align_task_to_partitions(
-            image_path, last_image_path, reference_image_paths, reference_video_paths
-        )
-        size = video_size(video_ratio, resolution)
-        # 音频参考 → vllm-omni 的 audio_reference 表单字段（URL 形态，D1）
-        audio_reference = self._audio_reference_field(audio_reference_url)
-        # 统一参数 → 协议字段（单点映射构造器，防多链路漂移）
-        protocol_fields, json_fields, drop_size = self._map_protocol_params(
+        if self._managed:
+            self._require_managed_grant(dispatch_grant, dispatch_job_id=dispatch_job_id)
+            if self._api_mode == "sync":
+                # 受管实例固定 async；改 sync 必须先排空并退出池，不能靠一次请求降级。
+                raise RuntimeError(
+                    "受管视频实例不允许 sync 协议；请改回 async 并重新完成资格验证"
+                )
+        prepared = self._prepare_request(
+            prompt=prompt,
+            image_path=image_path,
+            last_image_path=last_image_path,
+            reference_image_paths=reference_image_paths,
+            reference_video_paths=reference_video_paths,
+            audio_reference_url=audio_reference_url,
             duration=duration,
             video_ratio=video_ratio,
             resolution=resolution,
             fps=fps,
             short_edge=short_edge,
-            has_image=bool(image_path or last_image_path or reference_image_paths),
         )
-        # vllm-omni：优先 /videos/sync（一次请求直出视频字节，官方 recipes 主形态）；
-        # 端点不可用（404/405/非视频响应）时回退异步三段式。
-        if self._protocol == "vllm-omni":
+        prompt = prepared["prompt"]
+        image_path = prepared["image_path"]
+        last_image_path = prepared["last_image_path"]
+        reference_image_paths = prepared["reference_image_paths"]
+        reference_video_paths = prepared["reference_video_paths"]
+        audio_reference = prepared["audio_reference"]
+        size = prepared["size"]
+        duration = prepared["duration"]
+        protocol_fields = prepared["protocol_fields"]
+        json_fields = prepared["json_fields"]
+        drop_size = prepared["drop_size"]
+        # vllm-omni：默认异步；仅显式 sync 才尝试 /videos/sync（池外排障）。
+        # 只有 404/405 或连接阶段明确未发出才允许回退 async；读超时/断连/5xx
+        # 属于未知提交，必须直接失败，不能再 POST 一个异步任务。
+        if self._protocol == "vllm-omni" and self._api_mode == "sync":
             sync_error = self._try_sync_generate(
                 prompt=prompt,
                 image_path=image_path,
@@ -204,7 +231,154 @@ class CustomVideoClient:
         self._download_content(job_id, save_path, remote_url)
         return remote_url
 
-    # ── 参数与创建 ──
+    # ── 异步生命周期公开入口（调度器只经这些方法操作远端） ──
+
+    def submit_job(
+        self,
+        *,
+        dispatch_grant: Any = None,
+        dispatch_job_id: Optional[str] = None,
+        prompt: str,
+        image_path: Optional[str] = None,
+        save_path: Optional[str] = None,
+        last_image_path: Optional[str] = None,
+        reference_image_paths: Optional[List[str]] = None,
+        reference_video_paths: Optional[List[str]] = None,
+        reference_audio_path: Optional[str] = None,
+        audio_reference_url: Optional[str] = None,
+        audio_path: Optional[str] = None,
+        negative_prompt: Optional[str] = None,
+        seed: Optional[int] = None,
+        duration: int = 5,
+        video_ratio: str = "16:9",
+        resolution: Optional[str] = None,
+        fps: Optional[int] = None,
+        short_edge: Optional[int] = None,
+        **legacy: Any,
+    ) -> Dict[str, Any]:
+        """受管实例的异步提交：与 generate_video 共用参数/媒体映射后再创建任务。
+
+        ``save_path`` 仅为调用方签名对称保留；下载阶段由 download_job 使用。
+        未声明的旧单数字段（如 reference_image_path）按“忽略”处理，不参与
+        异步准备；调用方应迁移到 reference_image_paths。
+        """
+        if legacy:
+            logger.warning(
+                "submit_job ignored legacy fields: %s", sorted(legacy)
+            )
+        self._require_managed_grant(dispatch_grant, dispatch_job_id=dispatch_job_id)
+        prepared = self._prepare_request(
+            prompt=prompt,
+            image_path=image_path,
+            last_image_path=last_image_path,
+            reference_image_paths=reference_image_paths,
+            reference_video_paths=reference_video_paths,
+            audio_reference_url=audio_reference_url,
+            duration=duration,
+            video_ratio=video_ratio,
+            resolution=resolution,
+            fps=fps,
+            short_edge=short_edge,
+        )
+        return self._create_job(
+            prompt=prepared["prompt"],
+            image_path=prepared["image_path"],
+            last_image_path=prepared["last_image_path"],
+            reference_image_paths=prepared["reference_image_paths"],
+            reference_video_paths=prepared["reference_video_paths"],
+            audio_reference=prepared["audio_reference"],
+            size=prepared["size"],
+            duration=prepared["duration"],
+            negative_prompt=negative_prompt,
+            seed=seed,
+            protocol_fields=prepared["protocol_fields"],
+            json_fields=prepared["json_fields"],
+            drop_size=prepared["drop_size"],
+        )
+
+    def _require_managed_grant(
+        self, dispatch_grant: Any, *, dispatch_job_id: Optional[str] = None
+    ) -> None:
+        if not self._managed:
+            return
+        from core.video_generation_service import GrantError, default_grant_service
+
+        job_id = str(self._meta.get("dispatch_job_id") or "")
+        if not job_id:
+            raise GrantError("受管客户端缺少 dispatch_job_id，不能只凭实例配置发送")
+        if not dispatch_job_id:
+            raise GrantError("受管调用缺少 attempt/job 标识，不能由 grant 自填")
+        if str(dispatch_job_id) != job_id:
+            raise GrantError("调度作业与 attempt 记录不一致，拒绝发送")
+        default_grant_service().require(
+            dispatch_grant,
+            job_id=job_id,
+            instance_id=str(self._meta.get("managed_instance_id") or ""),
+            resource_key=str(self._meta.get("managed_resource_key") or ""),
+        )
+
+    def get_job(self, job_id: str) -> Dict[str, Any]:
+        return self._get_job(job_id)
+
+    def download_job(self, job_id: str, save_path: str, remote_url: str = "") -> None:
+        self._download_content(job_id, save_path, remote_url)
+
+    def cancel_job(self, job_id: str) -> None:
+        self._cancel_job(job_id)
+
+    # ── 参数准备（generate_video / submit_job 共用） ──
+
+    def _prepare_request(
+        self,
+        *,
+        prompt: str,
+        image_path: Optional[str],
+        last_image_path: Optional[str],
+        reference_image_paths: Optional[List[str]],
+        reference_video_paths: Optional[List[str]] = None,
+        audio_reference_url: Optional[str] = None,
+        duration: int = 5,
+        video_ratio: str = "16:9",
+        resolution: Optional[str] = None,
+        fps: Optional[int] = None,
+        short_edge: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """统一参数/媒体映射：同步包装与异步 submit 共用同一份准备结果。"""
+        duration = self._clamp_duration(duration)
+        # 参考输入按协议能力矩阵前置分流：不支持远程形态时在任何 open()/HTTP 前失败
+        self._assert_reference_support(
+            image_path, last_image_path, reference_image_paths, reference_video_paths
+        )
+        # 服务实例可能只加载单个 DiT partition（vllm-omni `--task-type fl2va|ref2va`）：
+        # 按能力声明的支持任务收敛输入布局，避免 task 与 partition 不符被服务端 500 拒绝
+        image_path, last_image_path, reference_image_paths = self._align_task_to_partitions(
+            image_path, last_image_path, reference_image_paths, reference_video_paths
+        )
+        size = video_size(video_ratio, resolution)
+        # 音频参考 → vllm-omni 的 audio_reference 表单字段（URL 形态，D1）
+        audio_reference = self._audio_reference_field(audio_reference_url)
+        # 统一参数 → 协议字段（单点映射构造器，防多链路漂移）
+        protocol_fields, json_fields, drop_size = self._map_protocol_params(
+            duration=duration,
+            video_ratio=video_ratio,
+            resolution=resolution,
+            fps=fps,
+            short_edge=short_edge,
+            has_image=bool(image_path or last_image_path or reference_image_paths),
+        )
+        return {
+            "prompt": prompt,
+            "image_path": image_path,
+            "last_image_path": last_image_path,
+            "reference_image_paths": reference_image_paths,
+            "reference_video_paths": reference_video_paths,
+            "audio_reference": audio_reference,
+            "size": size,
+            "duration": duration,
+            "protocol_fields": protocol_fields,
+            "json_fields": json_fields,
+            "drop_size": drop_size,
+        }
 
     @staticmethod
     def _sync_remote_identifier(save_path: str) -> str:
@@ -799,19 +973,32 @@ class CustomVideoClient:
                     drop_size=drop_size,
                 )
             except (httpx.HTTPError, OSError) as exc:
+                if classify_submit_exception(exc) == SUBMIT_UNKNOWN:
+                    raise VideoSubmissionUnknown(
+                        f"vllm-omni sync 提交结果未知（{type(exc).__name__}），"
+                        "禁止自动改发异步任务"
+                    ) from exc
                 last_error = str(exc)
                 continue
             if response.status_code >= 400:
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
                 if response.status_code in (404, 405):
-                    return last_error  # 端点不存在：快速回退异步
-                continue
+                    return last_error  # 端点不存在：可安全回退异步
+                if response.status_code >= 500:
+                    raise VideoSubmissionUnknown(
+                        f"vllm-omni sync 创建返回 {response.status_code}，"
+                        "无法判断是否已受理，禁止自动改发异步任务"
+                    )
+                response.raise_for_status()  # 明确 4xx 拒绝：不回退、不重发
             content_type = response.headers.get("content-type", "")
             if "video" in content_type or "octet-stream" in content_type:
                 with open(save_path, "wb") as handle:
                     handle.write(response.content)
                 return None
-            last_error = f"unexpected content-type: {content_type or 'empty'}"
+            raise VideoSubmissionUnknown(
+                f"vllm-omni sync 返回成功但无视频内容（content-type={content_type or 'empty'}），"
+                "提交结果未知"
+            )
         return last_error or "sync endpoint unavailable"
 
     def _post_sync(
@@ -914,25 +1101,46 @@ class CustomVideoClient:
                     json_fields=json_fields,
                     drop_size=drop_size,
                 )
-                if response.status_code < 400:
-                    try:
-                        return response.json()
-                    except ValueError as exc:
-                        raise RuntimeError(
-                            f"自定义视频接口返回非 JSON 内容: {response.text[:200]}"
-                        ) from exc
-                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
-                logger.warning(
-                    "Custom video create via %s%s failed (%s), trying fallback",
-                    encoding,
-                    "+params" if form_extra else "",
-                    response.status_code,
-                )
-                if response.status_code not in RETRYABLE_STATUS_CODES:
-                    response.raise_for_status()
             except (httpx.HTTPError, OSError) as exc:
+                outcome = classify_submit_exception(exc)
+                if outcome == SUBMIT_UNKNOWN:
+                    raise VideoSubmissionUnknown(
+                        f"自定义视频模型 {self._model} 提交结果未知（{type(exc).__name__}），"
+                        "禁止自动换创建形态重发"
+                    ) from exc
                 last_error = str(exc)
                 last_exc = exc
+                continue
+
+            if 200 <= response.status_code < 300:
+                try:
+                    job = response.json()
+                except ValueError as exc:
+                    raise VideoSubmissionUnknown(
+                        f"自定义视频接口返回非 JSON 内容，提交结果未知: {response.text[:200]}"
+                    ) from exc
+                if not isinstance(job, dict) or not any(
+                    job.get(key) for key in ("id", "video_id", "task_id", "job_id")
+                ):
+                    raise VideoSubmissionUnknown(
+                        f"自定义视频接口成功响应缺少任务 id，提交结果未知: {str(job)[:200]}"
+                    )
+                return job
+
+            last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+            logger.warning(
+                "Custom video create via %s%s failed (%s), trying fallback",
+                encoding,
+                "+params" if form_extra else "",
+                response.status_code,
+            )
+            if response.status_code >= 500:
+                raise VideoSubmissionUnknown(
+                    f"自定义视频模型 {self._model} 创建任务返回 {response.status_code}，"
+                    "无法判断是否已受理"
+                )
+            if response.status_code not in RETRYABLE_STATUS_CODES:
+                response.raise_for_status()
         raise RuntimeError(
             f"自定义视频模型 {self._model} 创建任务失败（目标 {self._base_url}/videos）: {last_error}"
             f"{connection_hint(last_exc or Exception(last_error), self._base_url)}"

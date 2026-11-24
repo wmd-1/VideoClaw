@@ -545,13 +545,51 @@ class PromptRewriteAgent(AgentInterface):
 
     @staticmethod
     def _collect_segments(storyboard_artifact: Dict, model: str = "",
-                          session_override: Any = None) -> List[Dict[str, Any]]:
+                          session_override: Any = None,
+                          contract: Any = None) -> List[Dict[str, Any]]:
         """从 storyboard 产物收集分镜条目（id/描述/有效时长/角色/场景）。
 
         时长与归一化由 `core.h3_modes.collect_segments` 单一实现，视频阶段算指纹时
         必须调用同一函数，否则两侧 `shot_content` 取法不同会恒 stale。
         """
-        return _shared_collect_segments(storyboard_artifact, model, session_override)
+        return _shared_collect_segments(
+            storyboard_artifact, model, session_override, contract=contract
+        )
+
+    @staticmethod
+    def _duration_contract(input_data: Dict, session_meta: Dict, mode: str) -> Any:
+        """auto 改写与视频阶段共用池契约；manual/无运行时保持模型能力链。"""
+        dispatch_mode = str(
+            input_data.get("video_dispatch_mode")
+            or session_meta.get("video_dispatch_mode")
+            or ""
+        ).strip().lower()
+        if dispatch_mode != "auto":
+            return None
+        from core.video_dispatch_runtime import get_dispatch_runtime
+
+        runtime = get_dispatch_runtime()
+        if runtime is None:
+            return None
+        profile = input_data.get("video_profile_id") or session_meta.get("video_profile_id")
+        try:
+            resolution = runtime.service.resolve_execution_pool(
+                mode=mode,
+                explicit_profile_id=str(profile) if profile else None,
+                parameters={
+                    "duration": input_data.get("video_duration")
+                    or session_meta.get("video_duration"),
+                    "ratio": input_data.get("video_ratio")
+                    or session_meta.get("video_ratio"),
+                    "resolution": input_data.get("video_resolution")
+                    or session_meta.get("video_resolution"),
+                },
+            )
+        except Exception:  # noqa: BLE001 - 改写阶段缺池不改变既有失败语义
+            return None
+        if resolution.error:
+            return None
+        return resolution.contract.contract
 
     # ─── 权威事实（B：角色与场景知识注入） ───
 
@@ -1259,10 +1297,22 @@ class PromptRewriteAgent(AgentInterface):
 
         # 时长与视频阶段同源（Q2）：会话覆盖 > 分镜 > 默认，再按所选模型能力夹取
         session_meta = self._session_meta(input_data)
-        _, video_model = VideoDirectorAgent._select_video_model(input_data, session_meta)
+        mode = str(
+            input_data.get("video_generation_mode")
+            or session_meta.get("video_generation_mode")
+            or "first_frame"
+        )
+        contract = self._duration_contract(input_data, session_meta, mode)
+        if contract is not None:
+            video_model = ""
+        else:
+            _, video_model = VideoDirectorAgent._select_video_model(input_data, session_meta)
         session_override = input_data.get("video_duration") or session_meta.get("video_duration")
         segments = self._collect_segments(
-            storyboard_artifact, model=video_model, session_override=session_override
+            storyboard_artifact,
+            model=video_model,
+            session_override=session_override,
+            contract=contract,
         )
         if not segments:
             raise ValueError("提示词改写阶段缺少分镜数据：请先完成分镜设计阶段")

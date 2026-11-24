@@ -31,6 +31,7 @@ import {
 import { isStageSettled, isStageStillRunning } from '@/lib/chainGuard';
 import ModelFallbackDialog from './ModelFallbackDialog';
 import HomePage, { type ProjectParams } from './HomePage';
+import { fetchVideoProfiles } from '@/lib/videoPools';
 import {
   ScriptStage,
   CharacterStage,
@@ -88,6 +89,8 @@ interface SessionMeta {
   image_t2i_model?: string;
   image_it2i_model?: string;
   video_generation_mode?: string;
+  video_dispatch_mode?: string;
+  video_profile_id?: string;
   video_first_frame_model?: string;
   video_start_end_model?: string;
   video_reference_model?: string;
@@ -296,6 +299,7 @@ export default function WorkflowPanel() {
   const [autoMode, setAutoMode] = useState(false);
   // 模型不可用（预检 409 / 运行期失败）兜底弹窗状态
   const [modelFallback, setModelFallback] = useState<{ detail: ModelUnavailableDetail; stage: string } | null>(null);
+  const [dispatchNotice, setDispatchNotice] = useState('');
   // 用于顶栏流程图状态判断
   const [currentStageFromSession, setCurrentStageFromSession] = useState<string | null>(null);
   const [completedStagesFromSession, setCompletedStagesFromSession] = useState<string[]>([]);
@@ -305,6 +309,20 @@ export default function WorkflowPanel() {
   // sessionLoadError > sessionLoading > showHome，否则复位置空 activeStage 会闪一下首页。
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchVideoProfiles()
+      .then(payload => {
+        if (payload.dispatch_stopped || !payload.dispatch_enabled) {
+          setDispatchNotice('视频自动调度已停用；新执行需等待管理员恢复或改用手动模式。');
+        } else if (!payload.profiles.some(p => p.dispatchable)) {
+          setDispatchNotice('暂无就绪的视频资源池；自动模式会提示配置引导。');
+        } else {
+          setDispatchNotice('');
+        }
+      })
+      .catch(() => setDispatchNotice(''));
+  }, []);
   // 超时态“停止任务”失败反馈（后端不可达时保留横幅不静默清除，tasks 4.3）
   const [timeoutStopError, setTimeoutStopError] = useState<string | null>(null);
   /**
@@ -844,6 +862,8 @@ export default function WorkflowPanel() {
             image_t2i_model: s.image_t2i_model || '',
             image_it2i_model: s.image_it2i_model || '',
             video_generation_mode: (s.video_generation_mode || 'first_frame') as ProjectParams['video_generation_mode'],
+            video_dispatch_mode: (s.video_dispatch_mode === 'manual' ? 'manual' : 'auto') as ProjectParams['video_dispatch_mode'],
+            video_profile_id: s.video_profile_id || '',
             video_first_frame_model: restoredFirstFrameVideoModel,
             video_start_end_model: s.video_start_end_model || 'wan2.7-i2v',
             video_reference_model: s.video_reference_model || 'wan2.7-r2v',
@@ -1293,6 +1313,8 @@ export default function WorkflowPanel() {
         image_t2i_model: params.image_t2i_model,
         image_it2i_model: params.image_it2i_model,
         video_generation_mode: params.video_generation_mode,
+        video_dispatch_mode: params.video_dispatch_mode,
+        video_profile_id: params.video_profile_id,
         video_first_frame_model: params.video_first_frame_model,
         video_start_end_model: params.video_start_end_model,
         video_reference_model: params.video_reference_model,
@@ -1332,6 +1354,8 @@ export default function WorkflowPanel() {
         image_t2i_model: params.image_t2i_model,
         image_it2i_model: params.image_it2i_model,
         video_generation_mode: params.video_generation_mode,
+        video_dispatch_mode: params.video_dispatch_mode,
+        video_profile_id: params.video_profile_id,
         video_first_frame_model: params.video_first_frame_model,
         video_start_end_model: params.video_start_end_model,
         video_reference_model: params.video_reference_model,
@@ -2058,6 +2082,8 @@ export default function WorkflowPanel() {
         video_resolution: projectParams.video_resolution || '720P',
         video_duration: projectParams.video_duration || '',
         video_fps: projectParams.video_fps || '',
+        video_dispatch_mode: projectParams.video_dispatch_mode || 'auto',
+        video_profile_id: projectParams.video_profile_id || '',
         enable_concurrency: projectParams.enable_concurrency || false,
         // web_search: projectParams.web_search || false,
         // expand_idea: projectParams.expand_idea || false,
@@ -2272,6 +2298,12 @@ export default function WorkflowPanel() {
         projectStatus={projectStatus}
         timedOut={activeStage ? stageStates[activeStage]?.syncState === 'timed_out' : false}
       />
+
+      {dispatchNotice && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-center text-[11px] text-amber-700">
+          {dispatchNotice}
+        </div>
+      )}
 
       <main className="flex-1 min-w-0 overflow-hidden">
         {mainContent}

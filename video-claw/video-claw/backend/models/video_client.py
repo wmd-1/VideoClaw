@@ -14,7 +14,7 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 import logging  # noqa: E402 - sys.path 引导后导入
-from typing import Optional  # noqa: E402 - sys.path 引导后导入
+from typing import Any, Optional  # noqa: E402 - sys.path 引导后导入
 
 from config import Config  # noqa: E402 - sys.path 引导后导入
 
@@ -143,6 +143,9 @@ class VideoClient:
         fps: Optional[int] = None,
         short_edge: Optional[int] = None,
         adjustments: Optional[list[str]] = None,
+        dispatch_grant: Any = None,
+        dispatch_instance: Optional[dict] = None,
+        dispatch_job_id: Optional[str] = None,
     ) -> str:
         """
         生成视频
@@ -209,7 +212,34 @@ class VideoClient:
         # 自定义模型：注册表优先走协议适配层（异步任务创建/轮询/下载）
         entry_kind, entry_meta = resolve_model_entry(model)
         if entry_kind == "custom":
+            from core.video_generation_service import (
+                GrantError,
+                managed_meta_for_grant,
+                require_managed_dispatch,
+                resolve_managed_instance,
+            )
             from models.custom_video import CustomVideoClient
+
+            # 受管实例：底层发送必须携带调度授权；别名、草稿或缺少调度上下文
+            # 的直接调用一律在 HTTP 前拒绝，不能靠另取 model_id 绕锁。
+            requested_instance = str((dispatch_instance or {}).get("instance_id") or "") or None
+            managed = resolve_managed_instance(model, requested_instance)
+            if managed is not None:
+                if dispatch_grant is None:
+                    raise GrantError("受管视频调用缺少调度授权")
+                if not dispatch_job_id:
+                    raise GrantError(
+                        "受管视频调用缺少 dispatch_job_id，不能只凭实例授权发送"
+                    )
+                require_managed_dispatch(
+                    model=model,
+                    grant=dispatch_grant,
+                    instance=managed,
+                    expected_job_id=dispatch_job_id,
+                )
+                entry_meta = managed_meta_for_grant(
+                    entry_meta, dispatch_grant, managed, job_id=dispatch_job_id
+                )
 
             # fps/short_edge 仅自定义模型协议适配层支持；内置客户端沿用各自语义
             custom_client = CustomVideoClient(entry_meta, adjustments=adjustments)
@@ -242,6 +272,8 @@ class VideoClient:
                     audio=audio,
                     fps=fps,
                     short_edge=short_edge,
+                    dispatch_grant=dispatch_grant,
+                    dispatch_job_id=dispatch_job_id,
                 )
             finally:
                 custom_client.close()

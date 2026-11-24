@@ -5,6 +5,7 @@ import base64
 import logging
 import os
 import time
+import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -149,13 +150,89 @@ def _test_image(meta: Dict[str, Any], model_type: str) -> str:
         client.close()
 
 
-def _test_video(meta: Dict[str, Any]) -> str:
+def _test_video(meta: Dict[str, Any], owner: Optional[str] = None) -> str:
+    from core.video_generation_service import resolve_managed_instance
+    from core.video_managed_bridge import ManagedBridgeError, managed_video_sync
     from models.custom_common import TaskDeclarationError, TaskNotSupportedError
     from models.custom_video import CustomVideoClient
 
     save_dir = os.path.join(Config.TEMP_DIR, "model_test")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, "test_video.mp4")
+    managed = resolve_managed_instance(str(meta.get("id") or ""))
+    if managed is not None:
+        if not owner:
+            raise ManagedBridgeError(
+                "trusted_context_required", "模型测试缺少可信 owner 上下文"
+            )
+        from core.video_dispatch_runtime import get_dispatch_runtime
+
+        dispatch_runtime = get_dispatch_runtime()
+        if dispatch_runtime is None:
+            raise ManagedBridgeError(
+                "dispatch_not_started", "视频资源池调度运行时尚未启动"
+            )
+        instance_id = str(managed.get("instance_id") or "")
+        pool_runtime = dispatch_runtime.service.runtime()
+        modes = set()
+        contracts_by_mode = {}
+        profiles_by_mode = {}
+        for profile_id, profile in pool_runtime.profiles.items():
+            if not profile.enabled or instance_id not in profile.members:
+                continue
+            eligible = {
+                item.instance_id
+                for item in pool_runtime.eligible_members(profile_id)
+            }
+            if instance_id not in eligible:
+                continue
+            for mode_name, contract in profile.contracts.items():
+                modes.add(mode_name)
+                contracts_by_mode.setdefault(mode_name, contract or {})
+                profiles_by_mode.setdefault(mode_name, profile_id)
+        if "t2va" in modes:
+            mode, image_path, reference_image_paths = "t2va", None, None
+        elif "first_frame" in modes or "reference" in modes:
+            test_image = os.path.join(save_dir, "test_input.png")
+            with open(test_image, "wb") as f:
+                f.write(base64.b64decode(_TEST_PNG_B64))
+            mode = "first_frame" if "first_frame" in modes else "reference"
+            image_path = test_image if mode == "first_frame" else None
+            reference_image_paths = [test_image] if mode == "reference" else None
+        else:
+            raise ManagedBridgeError(
+                "pool_not_ready",
+                "受管池没有已资格就绪且支持 t2va/first_frame/reference 的实例",
+            )
+        contract = contracts_by_mode.get(mode) or {}
+        resolutions = contract.get("resolutions")
+        ratios = contract.get("ratios")
+        duration_spec = contract.get("duration") or {}
+        try:
+            duration = max(1, int(duration_spec.get("min", 1)))
+        except (TypeError, ValueError):
+            duration = 1
+        fps_values = contract.get("fps")
+        fps = int(fps_values[0]) if isinstance(fps_values, list) and fps_values else None
+        execution_id = f"model-test-{uuid.uuid4().hex}"
+        managed_video_sync(
+            model=str(meta.get("id") or ""),
+            prompt="a small red dot slowly moving on white background",
+            save_path=save_path,
+            owner=owner,
+            session_id=execution_id,
+            execution_id=execution_id,
+            mode=mode,
+            profile_id=profiles_by_mode.get(mode),
+            duration=duration,
+            video_ratio=str(ratios[0]) if isinstance(ratios, list) and ratios else "1:1",
+            resolution=str(resolutions[0]) if isinstance(resolutions, list) and resolutions else "480x480",
+            fps=fps,
+            image_path=image_path,
+            reference_image_paths=reference_image_paths,
+            wait_timeout=300.0,
+        )
+        return f"任务完成并成功下载（经由资源池调度，mode={mode}）"
     client = CustomVideoClient(meta, poll_interval=3.0, poll_timeout=120.0, timeout=120.0)
     try:
         client.generate_video(
@@ -196,7 +273,7 @@ async def get_model_availability(model: Optional[str] = Query(None)):
 
 @router.post("/api/models/test")
 async def test_model_connection(
-    req: ModelTestRequest, _: CurrentUser = Depends(require_admin)
+    req: ModelTestRequest, user: CurrentUser = Depends(require_admin)
 ):
     meta = _build_meta(req)
     started = time.time()
@@ -212,7 +289,7 @@ async def test_model_connection(
         elif req.model_type in ("t2i", "i2i"):
             detail = await run_in_threadpool(_test_image, meta, req.model_type)
         else:
-            detail = await run_in_threadpool(_test_video, meta)
+            detail = await run_in_threadpool(_test_video, meta, user.login)
         elapsed_ms = int((time.time() - started) * 1000)
         return {
             "success": True,

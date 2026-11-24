@@ -31,9 +31,22 @@ class ProjectStartRequest(BaseModel):
     video_start_end_model: Optional[str] = None
     video_reference_model: Optional[str] = None
     video_generation_mode: Optional[str] = "first_frame"
+    # 资源池：缺省 auto；manual 只由高级入口显式设置，不因具体模型字段为空推断。
+    video_dispatch_mode: Optional[str] = "auto"
+    video_profile_id: Optional[str] = None
     enable_concurrency: Optional[bool] = True
     web_search: Optional[bool] = False
     episodes: Optional[int] = None
+
+    @field_validator("video_dispatch_mode")
+    @classmethod
+    def _validate_dispatch_mode(cls, value: Optional[str]) -> str:
+        if value is None:
+            return "auto"
+        text = str(value).strip().lower()
+        if text not in {"auto", "manual"}:
+            raise ValueError("video_dispatch_mode 必须是 auto 或 manual")
+        return text
 
     @field_validator("language")
     @classmethod

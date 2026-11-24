@@ -66,7 +66,8 @@ def _positive_duration(value: Any) -> float:
 
 
 def collect_segments(storyboard_artifact: Optional[Dict[str, Any]], model: str = "",
-                     session_override: Any = None) -> List[Dict[str, Any]]:
+                     session_override: Any = None,
+                     contract: Any = None) -> List[Dict[str, Any]]:
     """storyboard → H3 分镜条目（id/描述/有效时长/角色/场景/镜头表），按 id 排序。
 
     H3 改写与视频阶段算指纹必须共用此归一化，否则 `shot_content` 取法不同会恒 stale。
@@ -100,7 +101,7 @@ def collect_segments(storyboard_artifact: Optional[Dict[str, Any]], model: str =
                 sh.get("duration", 0) for sh in shots if isinstance(sh, dict)
             )
             duration, duration_adjustments = resolve_effective_duration(
-                total_duration, session_override, model
+                total_duration, session_override, model, contract=contract
             )
             location = str(seg.get("location") or seg.get("setting") or "").strip()
             segments.append({

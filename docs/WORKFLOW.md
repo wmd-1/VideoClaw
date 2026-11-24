@@ -58,7 +58,7 @@ flowchart LR
 - 注册方式三选一（等价）：设置页「自定义供应商/自定义模型」、直接编辑 `config.yaml`、`.env` 变量（`VC_PROVIDER_*` / `VC_MODEL_*` / `VC_CUSTOM_MODEL_*`，优先级最高）。
 - 客户端路由为**注册表优先**：命中自定义模型走协议适配层，否则走内置名称路由；未注册的模型 id 会明确报错（不会误落入某供应商默认分支）。
 - **自定义图像模型的能力声明**（`capabilities`，设置页“高级能力参数”或直接写 YAML；口径来源 `docs/reference/Qwen-Image-2.1/`）：可声明 `num_inference_steps`（去噪步数）/ `true_cfg_scale` / `seed` / `sigmas` / `max_reference_images` / `size_alignment` / `turbo` 七项。未声明时请求字段与旧行为逐键一致；声明后文生图写入 `images/generations` 的 JSON、图生图写入 `images/edits` 的 multipart 表单字段（两条链路同一组值）。蒸馏权重（`turbo: true`，如 Qwen-Image-2.1-Turbo）**不**下发 `num_inference_steps`（调度随权重保存），要改调度只能声明 `sigmas`（仅能在 config.yaml 写，设置页不提供控件）。注意与视频侧同名参数语义不同：视频侧 `num_inference_steps` 是 sigma 点数、`fast_h3` 是快速模式标记，按模型类型解释、互不影响。非法/越界声明被忽略并记录（等同未声明），不会让生成失败；`size_alignment` 取整后尺寸低于协议下限时发送前拒绝。参考图：声明 `max_reference_images` 后由适配层按顺序收敛（超出部分不发出）并在日志记录数量与原因，生成配置面板（首页与项目页共用同一组件）据声明做发送前非阻塞提示；未声明时不裁剪，若服务端因超限报错则透出原文并提示可声明上限。远程形态（`http(s)`/`data:`）参考图会先落盘为会话临时副本再以文件 part 上传（避开官方 `url` 字段的 1024KB/part 限制），用完即清理；落盘失败在发送前拒绝。
-- 每个模型有 `concurrency`（并发缺省 1，本地单卡服务最保守）；阶段内的批量生成按该值限流（会话里 `enable_concurrency=false` 时强制串行）。
+- 每个模型有 `concurrency`（并发缺省 1，本地单卡服务最保守）；manual 视频与图片阶段按该值限流（会话里 `enable_concurrency=false` 时强制串行），auto 视频并发由资源池槽位决定。
 - **web_search 实际分支（`models/llm_client.py`）**：
 
 | 模型路由 | web_search 行为 |
@@ -315,7 +315,7 @@ flowchart LR
 
 1. 读取本阶段 `clips` 条目（描述/时长/所属集）与第 4 阶段 `selected_images`（自动注入）；
 2. 为每个片段组装提示词：风格控制 + 人物列表（角色描述）+ 分镜段落（剧情/动作），并附加"不要生成字幕或水印"；
-3. 按条目并发（= 模型 `concurrency`）调用视频模型生成片段，落盘 `data/code/result/video/<sid>/<segment_id>[_vN].mp4`；
+3. auto 模式按资源池/实例槽位批量入队，由单进程 `DispatchRuntime` 统一派发；manual 模式仍按模型 `concurrency` 调用。视频落盘到 job 独立版本路径 `<segment_id>[_vN].mp4`；
 4. 每个条目追加版本并设 `selected`；阶段进入 `waiting`。
 
 **自定义模型在这阶段的约定**（vllm-omni / sglang / OpenAI 标准）：
@@ -411,11 +411,20 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 
 ### 10.3 并发与稳定性
 
-- 会话级 `enable_concurrency` × 模型级 `concurrency`（自定义模型缺省 1）共同决定批量生成并发；台词/情节评估在 `enable_concurrency=true` 时并行（成功路径调用数不变；并行失败可能多一次调用），false 时串行；
+- auto 模式的视频并发来自资源池：池成员槽位、`max_running_jobs`、`max_concurrency_per_execution` 与不可变成员快照共同决定，不再按单模型 `concurrency` 排队；manual 仍按模型 `concurrency`。台词/情节评估在 `enable_concurrency=true` 时并行，false 时串行；
 - 长时间任务支持 `stop`（`POST /api/project/{sid}/stop`）中断并保留已完成内容；
 - 生成失败的条目可单独重试；模型级失败会携带 `error_type=model_unavailable` 供前端弹窗引导。
 
-### 10.4 数据落盘位置
+### 10.4 视频自动调度与资源池
+
+- 开关与路径：`VC_VIDEO_DISPATCH__ENABLED`、`VC_VIDEO_PROFILES_FILE`；池/实例/默认池/队列策略都在运行时 YAML，不写 `config.yaml`。样例为 `backend/video_profiles.yaml.example`，Docker 下默认映射到 `/app/data/video_profiles.yaml`。
+- auto 执行先按 `video_generation_mode` 选择兼容且就绪的 profile，再以不可变批次快照入队；同一个 profile 的空闲槽按 owner/session 轮转使用。manual 仍按具体模型执行。
+- 队列阶段可在 `GET /api/video/jobs/{job_id}` 的 `dispatch_phase` 查看（`queued` / `waiting_pool_unavailable`）；作业 owner 或管理员可查询/取消。
+- 管理 API：`GET /api/video/profiles`、`GET /api/video/resources/summary`、`GET /api/video/resources/diagnostics`、`PUT /api/video/profiles`（必须带 `expected_revision`）、`POST /api/video/profiles/reload`、`POST /api/video/instances/{id}/qualify|drain|undrain`、`POST /api/video/dispatch/stop|resume`、`POST /api/video/jobs/{id}/cancel`、`POST /api/video/resources/deleting/reconcile`。
+- 单进程约束：执行归属依赖 `boot_id`，检测到多 worker 配置会拒绝启动；不要以横向扩容多实例共享会话目录。
+- 4.9 的 canonical 派发物化/签名刷新/发布器接线范围是 workflow auto；沙盒与 Pipeline 继续走 4.8 的 canonical intake 与各自发布路径。
+
+### 10.5 数据落盘位置
 
 | 内容 | 存储位置 |
 | --- | --- |
@@ -491,6 +500,8 @@ pending → running → waiting →（用户确认 /continue）→ completed →
 | 介入/部分重做（SSE） | `POST /api/project/{sid}/intervene` |
 | 查询状态 / 产物 | `GET /api/project/{sid}/status`、`GET /api/project/{sid}/artifact/{stage}` |
 | 修改产物 | `PATCH /api/project/{sid}/artifact/{stage}` |
+| 资源池/调度诊断 | `GET /api/video/profiles`、`GET /api/video/resources/summary`、`GET /api/video/resources/diagnostics` |
+| 池保存/重载 | `PUT /api/video/profiles`、`POST /api/video/profiles/reload` |
 | 上传图片 | `POST /api/project/{sid}/artifact/{stage}/upload_image` |
 | 会话级模型/画幅调整 | `PATCH /api/project/{sid}/models` |
 | 停止 | `POST /api/project/{sid}/stop` |

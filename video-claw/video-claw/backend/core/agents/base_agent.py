@@ -26,7 +26,7 @@ SESSION_PARAM_KEYS = [
     "llm_model", "vlm_model",
     "image_t2i_model", "image_it2i_model", "video_model",
     "video_first_frame_model", "video_start_end_model", "video_reference_model",
-    "video_generation_mode",
+    "video_generation_mode", "video_dispatch_mode", "video_profile_id",
     "language", "language_source",
     "video_style", "expand_idea", "enable_concurrency", "web_search", "episodes"
 ]
@@ -52,7 +52,9 @@ class AgentInterface(ABC):
         session_meta = self._session_meta(input_data)
         merged_data = input_data.copy()
         for key in SESSION_PARAM_KEYS:
-            if key not in merged_data or not merged_data[key]:
+            # 显式 null/false/空串代表本次覆盖或清空；只有“缺键”才从会话快照补齐。
+            # 旧实现对 false 也会回填，导致用户关闭并发/清空偏好被会话值覆盖。
+            if key not in merged_data:
                 if key in session_meta and session_meta[key] is not None:
                     merged_data[key] = session_meta[key]
         return merged_data

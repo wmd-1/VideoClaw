@@ -50,6 +50,7 @@ import {
 import BrandHeader from '@/components/BrandHeader';
 import { PIPELINE_UNAVAILABLE_MESSAGE, isPipelineAvailable } from '@/lib/pipelineAvailability';
 import { mediaUrl } from '@/lib/basePath';
+import { fetchVideoProfiles, fetchVideoJob, type VideoProfile } from '@/lib/videoPools';
 
 type PipelineId = 'standard' | 'action_transfer' | 'digital_human';
 
@@ -398,7 +399,7 @@ function FinalVideoResult({ item }: { item?: PipelineArtifact }) {
   );
 }
 
-function TaskResult({ task }: { task: PipelineTask | null }) {
+function TaskResult({ task, dispatchPhase }: { task: PipelineTask | null; dispatchPhase?: string }) {
   const progress = Math.max(0, Math.min(100, task?.progress || 0));
 
   if (!task) {
@@ -455,6 +456,16 @@ function TaskResult({ task }: { task: PipelineTask | null }) {
           <span className={clsx('px-2 py-1 rounded-full text-xs font-medium', STATUS_STYLE[task.status] || STATUS_STYLE.pending)}>
             {statusText(task.status)}
           </span>
+          {dispatchPhase && (
+            <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] text-blue-600">
+              调度: {dispatchPhase}
+            </span>
+          )}
+          {task.error_code && (
+            <span className="rounded bg-red-50 px-2 py-0.5 text-[10px] text-red-600">
+              {task.error_code}
+            </span>
+          )}
           <span className="text-xs font-semibold text-gray-500">{progress}%</span>
         </div>
       </div>
@@ -712,6 +723,10 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
   const [llmModel, setLlmModel] = useState('');
   const [imageModel, setImageModel] = useState('');
   const [videoModel, setVideoModel] = useState('');
+  const [videoDispatchMode, setVideoDispatchMode] = useState<'auto' | 'manual'>(pipeline === 'standard' ? 'auto' : 'manual');
+  const [videoProfileId, setVideoProfileId] = useState('');
+  const [videoPools, setVideoPools] = useState<VideoProfile[]>([]);
+  const [dispatchPhase, setDispatchPhase] = useState('');
   const [ratio, setRatio] = useState('9:16');
   const [videoResolution, setVideoResolution] = useState('720P');
   const [duration, setDuration] = useState(5);
@@ -856,6 +871,12 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
     }
   }
 
+  useEffect(() => {
+    fetchVideoProfiles()
+      .then(payload => setVideoPools(payload.profiles || []))
+      .catch(() => setVideoPools([]));
+  }, []);
+
   const enterTemplateMode = () => {
     setTemplateMode(true);
     setEnableSubtitles(true);
@@ -865,12 +886,14 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
 
   const canSubmit = useMemo(() => {
     if (pipeline === 'standard') {
+      const needsModel = videoDispatchMode === 'manual' && (standardVideoMode === 'dynamic_video' || templateVideoEnabled);
       return text.trim().length > 0
+        && (!needsModel || Boolean(videoModel))
         && (!templateMode || Boolean(selectedTemplate))
         && (!templateVideoEnabled || Boolean(selectedTemplate?.supports_video));
     }
-    if (pipeline === 'action_transfer') return promptText.trim() && imagePath.trim() && videoPath.trim();
-    return characterImage.trim() && goodsText.trim();
+    if (pipeline === 'action_transfer') return Boolean(promptText.trim() && imagePath.trim() && videoPath.trim() && videoModel);
+    return Boolean(characterImage.trim() && goodsText.trim() && videoModel);
   }, [pipeline, text, templateMode, selectedTemplate, templateVideoEnabled, promptText, imagePath, videoPath, characterImage, goodsText]);
 
   useEffect(() => {
@@ -919,6 +942,34 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
     );
   }, [task?.task_id, task?.status]);
 
+  const videoJobIds = task?.video_job_ids?.length
+    ? task.video_job_ids
+    : (task?.video_job_id ? [task.video_job_id] : []);
+  const videoJobKey = videoJobIds.join(',');
+
+  useEffect(() => {
+    if (!videoJobKey || !['pending', 'running'].includes(task?.status || '')) {
+      setDispatchPhase('');
+      return;
+    }
+    const jobIds = videoJobKey.split(',').filter(Boolean);
+    let cancelled = false;
+    const poll = () => {
+      Promise.all(jobIds.map(id => fetchVideoJob(id).catch(() => null)))
+        .then(jobs => {
+          if (cancelled) return;
+          const phases = jobs.map((job, index) => job
+            ? `${jobIds.length > 1 ? `#${index + 1} ` : ''}${job.dispatch_phase || job.state || ''}`
+            : ''
+          ).filter(Boolean);
+          setDispatchPhase(phases.join(' / '));
+        });
+    };
+    poll();
+    const timer = window.setInterval(poll, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [videoJobKey, task?.status]);
+
   useEffect(() => {
     const taskId = searchParams.get('task');
     if (!taskId || task?.task_id === taskId) return;
@@ -940,6 +991,8 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
       const submittedTitle = titleValue.trim();
       const common = {
         video_model: videoModel,
+        video_dispatch_mode: pipeline === 'standard' ? videoDispatchMode : 'manual',
+        video_profile_id: videoProfileId || undefined,
         video_ratio: ratio,
         video_resolution: videoResolution,
         duration,
@@ -1298,6 +1351,7 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
                 </>
               )}
               {error && <span className="text-xs text-red-500 truncate">{error}</span>}
+              {dispatchPhase && <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] text-blue-600">调度: {dispatchPhase}</span>}
               <button
                 onClick={submit}
                 disabled={!canSubmit || running}
@@ -1320,7 +1374,30 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
                   {pipeline !== 'action_transfer' && (
                     <SelectField label="图片模型" value={imageModel} onChange={setImageModel} groups={imageModelGroups} />
                   )}
-                  {(pipeline !== 'standard' || standardVideoMode === 'dynamic_video' || templateVideoEnabled) && (
+                  {pipeline === 'standard' && (
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-gray-500">视频调度</span>
+                      <div className="flex gap-1">
+                        <button type="button" onClick={() => setVideoDispatchMode('auto')} className={clsx('rounded-lg px-3 py-1.5 text-xs', videoDispatchMode === 'auto' ? 'bg-blue-50 text-blue-600' : 'bg-white text-gray-500 border border-gray-200')}>自动</button>
+                        <button type="button" onClick={() => setVideoDispatchMode('manual')} className={clsx('rounded-lg px-3 py-1.5 text-xs', videoDispatchMode === 'manual' ? 'bg-blue-50 text-blue-600' : 'bg-white text-gray-500 border border-gray-200')}>手动</button>
+                      </div>
+                    </label>
+                  )}
+                  {pipeline === 'standard' && videoDispatchMode === 'auto' && (
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-gray-500">资源池</span>
+                      <select value={videoProfileId} onChange={e => setVideoProfileId(e.target.value)} className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none">
+                        <option value="">后端默认推荐</option>
+                        {videoPools.map(pool => (
+                          <option key={pool.id} value={pool.id} disabled={pool.state === 'not_ready'}>{pool.name || pool.id} · {pool.state}</option>
+                        ))}
+                      </select>
+                      {videoPools.length === 0 && (
+                        <p className="text-[10px] text-amber-600">暂无资源池；t2va 请切到手动并选择视频模型，不会静默降级。</p>
+                      )}
+                    </label>
+                  )}
+                  {(pipeline !== 'standard' || videoDispatchMode === 'manual') && (pipeline !== 'standard' || standardVideoMode === 'dynamic_video' || templateVideoEnabled) && (
                     <SelectField label="视频模型" value={videoModel} onChange={setVideoModel} groups={videoModelGroups} />
                   )}
                   <label className="flex flex-col gap-1.5">
@@ -1377,7 +1454,7 @@ export default function PipelinePage({ pipeline, title, subtitle }: PipelinePage
             )}
           </section>
 
-          <TaskResult task={task} />
+          <TaskResult task={task} dispatchPhase={dispatchPhase} />
         </div>
       </div>
 

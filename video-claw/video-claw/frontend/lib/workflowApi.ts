@@ -59,6 +59,7 @@ export interface ExecutionPreview {
   execution_id: string;
   status: 'failed' | 'interrupted' | string;
   error?: string | null;
+  error_code?: string | null;
   items: ExecutionPreviewItem[];
 }
 
@@ -112,9 +113,12 @@ export interface PipelineTask {
   output?: Record<string, unknown>;
   artifacts?: Array<{ kind: string; name?: string; path: string; exists?: boolean; created_at?: string }>;
   error?: string | null;
+  error_code?: string | null;
   created_at?: string;
   updated_at?: string;
   output_dir?: string;
+  video_job_id?: string;
+  video_job_ids?: string[];
 }
 
 /** 临时工作台任务输入（按 Sandbox/AppShell 实际读取字段声明） */
@@ -281,6 +285,11 @@ export interface ModelUnavailableDetail {
   model?: string;
   reason?: string;
   error_code?: string;
+  mode?: string;
+  profile_id?: string;
+  execution_id?: string;
+  missing?: Array<{ field: string; code: string; message?: string }>;
+  actions?: string[];
 }
 
 export class ModelUnavailableError extends Error {
@@ -301,7 +310,11 @@ async function throwResponseError(resp: Response, fallback: string): Promise<nev
   } catch {
     /* 非 JSON 响应 */
   }
-  if (detail && typeof detail === 'object' && detail.code === 'model_unavailable') {
+  if (
+    detail &&
+    typeof detail === 'object' &&
+    (detail.code === 'model_unavailable' || detail.code === 'video_dispatch_error')
+  ) {
     throw new ModelUnavailableError(detail as ModelUnavailableDetail);
   }
   const message = typeof detail === 'string' ? detail : detail?.reason || detail?.message || fallback;
@@ -521,6 +534,8 @@ export async function startProject(params: {
   video_start_end_model?: string;
   video_reference_model?: string;
   video_generation_mode?: string;
+  video_dispatch_mode?: 'auto' | 'manual';
+  video_profile_id?: string;
   scene_number?: number;
   enable_concurrency?: boolean;
   web_search?: boolean;

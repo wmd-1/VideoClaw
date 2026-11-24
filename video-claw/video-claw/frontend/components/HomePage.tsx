@@ -18,6 +18,7 @@ import ReferenceLimitHint from '@/components/ReferenceLimitHint';
 import ProviderSelect from './ProviderSelect';
 
 import { apiFetch } from "@/lib/identityGuard";
+import { fetchVideoProfiles, type VideoProfilesPayload } from '@/lib/videoPools';
 const HOME_MODEL_SELECT_CLASS = 'bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none';
 
 export interface ProjectParams {
@@ -39,6 +40,8 @@ export interface ProjectParams {
   video_start_end_model: string;
   video_reference_model: string;
   video_generation_mode: VideoGenerationMode;
+  video_dispatch_mode?: 'auto' | 'manual';
+  video_profile_id?: string;
   expand_idea?: boolean;
   enable_concurrency?: boolean;
   web_search?: boolean;
@@ -96,6 +99,10 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const [selectedStartEndVideo, setSelectedStartEndVideo] = useState('');
   const [selectedReferenceVideo, setSelectedReferenceVideo] = useState('');
   const [selectedVideoMode, setSelectedVideoMode] = useState<VideoGenerationMode>('first_frame');
+  const [dispatchMode, setDispatchMode] = useState<'auto' | 'manual'>('auto');
+  const [selectedProfileId, setSelectedProfileId] = useState('');
+  const [poolPayload, setPoolPayload] = useState<VideoProfilesPayload | null>(null);
+  const [poolError, setPoolError] = useState('');
   const [selectedRatio, setSelectedRatio] = useState('');
   const [selectedResolution, setSelectedResolution] = useState('720P');
   const [selectedDuration, setSelectedDuration] = useState('');
@@ -130,12 +137,27 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       : selectedVideoMode === 'reference'
         ? selectedReferenceVideo
         : selectedFirstFrameVideo;
-  const modelConfigReady = Boolean(selectedLLM && selectedVLM && selectedT2I && selectedI2I && activeVideoModel && selectedRatio && selectedResolution);
+  const modelConfigReady = Boolean(
+    selectedLLM && selectedVLM && selectedT2I && selectedI2I && selectedRatio && selectedResolution
+    && (dispatchMode === 'auto' || activeVideoModel)
+  );
   const canStart = Boolean(
     (creationMode === 'upload' ? Boolean(uploadedFile) : (idea.trim() || uploadedFile))
     && modelConfigReady
     && !configLoading
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchVideoProfiles()
+      .then(payload => {
+        if (cancelled) return;
+        setPoolPayload(payload);
+        // 推荐只展示；未显式选择时提交空 profile_id，交给后端默认推荐。
+      })
+      .catch((e: unknown) => { if (!cancelled) setPoolError((e as Error)?.message || '资源池不可用'); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,7 +202,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         const referenceModel = models.video_reference || 'wan2.7-r2v';
         const videoMode = (generation.video_generation_mode || 'first_frame') as VideoGenerationMode;
         const selectedModel = videoMode === 'start_end_frame' ? startEndModel : videoMode === 'reference' ? referenceModel : firstFrameModel;
-        if (!models.llm || !models.vlm || !models.image_t2i || !models.image_it2i || !selectedModel) {
+        if (!models.llm || !models.vlm || !models.image_t2i || !models.image_it2i) {
           throw new Error('backend/config.yaml 缺少主流程默认模型');
         }
         if (cancelled) return;
@@ -256,6 +278,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       image_t2i_model: selectedT2I,
       image_it2i_model: selectedI2I,
       video_generation_mode: selectedVideoMode,
+      video_dispatch_mode: dispatchMode,
+      video_profile_id: dispatchMode === 'auto' ? (selectedProfileId || undefined) : undefined,
       video_first_frame_model: selectedFirstFrameVideo,
       video_start_end_model: selectedStartEndVideo,
       video_reference_model: selectedReferenceVideo,
@@ -610,6 +634,47 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
 
               <div className="space-y-3 border-t border-gray-200/70 pt-4">
                 <div className="flex items-center justify-between">
+                  <span className="text-gray-500 font-semibold">视频调度</span>
+                  <div className="inline-flex rounded-lg bg-white border border-gray-200 p-0.5">
+                    <button
+                      onClick={() => setDispatchMode('auto')}
+                      className={clsx('px-2.5 py-1 rounded-md text-[11px]', dispatchMode === 'auto' ? 'bg-blue-50 text-blue-600' : 'text-gray-500')}
+                    >
+                      自动调度（推荐）
+                    </button>
+                    <button
+                      onClick={() => setDispatchMode('manual')}
+                      className={clsx('px-2.5 py-1 rounded-md text-[11px]', dispatchMode === 'manual' ? 'bg-blue-50 text-blue-600' : 'text-gray-500')}
+                    >
+                      手动指定模型
+                    </button>
+                  </div>
+                </div>
+                {dispatchMode === 'auto' ? (
+                  <div className="space-y-1.5">
+                    <select
+                      value={selectedProfileId}
+                      onChange={e => setSelectedProfileId(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg px-2.5 py-2 text-gray-700 outline-none"
+                    >
+                      <option value="">由后端按默认推荐选池</option>
+                      {(poolPayload?.profiles || []).map(profile => (
+                        <option key={profile.id} value={profile.id} disabled={profile.state === 'not_ready'}>
+                          {profile.name || profile.id} · {profile.state === 'ready' ? '就绪' : profile.state === 'busy' ? '忙碌可排队' : '未就绪'}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-gray-400">
+                      {poolError || (poolPayload?.profiles?.length
+                        ? '自动调度会按资源池排队；忙碌池仍可提交等待。'
+                        : '暂无已配置资源池；可先创建项目，或到设置页完成实例配置。')}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-3 border-t border-gray-200/70 pt-4">
+                <div className="flex items-center justify-between">
                   <span className="text-gray-500 font-semibold">模型配置</span>
                   <span className="text-[10px] text-gray-400">用于主流程各阶段调用</span>
                 </div>
@@ -663,15 +728,21 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                     ))}
                   </select>
                 </label>
-                <label className="flex flex-col gap-1 col-span-2">
-                  <span className="text-gray-500 font-medium">{selectedVideoModeLabel}模型</span>
-                  <ProviderSelect
-                    value={activeVideoModel}
-                    providers={activeVideoProviders}
-                    onChange={v => setActiveVideoModel(v)}
-                    className={HOME_MODEL_SELECT_CLASS}
-                  />
-                </label>
+                {dispatchMode === 'manual' ? (
+                  <label className="flex flex-col gap-1 col-span-2">
+                    <span className="text-gray-500 font-medium">{selectedVideoModeLabel}模型</span>
+                    <ProviderSelect
+                      value={activeVideoModel}
+                      providers={activeVideoProviders}
+                      onChange={v => setActiveVideoModel(v)}
+                      className={HOME_MODEL_SELECT_CLASS}
+                    />
+                  </label>
+                ) : (
+                  <p className="col-span-2 text-[10px] text-gray-400">
+                    自动调度无需选择具体视频模型；需要临时指定时切到“手动指定模型”。
+                  </p>
+                )}
                 <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
                   <input
                     type="checkbox"

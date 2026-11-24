@@ -72,9 +72,26 @@ const TASKS_INVALID_COPY: FallbackCopy = {
   canUpload: false,
 };
 
+const POOL_COPY: FallbackCopy = {
+  title: '视频资源池暂不可用',
+  body: '请管理员检查资源池实例、资格与调度开关；也可以切换到“手动指定模型”完成本次生成。',
+  hint: '本步骤未启动生成；资源池恢复后重试即可，已完成的片段会保留。',
+  canUpload: false,
+};
+
 const ERROR_CODE_COPY: Record<string, FallbackCopy> = {
   task_not_supported: TASK_NOT_SUPPORTED_COPY,
   tasks_invalid: TASKS_INVALID_COPY,
+  pool_not_ready: POOL_COPY,
+  pool_incompatible: POOL_COPY,
+  selected_pool_not_ready: POOL_COPY,
+  dispatch_disabled: POOL_COPY,
+  queue_timeout: {
+    ...POOL_COPY,
+    title: '视频资源排队超时',
+    body: '可稍后重试，或切换到手动指定模型；已完成的片段不会重做。',
+  },
+  pool_unavailable: POOL_COPY,
 };
 
 /** 模型不可用引导弹窗：上传图片（仅图片阶段）/ 更换模型 / 重试 */

@@ -25,30 +25,34 @@ def _positive_int(value: Any) -> int:
     return parsed if parsed > 0 else 0
 
 
-def duration_range(model: str) -> Tuple[int, int]:
+def duration_range(model: str, contract: Any = None) -> Tuple[int, int]:
     """H3 4~15 与所选模型声明能力的**交集**。
 
     - 模型未声明/名称为空 → 直接用 H3 区间（空名称不进入模糊匹配）；
     - 声明越界则收窄；交集为空 → 报错（不能生成违反 H3 协议的时长）。
     """
     low, high = H3_DURATION_RANGE
-    if not str(model or "").strip():
-        return low, high
+    declared = contract
+    if isinstance(declared, dict) and isinstance(declared.get("duration"), dict):
+        declared = declared["duration"]
+    if not isinstance(declared, dict) or not declared:
+        if not str(model or "").strip():
+            return low, high
+        from models.config_model import get_model_config
 
-    from models.config_model import get_model_config
-
-    capabilities = (get_model_config(model) or {}).get("capabilities")
-    if not isinstance(capabilities, dict):
-        return low, high
-    contract = capabilities.get("duration") or {}
-    if not isinstance(contract, dict) or not contract:
+        capabilities = (get_model_config(model) or {}).get("capabilities")
+        if not isinstance(capabilities, dict):
+            return low, high
+        declared = capabilities.get("duration") or {}
+    if not isinstance(declared, dict) or not declared:
         # 未声明或形式非法（如写成 duration: 5）→ 只用 H3 区间
         return low, high
     try:
-        declared_low = int(contract.get("min", low))
-        declared_high = int(contract.get("max", high))
+        declared_low = int(declared.get("min", low))
+        declared_high = int(declared.get("max", high))
     except (TypeError, ValueError):
         return low, high
+    contract = declared
     if declared_low > declared_high:
         raise ValueError(f"视频模型 {model} 的 duration 能力区间非法：{contract}")
 
@@ -65,6 +69,7 @@ def resolve_effective_duration(
     segment_duration: Any = None,
     session_override: Any = None,
     model: str = "",
+    contract: Any = None,
 ) -> Tuple[int, List[str]]:
     """返回 (effective_duration, adjustments)。"""
     override = _positive_int(session_override)
@@ -72,7 +77,7 @@ def resolve_effective_duration(
     base = override or from_segment or DEFAULT_DURATION
     source = "会话覆盖" if override else ("分镜时长" if from_segment else "默认值")
 
-    low, high = duration_range(model)
+    low, high = duration_range(model, contract)
     effective = max(low, min(high, base))
     adjustments: List[str] = []
     if effective != base:

@@ -11,6 +11,7 @@ from .sandbox import router as sandbox_router
 from .sessions import router as sessions_router
 from .space import router as space_router
 from .stages import router as stages_router
+from .video_resources import router as video_resources_router
 from .workflow import router as workflow_router
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "configuration_router",
     "models_router",
     "media_router",
+    "video_resources_router",
 ]

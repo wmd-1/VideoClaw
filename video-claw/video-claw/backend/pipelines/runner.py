@@ -3,6 +3,8 @@ import logging
 import traceback
 
 from core.media_refs import materialize_media_payload
+from core.video_managed_bridge import ManagedBridgeError
+from core.observability import call_context
 from core.ownership import legacy_owner
 
 from . import action_transfer, digital_human, standard
@@ -29,7 +31,8 @@ async def run_pipeline_task(task_id: str, pipeline: str, params: dict) -> None:
         set_runtime_inputs(task_id, canonical, runtime)
         logger.info("Pipeline task started: task_id=%s pipeline=%s", task_id, pipeline)
         mark_running(task_id)
-        output, artifacts = await runner(task_id, runtime)
+        with call_context(owner=owner, execution_id=task_id, stage="pipeline"):
+            output, artifacts = await runner(task_id, runtime)
         await asyncio.to_thread(mark_completed, task_id, output, artifacts)
         logger.info(
             "Pipeline task completed: task_id=%s pipeline=%s artifacts=%d",
@@ -39,4 +42,8 @@ async def run_pipeline_task(task_id: str, pipeline: str, params: dict) -> None:
         )
     except Exception as exc:
         logger.exception("Pipeline task failed: task_id=%s pipeline=%s", task_id, pipeline)
-        await asyncio.to_thread(mark_failed, task_id, f"{exc}\n{traceback.format_exc()}")
+        if isinstance(exc, ManagedBridgeError):
+            message = f"video_dispatch_error:{exc.error_code}:{exc.reason}"
+        else:
+            message = f"{exc}\n{traceback.format_exc()}"
+        await asyncio.to_thread(mark_failed, task_id, message)

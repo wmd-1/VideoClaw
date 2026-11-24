@@ -6,6 +6,7 @@ from db.repositories.saved import SavedRepo
 from db.repositories.sessions import SessionRepo
 from db.repositories.stages import StageArtifactRepo
 from db.repositories.tasks import TaskRepo
+from db.repositories.video_dispatch import VideoDispatchRepo
 
 __all__ = [
     "FileRepo",
@@ -15,4 +16,5 @@ __all__ = [
     "SessionRepo",
     "StageArtifactRepo",
     "TaskRepo",
+    "VideoDispatchRepo",
 ]

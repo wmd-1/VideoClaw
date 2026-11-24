@@ -65,6 +65,27 @@ class TaskRepo:
                     row,
                 )
 
+    def set_video_job(self, task_id: str, job_id: str) -> None:
+        """6.7：追加受管视频 job；多段 Pipeline 不覆盖前序 job。"""
+        if not task_id or not job_id:
+            return
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT video_job_ids FROM pipeline_tasks WHERE task_id = %s FOR UPDATE",
+                    (task_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return
+                ids = list(row.get("video_job_ids") or [])
+                if str(job_id) not in ids:
+                    ids.append(str(job_id))
+                cur.execute(
+                    "UPDATE pipeline_tasks SET video_job_id = %s, video_job_ids = %s, updated_at = %s WHERE task_id = %s",
+                    (str(job_id), jsonb(ids), now_ms(), task_id),
+                )
+
     def insert_if_absent(self, task: Dict[str, Any]) -> bool:
         """迁移专用：仅在任务不存在时插入，不覆盖既有 owner/状态/产物。"""
         now = now_ms()

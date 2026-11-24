@@ -257,7 +257,7 @@ def test_migration_runner_records_per_file_markers():
             names = [row["name"] for row in cur.fetchall()]
     assert "001_init.sql" in names and "002_core_storage.sql" in names
     assert len(names) == len(set(names))
-    assert database.schema_version() == "2"
+    assert database.schema_version() == "3"
 
 
 # ── 13.6 operation log state machine ──────────────────────
@@ -1200,6 +1200,29 @@ def test_managed_reference_multipart_and_lazy_presign(cleanup_objects):
     assert needs_staging(public, _user()) is False
     with pytest.raises(Exception):
         build_media_reference(public, _user("bob"))
+
+
+def test_reference_candidates_refresh_after_long_queue(cleanup_objects, monkeypatch):
+    sid = _sid()
+    public = _published_public(sid)
+    os.remove(FileRepo().get_by_public_path(public)["local_path"])  # MinIO-only
+    ref = build_media_reference(public, _user())
+    assert ref.presign_factory is not None
+    calls = []
+
+    class FakeStorage:
+        def presign(self, object_key, ttl=3600, bucket=None):
+            calls.append(object_key)
+            return f"https://inference.example/{object_key}?sig={len(calls)}"
+
+    import core.reference_values as reference_values
+
+    monkeypatch.setattr(reference_values, "get_storage", lambda: FakeStorage())
+    first = ref.candidates()[0]
+    second = ref.candidates()[0]
+    assert len(calls) == 2
+    assert first != second  # 排队/重试后取新签名，不缓存旧 URL
+    assert "sig=1" in first and "sig=2" in second
 
 
 def test_staging_lifecycle(monkeypatch, cleanup_objects):

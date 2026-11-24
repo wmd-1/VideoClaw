@@ -2234,6 +2234,7 @@ class WorkflowEngine:
 
             input_data["_session_meta"] = copy.deepcopy(view.meta)
             input_data["_session_artifacts"] = inputs.runtime
+            input_data["_runtime_map"] = dict(inputs.runtime_map)
             # 阶段执行必须携带会话归属：上传文档等用户输入的 owner 校验依赖它
             input_data["_session_owner"] = view.owner
             for name, value in inputs.explicit.items():
@@ -3536,11 +3537,51 @@ class WorkflowEngine:
             if state is None:
                 return False
             owner = state.owner
-            deleted = delete_session_cascade(
-                session_id,
-                owner,
-                lambda cur: register_resource_delete(cur, owner=owner, domain="sessions", resource_id=session_id),
-            )
+            dispatch_runtime = None
+            delete_started = False
+            try:
+                from core.video_dispatch_runtime import get_dispatch_runtime
+
+                dispatch_runtime = get_dispatch_runtime()
+                if dispatch_runtime is not None:
+                    # 先进入 deleting：窗口内新 enqueue 会被拒绝，迟到结果按删除处理。
+                    dispatch_runtime.service.begin_source_delete(
+                        "workflow", session_id
+                    )
+                    delete_started = True
+                    stats = dispatch_runtime.service.cancel_source(
+                        "workflow",
+                        session_id,
+                        transport_factory=dispatch_runtime.transport_factory,
+                    )
+                    logger.info(
+                        "Dispatch cancel for session %s: %s", session_id, stats
+                    )
+                    if stats.get("failed"):
+                        raise RuntimeError(
+                            "部分视频作业取消失败，已中止删除：" + str(stats.get("errors"))
+                        )
+            except Exception as exc:  # noqa: BLE001 - 取消不完整时中止删除
+                if dispatch_runtime is not None and delete_started:
+                    dispatch_runtime.service.end_source_delete("workflow", session_id)
+                logger.error(
+                    "Failed to cancel dispatch jobs for session %s",
+                    session_id,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    "会话相关视频作业无法安全取消，已中止删除"
+                ) from exc
+            try:
+                deleted = delete_session_cascade(
+                    session_id,
+                    owner,
+                    lambda cur: register_resource_delete(cur, owner=owner, domain="sessions", resource_id=session_id),
+                )
+            except Exception:
+                if dispatch_runtime is not None and delete_started:
+                    dispatch_runtime.service.end_source_delete("workflow", session_id)
+                raise
             self._evict(session_id)
             with self._state_lock:
                 self._stop_events.pop(session_id, None)
@@ -3548,6 +3589,18 @@ class WorkflowEngine:
                 self._errors.pop(session_id, None)
         if deleted:
             grounding_cache.clear_session(session_id)
+        else:
+            if dispatch_runtime is not None and delete_started:
+                dispatch_runtime.service.end_source_delete("workflow", session_id)
+        if deleted and dispatch_runtime is not None and delete_started:
+            try:
+                dispatch_runtime.service.mark_source_deleted("workflow", session_id)
+            except Exception:  # noqa: BLE001 - 删除已成功，保持 deleting 阻止新作业
+                logger.error(
+                    "Failed to tombstone deleted session %s; keeping deleting gate",
+                    session_id,
+                    exc_info=True,
+                )
         logger.info("Session deleted (object cleanup queued): %s", session_id)
         return deleted
 

@@ -12,9 +12,11 @@ import contextvars
 import logging
 import os
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from config import Config
 from core.asset_quality import asset_status
 from core.h3_modes import (
     collect_segments,
@@ -22,8 +24,13 @@ from core.h3_modes import (
     resolve_grounding_model,
     resolve_style_key,
 )
+from core.identity import owner_key
+from core.observability import current_call_context
 from core.prompt_source import resolve_effective_prompt
+from core.video_dispatch_runtime import get_dispatch_runtime
+from core.video_generation_service import BatchVideoItem
 from core.video_params import resolve_effective_duration
+from starlette.concurrency import run_in_threadpool
 
 from .base_agent import AgentInterface
 
@@ -627,6 +634,305 @@ class VideoDirectorAgent(AgentInterface):
         """保留兼容入口；session 状态统一由 WorkflowEngine 持久化。"""
         return
 
+    async def _process_auto(self, input_data: Dict, intervention: Optional[Dict]) -> Dict:
+        """auto 路径：一次轻量入队整批片段，由统一调度器派发；不按单模型并发排队。"""
+        sid = input_data["session_id"]
+        session_meta = self._session_meta(input_data)
+        video_generation_mode = str(
+            input_data.get("video_generation_mode")
+            or session_meta.get("video_generation_mode")
+            or "first_frame"
+        )
+        if video_generation_mode not in ("first_frame", "start_end_frame", "reference"):
+            video_generation_mode = "first_frame"
+        enable_concurrency = bool(input_data.get("enable_concurrency", True))
+        video_ratio = input_data.get("video_ratio", "16:9")
+        video_resolution = input_data.get("video_resolution", "720P")
+        video_duration = self._optional_int(input_data.get("video_duration"))
+        video_fps = self._optional_int(input_data.get("video_fps"))
+        video_short_edge = self._optional_int(input_data.get("video_short_edge"))
+        audio_reference_url = str(input_data.get("audio_reference_url") or "").strip() or None
+        owner_login = str(
+            input_data.get("_session_owner")
+            or session_meta.get("owner")
+            or "local"
+        )
+        runtime_map = input_data.get("_runtime_map") or {}
+
+        def canonical_media(value):
+            if value is None:
+                return None
+            return str(runtime_map.get(str(value), str(value)))
+
+        artifacts = self._session_artifacts(input_data)
+        episodes = artifacts.get("storyboard", {}).get("episodes", [])
+        segments: List[dict] = []
+        for episode in episodes:
+            segments.extend(episode.get("segments", []))
+        if not segments:
+            raise Exception("未找到分镜片段数据，请先完成阶段3")
+        video_clips = artifacts.get("video_generation", {}).get("clips", [])
+        clip_map = {
+            clip["id"]: clip for clip in video_clips if isinstance(clip, dict) and clip.get("id")
+        }
+        ref_art = artifacts.get("reference_generation", {})
+        scene_map = {s["id"]: s for s in ref_art.get("scenes", []) if "id" in s}
+        character_art = artifacts.get("character_design", {})
+        prompt_rewrite_art = artifacts.get("prompt_rewrite", {})
+
+        h3_artifacts = {"character_design": character_art, "reference_generation": ref_art}
+        h3_style = resolve_style_key(input_data, session_meta)
+        h3_grounding_model = resolve_grounding_model(input_data, session_meta)
+        style_zh = input_data.get("style") or session_meta.get("style") or "realistic"
+        style_prompt = self._get_style_prompt(style_zh)
+
+        runtime = get_dispatch_runtime()
+        if runtime is None:
+            raise RuntimeError("视频资源池调度尚未启动，不能执行 auto 生成")
+        parameters = {
+            "duration": video_duration,
+            "ratio": video_ratio,
+            "resolution": video_resolution,
+            "fps": video_fps,
+            "short_edge": video_short_edge,
+        }
+        explicit_profile = input_data.get("video_profile_id") or session_meta.get("video_profile_id")
+        resolution = runtime.service.resolve_execution_pool(
+            mode=video_generation_mode,
+            explicit_profile_id=str(explicit_profile) if explicit_profile else None,
+            parameters=parameters,
+        )
+        if resolution.error:
+            raise RuntimeError(
+                f"video_dispatch_error:{resolution.error}: 无法为新执行选择兼容且就绪的资源池"
+            )
+        pool_runtime = runtime.service.runtime()
+        profile = pool_runtime.profiles.get(str(resolution.contract.profile_id or ""))
+        concurrency_cap = profile.max_concurrency_per_execution if profile else 8
+        h3_segments = collect_segments(
+            artifacts.get("storyboard", {}),
+            model="",
+            session_override=video_duration,
+            contract=resolution.contract.contract,
+        )
+        h3_segment_by_id = {item["id"]: item for item in h3_segments}
+
+        regen_ids = set((intervention or {}).get("regenerate_clips") or [])
+        targets = [
+            segment
+            for segment in segments
+            if not regen_ids or segment.get("segment_id") in regen_ids
+        ]
+        items: List[BatchVideoItem] = []
+        skipped_failures: Dict[str, dict] = {}
+        for seg_index, seg in enumerate(segments):
+            if seg not in targets:
+                continue
+            seg_id = seg["segment_id"]
+            if not regen_ids and self._list_versions(sid, seg_id):
+                continue
+            clip = clip_map.get(seg_id)
+            prompt_resolution = self._prompt_resolution(
+                seg_id,
+                video_generation_mode,
+                h3_segment_by_id,
+                h3_segments,
+                scene_map,
+                h3_artifacts,
+                h3_style,
+                h3_grounding_model,
+                clip,
+                prompt_rewrite_art,
+            )
+            self._prompt_sources[seg_id] = prompt_resolution
+            prompt = self._final_prompt(
+                seg,
+                style_prompt,
+                character_art,
+                video_data=clip,
+                prompt_rewrite_art=prompt_rewrite_art,
+                seg_id=seg_id,
+                resolution=prompt_resolution,
+            )
+            prompt_resolution["submitted_prompt"] = prompt
+
+            image_path = None
+            reference_paths: List[str] = []
+            if video_generation_mode == "reference":
+                reference_paths = self._get_segment_reference_assets(seg, character_art)
+                if not reference_paths:
+                    skipped_failures[seg_id] = {
+                        "error_type": "missing_reference_images",
+                        "error": "参考图缺失",
+                    }
+                    continue
+            else:
+                image_path = self._get_reference_image(sid, seg_id, scene_map)
+                if not image_path or not os.path.exists(image_path):
+                    skipped_failures[seg_id] = {
+                        "error_type": "missing_input_image",
+                        "error": f"输入图缺失: {image_path}",
+                    }
+                    continue
+            last_image_path = (
+                self._get_next_reference_image(sid, seg_index, segments, scene_map)
+                if video_generation_mode == "start_end_frame"
+                else None
+            )
+            duration, adjustments = resolve_effective_duration(
+                seg.get("total_duration", 10),
+                video_duration,
+                "",
+                contract=resolution.contract.contract,
+            )
+            if adjustments:
+                self._duration_adjustments[seg_id] = adjustments
+            items.append(
+                BatchVideoItem(
+                    item_id=seg_id,
+                    prompt=prompt,
+                    save_path=self._next_version_path(sid, seg_id),
+                    image_path=image_path,
+                    last_image_path=last_image_path,
+                    reference_image_paths=reference_paths or None,
+                    duration=duration,
+                    video_ratio=video_ratio,
+                    resolution=video_resolution,
+                    fps=video_fps,
+                    short_edge=video_short_edge,
+                    audio_reference_url=audio_reference_url,
+                    canonical_image_path=canonical_media(image_path),
+                    canonical_last_image_path=canonical_media(last_image_path),
+                    canonical_reference_image_paths=[
+                        canonical_media(path) for path in reference_paths
+                    ] or None,
+                    canonical_audio_reference_url=canonical_media(audio_reference_url),
+                )
+            )
+
+        clip_failures_map: Dict[str, dict] = dict(skipped_failures)
+        if not items:
+            self._report_progress("视频生成", "没有需要生成的片段", 95)
+            return self._build_payload(
+                sid, segments, video_clips, {}, clip_failures_map
+            )
+
+        owner = owner_key(owner_login)
+        execution_id = str(current_call_context().get("execution_id") or "")
+        if not execution_id:
+            execution_id = f"{sid}-{uuid.uuid4().hex[:8]}"
+        from core.artifact_publisher import execution_work_root
+
+        expected_root = execution_work_root(owner, "sessions", sid, execution_id)
+        publish_result = bool(self.execution_root) and os.path.realpath(
+            self.execution_root
+        ) == os.path.realpath(expected_root)
+        try:
+            handle = runtime.generation.submit(
+                owner=owner,
+                session_id=sid,
+                execution_id=execution_id,
+                batch_id=f"{execution_id}-{uuid.uuid4().hex[:8]}",
+                contract=resolution.contract,
+                members=list(resolution.members),
+                items=items,
+                enable_concurrency=enable_concurrency,
+                max_concurrency_per_execution=concurrency_cap,
+                queue_timeout_seconds=pool_runtime.queue_timeout_seconds,
+                max_queued_jobs=pool_runtime.max_queued_jobs,
+                owner_login=owner_login,
+                publish_result=publish_result,
+            )
+        except Exception as exc:  # noqa: BLE001 - 预检后容量竞态必须转片段错误
+            from core.video_dispatch_service import DispatchUnavailable
+
+            if not isinstance(exc, DispatchUnavailable):
+                raise
+            error_code = str(getattr(exc, "error_code", "queue_full"))
+            for item in items:
+                clip_failures_map[item.item_id] = {
+                    "error_type": error_code,
+                    "error": str(exc),
+                }
+            self._report_progress(
+                "视频生成", f"调度拒绝: {error_code}", 5,
+                data={
+                    "video_dispatch_error": {
+                        "error_code": error_code,
+                        "reason": str(exc),
+                    }
+                },
+            )
+            return self._build_payload(
+                sid, segments, video_clips, {}, clip_failures_map
+            )
+
+        done = 0
+
+        def on_event(event: Dict) -> None:
+            nonlocal done
+            state = str(event.get("state") or "")
+            if state not in ("done", "failed"):
+                return
+            seg_id = str(event.get("item_id") or "")
+            done += 1
+            percent = 5 + int(90 * done / max(1, len(items)))
+            if state == "done":
+                save_path = str(event.get("save_path") or "")
+                versions = self._list_versions(sid, seg_id)
+                self._report_progress(
+                    "视频生成",
+                    f"完成: {seg_id}",
+                    percent,
+                    data={
+                        "asset_complete": {
+                            "type": "clips",
+                            "id": seg_id,
+                            "status": "done",
+                            "selected": save_path,
+                            "versions": versions,
+                        }
+                    },
+                )
+                return
+            error = event.get("error") if isinstance(event.get("error"), dict) else {}
+            marker = {
+                "error_type": str(error.get("error_type") or error.get("error_code") or "video_dispatch_error"),
+                "error": str(error.get("reason") or error.get("error") or error)[:300],
+            }
+            clip_failures_map[seg_id] = marker
+            self._report_progress(
+                "视频生成",
+                f"失败: {seg_id}",
+                percent,
+                data={
+                    "asset_complete": {
+                        "type": "clips",
+                        "id": seg_id,
+                        "status": "failed",
+                        "selected": "",
+                        "versions": [],
+                        **marker,
+                    }
+                },
+            )
+
+        wait_timeout = (
+            float(pool_runtime.queue_timeout_seconds)
+            + float(getattr(Config, "TIMEOUT_VIDEO", 10800) or 10800)
+            + 600.0
+        )
+        await run_in_threadpool(
+            runtime.generation.wait,
+            handle,
+            on_event=on_event,
+            cancel_check=self.cancellation_check,
+            timeout=wait_timeout,
+        )
+        self._report_progress("视频生成", "完成", 100)
+        return self._build_payload(sid, segments, video_clips, {}, clip_failures_map)
+
+
     # ─── 核心流程 ───
 
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
@@ -654,6 +960,13 @@ class VideoDirectorAgent(AgentInterface):
             return payload
 
         session_meta = self._session_meta(input_data)
+        dispatch_mode = str(
+            input_data.get("video_dispatch_mode")
+            or session_meta.get("video_dispatch_mode")
+            or ""
+        ).strip().lower()
+        if dispatch_mode == "auto":
+            return await self._process_auto(input_data, intervention)
         video_generation_mode, video_model = self._select_video_model(input_data, session_meta)
         llm_model = input_data.get("llm_model") or session_meta.get("llm_model") or ""
         enable_concurrency = input_data.get("enable_concurrency", True)

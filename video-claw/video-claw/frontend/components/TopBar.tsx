@@ -17,6 +17,7 @@ import ReferenceLimitHint from '@/components/ReferenceLimitHint';
 
 import { apiFetch } from "@/lib/identityGuard";
 import { withBasePath } from '@/lib/basePath';
+import { fetchVideoProfiles, type VideoProfile } from '@/lib/videoPools';
 const MODEL_SELECT_CLASS = 'bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-700 outline-none w-full';
 
 export type StageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'error' | 'stopped';
@@ -93,6 +94,8 @@ export interface ModelConfig {
   video_duration: string;
   /** 会话级帧率；空串 = 服务端默认（不注入 fps 字段） */
   video_fps: string;
+  video_dispatch_mode?: 'auto' | 'manual';
+  video_profile_id?: string;
   enable_concurrency: boolean;
 }
 
@@ -142,6 +145,7 @@ function ModelSelector({
   const [firstFrameVideoProviders, setFirstFrameVideoProviders] = useState<ProviderGroup[]>([]);
   const [startEndVideoProviders, setStartEndVideoProviders] = useState<ProviderGroup[]>([]);
   const [referenceVideoProviders, setReferenceVideoProviders] = useState<ProviderGroup[]>([]);
+  const [videoPools, setVideoPools] = useState<VideoProfile[]>([]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -156,6 +160,19 @@ function ModelSelector({
     const openHandler = () => setOpen(true);
     window.addEventListener('open-model-selector', openHandler);
     return () => window.removeEventListener('open-model-selector', openHandler);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchVideoProfiles()
+      .then(payload => {
+        if (cancelled) return;
+        setVideoPools(payload.profiles || []);
+        // 推荐池只用于展示；不得在自动模式下写回显式偏好。
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -334,6 +351,26 @@ function ModelSelector({
 
       {open && (
         <div className="absolute right-0 top-full mt-1 w-72 max-h-[70vh] overflow-y-auto overscroll-contain bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-50 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-400 font-medium">视频调度</span>
+            <div className="inline-flex rounded-md bg-gray-100 p-0.5">
+              <button type="button" onClick={() => update('video_dispatch_mode', 'auto')} className={clsx('px-1.5 py-0.5 rounded text-[9px]', (config.video_dispatch_mode || 'auto') === 'auto' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500')}>自动</button>
+              <button type="button" onClick={() => update('video_dispatch_mode', 'manual')} className={clsx('px-1.5 py-0.5 rounded text-[9px]', config.video_dispatch_mode === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500')}>手动</button>
+            </div>
+          </div>
+          {(config.video_dispatch_mode || 'auto') === 'auto' ? (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] text-gray-400 font-medium">资源池</span>
+              <select value={config.video_profile_id || ''} onChange={e => update('video_profile_id', e.target.value)} className={MODEL_SELECT_CLASS}>
+                <option value="">默认推荐</option>
+                {videoPools.map(pool => (
+                  <option key={pool.id} value={pool.id} disabled={pool.state === 'not_ready'}>
+                    {pool.name || pool.id} · {pool.state === 'ready' ? '就绪' : pool.state === 'busy' ? '忙碌可排队' : '未就绪'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">LLM 模型</span>
             <ProviderSelect value={config.llm_model} providers={llmProviders} onChange={v => update('llm_model', v)} className={MODEL_SELECT_CLASS} />
@@ -363,10 +400,14 @@ function ModelSelector({
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-400 font-medium">{activeVideoLabel}模型</span>
-            <ProviderSelect value={activeVideoModel} providers={activeVideoProviders} onChange={updateActiveVideoModel} className={MODEL_SELECT_CLASS} />
-          </label>
+          {config.video_dispatch_mode === 'manual' ? (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] text-gray-400 font-medium">{activeVideoLabel}模型</span>
+              <ProviderSelect value={activeVideoModel} providers={activeVideoProviders} onChange={updateActiveVideoModel} className={MODEL_SELECT_CLASS} />
+            </label>
+          ) : (
+            <p className="text-[10px] text-gray-400">自动调度按资源池排队，不读取具体视频模型。</p>
+          )}
           <label className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-400 font-medium">{capsLoading ? '视频比例（加载模型能力中…）' : '视频比例'}</span>
             <div className="flex gap-0.5">

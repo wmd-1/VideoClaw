@@ -53,6 +53,11 @@ def call_context(**fields: Any) -> Iterator[None]:
         _CALL_CTX.reset(token)
 
 
+def current_call_context() -> Dict[str, Any]:
+    """读取当前调用上下文副本；供调度快照获取 execution_id。"""
+    return dict(_CALL_CTX.get())
+
+
 def prompt_hash(text: Any) -> str:
     raw = str(text or "").encode("utf-8", errors="ignore")
     return hashlib.sha256(raw).hexdigest()[:16]

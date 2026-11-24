@@ -20,6 +20,9 @@ from core.media_refs import canonicalize_media_value, materialize_media_value
 from core.object_operations import current_boot_id, register_resource_delete
 from core.ownership import is_owner
 from core.resource_publisher import ResourcePublisher
+from core.video_dispatch_runtime import get_dispatch_runtime
+from core.video_generation_service import resolve_managed_instance
+from core.video_managed_bridge import ManagedBridgeError, managed_video_sync
 from db.repositories import SandboxRepo
 from db.repositories.resource_commits import commit_sandbox_record, delete_sandbox_cascade
 
@@ -366,6 +369,7 @@ async def sandbox_video(
     client = VideoClient()
     duration = int(req.duration or 5)
     task_id = _start_active_task("video", req.model, {"prompt": req.prompt}, user.login)
+    model_name = str(req.model or "").strip()
     staged = None
     publisher = _publisher(task_id, user)
     try:
@@ -401,7 +405,7 @@ async def sandbox_video(
         save_path = os.path.join(save_dir, "video.mp4")
         logger.info(
             "Sandbox video started: model=%s image=%s audio_ref=%s video_refs=%d ratio=%s resolution=%s duration=%ss fps=%s short_edge=%s",
-            req.model,
+            model_name,
             bool(image_path),
             bool(audio_reference_url),
             len(req.reference_videos or []),
@@ -412,29 +416,122 @@ async def sandbox_video(
             req.short_edge,
         )
 
-        result = await run_in_threadpool(
-            client.generate_video,
-            prompt=req.prompt,
-            image_path=image_path or "",
-            save_path=save_path,
-            model=req.model,
-            duration=duration,
-            shot_type="multi",
-            video_ratio=req.ratio or "16:9",
-            resolution=req.resolution or "720P",
-            fps=req.fps,
-            short_edge=req.short_edge,
-            audio_reference_url=audio_reference_url,
-            reference_video_paths=reference_video_paths or None,
-            adjustments=adjustments,
+        mode = (
+            "first_frame"
+            if image_path
+            else ("reference" if reference_video_paths else "t2va")
         )
+        model_name = str(req.model or "").strip()
+        selected_instance = None
+        effective_profile = str(req.video_profile_id or "")
+        dispatch_mode = str(req.video_dispatch_mode or "manual").strip().lower()
+        if dispatch_mode not in ("auto", "manual"):
+            return {"success": False, "error": "video_dispatch_mode 必须是 auto 或 manual", "error_code": "invalid_dispatch_mode"}
+        if dispatch_mode == "auto":
+            runtime = get_dispatch_runtime()
+            if runtime is None:
+                return {"success": False, "error": "视频调度运行时尚未启动", "error_code": "dispatch_not_started"}
+            try:
+                resolution = runtime.service.resolve_execution_pool(
+                    mode=mode,
+                    explicit_profile_id=effective_profile or None,
+                    parameters={
+                        "duration": duration,
+                        "ratio": req.ratio,
+                        "resolution": req.resolution,
+                        "fps": req.fps,
+                        "short_edge": req.short_edge,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"success": False, "error": str(exc), "error_code": "pool_not_ready"}
+            if resolution.error:
+                return {
+                    "success": False,
+                    "error": "没有支持当前生成方式的就绪资源池",
+                    "error_code": resolution.error,
+                }
+            effective_profile = str(resolution.contract.profile_id or "")
+            pool_runtime = runtime.service.runtime()
+            for member in resolution.members:
+                instance = pool_runtime.instances.get(member)
+                if instance is not None and instance.enabled:
+                    selected_instance = instance.instance_id
+                    model_name = instance.model_id
+                    break
+            if not selected_instance:
+                return {"success": False, "error": "资源池暂无可用实例", "error_code": "pool_not_ready"}
+        elif not model_name:
+            return {"success": False, "error": "手动模式必须选择视频模型", "error_code": "model_required"}
+
+        with SANDBOX_LOCK:
+            if task_id in SANDBOX_ACTIVE_TASKS:
+                SANDBOX_ACTIVE_TASKS[task_id]["model"] = model_name
+        managed = None
+        try:
+            managed = (
+                resolve_managed_instance(model_name, selected_instance)
+                if selected_instance
+                else resolve_managed_instance(model_name)
+            )
+        except Exception as exc:  # noqa: BLE001 - 草稿/多实例不能绕过调度
+            logger.warning("Sandbox managed model rejected: model=%s %s", model_name, exc)
+            message = str(exc)
+            error_code = str(
+                getattr(exc, "error_code", "managed_instance_invalid")
+                or "managed_instance_invalid"
+            )
+            return {
+                "success": False,
+                "error": message,
+                "error_code": error_code,
+            }
+        if managed is not None:
+            bridged = await run_in_threadpool(
+                managed_video_sync,
+                model=model_name,
+                prompt=req.prompt,
+                save_path=save_path,
+                owner=user.login,
+                session_id=task_id,
+                execution_id=f"sandbox-{task_id}",
+                mode=mode,
+                duration=duration,
+                video_ratio=req.ratio or "16:9",
+                resolution=req.resolution or "720P",
+                fps=req.fps,
+                short_edge=req.short_edge,
+                image_path=image_path or None,
+                reference_video_paths=reference_video_paths or None,
+                audio_reference_url=audio_reference_url,
+                profile_id=effective_profile or None,
+                instance_id=selected_instance,
+            )
+            result = bridged
+        else:
+            result = await run_in_threadpool(
+                client.generate_video,
+                prompt=req.prompt,
+                image_path=image_path or "",
+                save_path=save_path,
+                model=req.model,
+                duration=duration,
+                shot_type="multi",
+                video_ratio=req.ratio or "16:9",
+                resolution=req.resolution or "720P",
+                fps=req.fps,
+                short_edge=req.short_edge,
+                audio_reference_url=audio_reference_url,
+                reference_video_paths=reference_video_paths or None,
+                adjustments=adjustments,
+            )
         media = [(save_path, "video")] if os.path.isfile(save_path) else []
         record, mapping = await run_in_threadpool(
-            _commit_record, publisher, tool="video", model=req.model, input_data=input_data,
+            _commit_record, publisher, tool="video", model=model_name, input_data=input_data,
             output_data={"video": result, "video_path": save_path if media else ""}, media=media,
         )
         video_path = record["output"].get("video_path") or ""
-        logger.info("Sandbox video completed: model=%s record_id=%s video=%s", req.model, task_id, video_path)
+        logger.info("Sandbox video completed: model=%s record_id=%s video=%s", model_name, task_id, video_path)
         return {
             "success": True,
             "result": record["output"].get("video"),
@@ -442,8 +539,18 @@ async def sandbox_video(
             "record_id": task_id,
             "warnings": adjustments,
         }
+    except ManagedBridgeError as e:
+        logger.warning(
+            "Sandbox managed video rejected: model=%s code=%s %s",
+            model_name, e.error_code, e.reason,
+        )
+        return {
+            "success": False,
+            "error": e.reason,
+            "error_code": e.error_code,
+        }
     except Exception as e:
-        logger.exception("Sandbox video failed: model=%s", req.model)
+        logger.exception("Sandbox video failed: model=%s", model_name)
         return {"success": False, "error": str(e)}
     finally:
         _release(staged)

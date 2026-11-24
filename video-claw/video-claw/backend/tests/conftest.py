@@ -17,6 +17,11 @@ from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from api.dependencies import workflow_engine
 from config import settings
+from core.video_dispatch_runtime import (
+    DispatchRuntime,
+    get_dispatch_runtime,
+    set_dispatch_runtime,
+)
 from db import database
 from storage import get_storage, reset_storage
 
@@ -52,14 +57,34 @@ def test_database():
     database.close_pool()
 
 
+def _stop_dispatch_runtime() -> None:
+    runtime = get_dispatch_runtime()
+    if runtime is None:
+        return
+    try:
+        stop = getattr(runtime, "stop", None)
+        if callable(stop):
+            stop(1.0)
+    finally:
+        set_dispatch_runtime(None)
+
+
 @pytest.fixture(autouse=True)
 def clean_state():
+    _stop_dispatch_runtime()
     with database.get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "TRUNCATE TABLE artifact_files, session_stage_artifacts, sessions, "
                 "pipeline_tasks, sandbox_records, saved_items, session_stage_working, "
-                "object_operations RESTART IDENTITY CASCADE"
+                "object_operations, video_resource_slots, video_dispatch_attempts, "
+                "video_dispatch_jobs RESTART IDENTITY CASCADE"
+            )
+            cur.execute(
+                "DELETE FROM schema_meta WHERE key = 'video_dispatch_stopped' "
+                "OR key LIKE 'video_draining_%' "
+                "OR key LIKE 'video_deleted_source:%' "
+                "OR key LIKE 'video_deleting_source:%'"
             )
     workflow_engine.sessions.clear()
     workflow_engine._active_sessions.clear()
@@ -68,7 +93,30 @@ def clean_state():
     workflow_engine._errors.clear()
     workflow_engine._persist.cache.clear()
     yield
+    _stop_dispatch_runtime()
     _delete_registered_test_objects()
+
+
+@pytest.fixture
+def fake_dispatch_runtime():
+    """独立 Fake 调度运行时，避免测试共享真实全局 runtime。"""
+    class _Service:
+        def has_pending_work(self):
+            return False
+
+        def dispatch_once(self, _factory):
+            return None
+
+        def reconcile_once(self, _factory):
+            return None
+
+    runtime = DispatchRuntime(_Service(), lambda *_: None, interval=0.01)
+    set_dispatch_runtime(runtime)
+    yield runtime
+    runtime.stop(1.0)
+    assert runtime._thread is None
+    if get_dispatch_runtime() is runtime:
+        set_dispatch_runtime(None)
 
 
 def _delete_registered_test_objects() -> None:

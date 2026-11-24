@@ -302,3 +302,107 @@ def test_saved_copy_survives_source_delete_and_unsave_queues_cleanup(isolated, m
     ObjectCleanupWorker(boot_id="other").run_once()
     assert [op["state"] for op in _ops(saved["saved_id"])] == ["done"]
     assert get_storage().stat(row["object_key"], bucket=row["bucket"]) is None
+
+def test_sandbox_managed_video_uses_bridge(isolated, monkeypatch, client):
+    from api.routers import sandbox as sandbox_router
+    from models import video_client
+
+    monkeypatch.setattr(
+        sandbox_router, "resolve_managed_instance",
+        lambda model: {"instance_id": "i1"} if model == "managed" else None,
+    )
+    captured = {}
+
+    def fake_bridge(**kwargs):
+        captured.update(kwargs)
+        _write(kwargs["save_path"], b"managed-video")
+        return {"save_path": kwargs["save_path"]}
+
+    monkeypatch.setattr(sandbox_router, "managed_video_sync", fake_bridge)
+
+    def forbidden(self, **kwargs):
+        raise AssertionError("managed sandbox must not call VideoClient")
+
+    monkeypatch.setattr(video_client.VideoClient, "generate_video", forbidden)
+    body = client.post(
+        "/api/sandbox/video",
+        headers=headers(),
+        json={"model": "managed", "prompt": "p"},
+    ).json()
+    assert body["success"] is True, body
+    assert captured["model"] == "managed"
+    assert captured["owner"] == OWNER
+    assert captured["mode"] == "t2va"
+    assert captured["execution_id"].startswith("sandbox-")
+    assert body["video_path"].startswith("/code/result/_media/")
+    assert FileRepo().get_by_public_path(body["video_path"]) is not None
+
+
+def test_sandbox_non_managed_video_keeps_legacy_path(isolated, monkeypatch, client):
+    from api.routers import sandbox as sandbox_router
+    from models import video_client
+
+    monkeypatch.setattr(sandbox_router, "resolve_managed_instance", lambda model: None)
+    monkeypatch.setattr(
+        sandbox_router, "managed_video_sync",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not bridge")),
+    )
+    captured = {}
+
+    def fake_generate(self, **kwargs):
+        captured.update(kwargs)
+        _write(kwargs["save_path"], b"legacy-video")
+        return {"video_url": "http://example.invalid/v.mp4"}
+
+    monkeypatch.setattr(video_client.VideoClient, "generate_video", fake_generate)
+    body = client.post(
+        "/api/sandbox/video",
+        headers=headers(),
+        json={"model": "legacy", "prompt": "p"},
+    ).json()
+    assert body["success"] is True, body
+    assert captured["model"] == "legacy"
+
+
+def test_sandbox_managed_disabled_returns_structured_error(isolated, monkeypatch, client):
+    from api.routers import sandbox as sandbox_router
+    from core.video_managed_bridge import ManagedBridgeError
+
+    monkeypatch.setattr(
+        sandbox_router, "resolve_managed_instance",
+        lambda model: {"instance_id": "i1"},
+    )
+
+    def disabled(**kwargs):
+        raise ManagedBridgeError("dispatch_disabled", "资源池调度已由运维停用")
+
+    monkeypatch.setattr(sandbox_router, "managed_video_sync", disabled)
+    body = client.post(
+        "/api/sandbox/video",
+        headers=headers(),
+        json={"model": "managed", "prompt": "p"},
+    ).json()
+    assert body["success"] is False
+    assert body["error_code"] == "dispatch_disabled"
+    assert SandboxRepo().list(OWNER) == []
+
+def test_sandbox_managed_early_reject_is_structured(isolated, monkeypatch, client):
+    from api.routers import sandbox as sandbox_router
+
+    def ambiguous(model):
+        from core.video_generation_service import GrantError
+
+        raise GrantError(
+            "该模型对应多个受管实例，必须显式指定调度实例",
+            error_code="managed_instance_ambiguous",
+        )
+
+    monkeypatch.setattr(sandbox_router, "resolve_managed_instance", ambiguous)
+    body = client.post(
+        "/api/sandbox/video",
+        headers=headers(),
+        json={"model": "managed", "prompt": "p"},
+    ).json()
+    assert body["success"] is False
+    assert body["error_code"] == "managed_instance_ambiguous"
+    assert SandboxRepo().list(OWNER) == []

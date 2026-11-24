@@ -53,7 +53,12 @@ def configure_model(monkeypatch, capabilities):
 
 
 def video_values(mode: str) -> dict:
-    return {"video_generation_mode": mode, VIDEO_FIELD[mode]: MODEL_ID}
+    # 本文件验证 manual 具体模型的能力预检；auto 由独立的池预检测试覆盖。
+    return {
+        "video_dispatch_mode": "manual",
+        "video_generation_mode": mode,
+        VIDEO_FIELD[mode]: MODEL_ID,
+    }
 
 
 # mode, capabilities, 期望 error_code（None = 放行）
@@ -166,6 +171,7 @@ def _start_session(client) -> str:
             "idea": "视频任务能力预检",
             "video_first_frame_model": MODEL_ID,
             "video_generation_mode": "first_frame",
+            "video_dispatch_mode": "manual",
             **BASE_MODELS,
         },
     )

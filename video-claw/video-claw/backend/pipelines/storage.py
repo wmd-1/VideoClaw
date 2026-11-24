@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 PROCESS_BOOT_ID = uuid.uuid4().hex
 PIPELINE_STAGE = "pipeline"
 _publishers: Dict[str, ResourcePublisher] = {}
+_VIDEO_JOBS: Dict[str, list[str]] = {}
 _publishers_lock = threading.RLock()
 
 
@@ -69,6 +70,14 @@ def _ms(value: Any) -> Optional[int]:
     return int(datetime.fromisoformat(str(value)).timestamp() * 1000)
 
 
+def _task_error_code(error: Any) -> Optional[str]:
+    text = str(error or "")
+    if text.startswith("video_dispatch_error:"):
+        parts = text.split(":", 2)
+        return parts[1] if len(parts) > 1 else None
+    return None
+
+
 def task_view(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """DB 行 → 既有 API 元数据形状。"""
     if not row:
@@ -84,6 +93,7 @@ def task_view(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "output": row.get("output_json") or {},
         "artifacts": list(row.get("artifacts_json") or []),
         "error": row.get("error"),
+        "error_code": _task_error_code(row.get("error")),
         "created_at": _iso(row.get("created_at")),
         "updated_at": _iso(row.get("updated_at")),
         "boot_id": row.get("boot_id"),
@@ -91,6 +101,8 @@ def task_view(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "completed_at": _iso(row.get("completed_at")),
         "duration_seconds": row.get("duration_seconds"),
         "output_dir": row.get("output_dir"),
+        "video_job_id": row.get("video_job_id") or ((_VIDEO_JOBS.get(str(row["task_id"])) or [None])[-1]),
+        "video_job_ids": list(row.get("video_job_ids") or []) or list(_VIDEO_JOBS.get(str(row["task_id"])) or []),
     }
 
 
@@ -161,6 +173,7 @@ def delete_task(task_id: str, owner: Optional[str] = None) -> bool:
     )
     if deleted:
         _publisher(task_id, owner).cleanup_root()
+        _VIDEO_JOBS.pop(str(task_id), None)
         _forget(task_id)
         logger.info("Deleted pipeline task (object cleanup queued): task_id=%s", task_id)
     return deleted
@@ -169,6 +182,20 @@ def delete_task(task_id: str, owner: Optional[str] = None) -> bool:
 def sweep_stale_running(current_boot_id: str | None = None) -> int:
     """Mark pending/running tasks owned by a previous process as interrupted (no auto-resume)."""
     return TaskRepo().sweep_stale_running(current_boot_id or _boot_id())
+
+
+def record_video_job(task_id: str, job_id: str) -> None:
+    if not task_id or not job_id:
+        return
+    ids = _VIDEO_JOBS.setdefault(str(task_id), [])
+    if str(job_id) not in ids:
+        ids.append(str(job_id))
+    try:
+        from db.repositories.tasks import TaskRepo
+
+        TaskRepo().set_video_job(str(task_id), str(job_id))
+    except Exception:  # noqa: BLE001 - 状态展示失败不能影响生成
+        logger.warning("Persist pipeline video_job_id failed: task_id=%s job_id=%s", task_id, job_id)
 
 
 def update_task(task_id: str, **updates: Any) -> Dict[str, Any]:

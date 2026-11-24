@@ -73,6 +73,7 @@ from api.routers import (  # noqa: E402 - sys.path 引导后导入
     sessions_router,
     space_router,
     stages_router,
+    video_resources_router,
     workflow_router,
 )
 
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Video-Claw API")
     logger.info("Result directory mounted at /code/result: %s", settings.RESULT_DIR)
     dsn = str(getattr(settings, "DATABASE_DSN", "") or "").strip()
+    dispatch_runtime = None
     if dsn:
         # 生产契约：数据库不可用即启动失败，不做 SQLite/JSON 静默兜底。
         init_db()
@@ -103,8 +105,26 @@ async def lifespan(app: FastAPI):
         pruned = prune_refs()
         empty_dirs = prune_empty_execution_dirs()  # 启动期尚无执行：只移除空目录
         loaded = workflow_engine.load_sessions()
-        # 对象操作日志清理器：启动后及每 60 秒扫描到期操作（DB 不可用时本轮跳过）
-        cleanup_stop = start_cleanup_loop(boot_id)
+        # 4.11：受管派发与自动生成共用同一单实例 loop；先恢复再开放派发。
+        from core.video_dispatch_bootstrap import build_dispatch_runtime
+
+        try:
+            dispatch_runtime = build_dispatch_runtime()
+            if dispatch_runtime is not None:
+                from api.routers import video_resources
+                from core.video_qualification_runner import build_qualification_test_runner
+
+                video_resources.configure_qualification_test_runner(
+                    build_qualification_test_runner()
+                )
+                dispatch_runtime.start()
+            # 对象操作日志清理器：启动后及每 60 秒扫描到期操作（DB 不可用时本轮跳过 ）
+            cleanup_stop = start_cleanup_loop(boot_id)
+        except Exception:
+            if dispatch_runtime is not None:
+                dispatch_runtime.stop()
+            close_pool()
+            raise
         logger.info(
             "Startup recovery: boot_id=%s stages=%d tasks=%d refs_pruned=%d empty_dirs=%d sessions=%d",
             boot_id, stages, tasks, pruned, empty_dirs, loaded,
@@ -113,6 +133,11 @@ async def lifespan(app: FastAPI):
         logger.warning("database.dsn is empty; startup recovery skipped (dev compatibility only)")
         cleanup_stop = None
     yield
+    if dispatch_runtime is not None:
+        from api.routers import video_resources
+
+        video_resources.configure_qualification_test_runner(None)
+        dispatch_runtime.stop()
     if cleanup_stop is not None:
         cleanup_stop.set()
     close_pool()
@@ -145,6 +170,7 @@ app.include_router(sandbox_router)
 app.include_router(pipelines_router)
 app.include_router(configuration_router)
 app.include_router(models_router)
+app.include_router(video_resources_router)
 logger.info("API routers registered")
 
 

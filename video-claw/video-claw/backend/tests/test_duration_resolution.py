@@ -130,3 +130,51 @@ def test_h3_item_carries_duration_adjustment(monkeypatch):
     item = PromptRewriteAgent._make_item(segment, "", "T2VA")
     assert item["duration"] == 10
     assert item["duration_adjustment"] == segment["duration_adjustments"]
+
+
+def test_profile_contract_duration_overrides_model_chain(monkeypatch):
+    _patch_range(monkeypatch, 2, 15)  # 模型能力更宽，但池契约为 4~6
+    contract = {"duration": {"min": 4, "max": 6}}
+    assert resolve_effective_duration(12, None, model="m1", contract=contract) == (
+        6,
+        ["时长 12s（分镜时长）按 H3 4~15s 与模型能力（有效区间 4~6s）夹取为 6s"],
+    )
+    segments = PromptRewriteAgent._collect_segments(
+        STORYBOARD, model="m1", session_override=12, contract=contract
+    )
+    assert segments[0]["duration"] == 6
+    assert segments[0]["duration_adjustments"]
+
+
+def test_prompt_rewrite_resolves_auto_profile_contract(monkeypatch):
+    from types import SimpleNamespace
+    import core.video_dispatch_runtime as dispatch_runtime
+
+    class Service:
+        def resolve_execution_pool(self, **kwargs):
+            return SimpleNamespace(
+                error="",
+                contract=SimpleNamespace(
+                    contract={"duration": {"min": 4, "max": 6}}
+                ),
+            )
+
+    monkeypatch.setattr(
+        dispatch_runtime, "get_dispatch_runtime", lambda: SimpleNamespace(service=Service())
+    )
+    contract = PromptRewriteAgent._duration_contract(
+        {
+            "video_dispatch_mode": "auto",
+            "video_generation_mode": "first_frame",
+            "video_duration": 12,
+        },
+        {},
+        "first_frame",
+    )
+    assert contract == {"duration": {"min": 4, "max": 6}}
+    assert (
+        PromptRewriteAgent._duration_contract(
+            {"video_dispatch_mode": "manual"}, {}, "first_frame"
+        )
+        is None
+    )

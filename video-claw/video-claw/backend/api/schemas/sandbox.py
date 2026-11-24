@@ -31,8 +31,11 @@ class SandboxI2IRequest(BaseModel):
 
 
 class SandboxVideoRequest(BaseModel):
-    model: str
+    model: str = ""
     prompt: str
+    # auto 由后端按池契约选实例；manual 才要求具体 model
+    video_dispatch_mode: Optional[str] = "manual"
+    video_profile_id: Optional[str] = None
     image: Optional[str] = None
     ratio: Optional[str] = "16:9"
     resolution: Optional[str] = "720P"
