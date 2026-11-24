@@ -29,6 +29,6 @@
 - 标准 Pipeline 页面受构建期 `NEXT_PUBLIC_ENABLE_STANDARD` 控制，默认关闭；只做代码/build/`?task=` 只读通道验收，未做真实提交验收。
 - `video_job_ids` 当前只保存 job id 列表，不保存 segment/item 映射；前端按顺序显示 `#1/#2`，不承诺片段对应关系。
 - `video_job_id` 旧字段保留最后一个 job 以兼容旧前端；新前端优先使用 `video_job_ids`。
-- 变更归档本身未执行。
+- 变更已归档为 `openspec/changes/archive/2026-11-24-video-resource-pool-dispatch`。
 - 8.2 规格比对：`provider-live-reachability-check` 只读/显式探活，不修改现有 `POST /api/models/test`；本变更 delta 同时保留图像 multipart part/参数注入与视频 async 受管固定形态；两份 change strict validate 通过，关键词比对通过。
 - 未提交 Git、未归档、未调用真实模型。
