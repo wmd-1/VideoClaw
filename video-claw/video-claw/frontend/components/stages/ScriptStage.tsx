@@ -133,7 +133,7 @@ interface ScriptData {
   session_id?: string;
   /** 剧本 AI 质检：逐行修改建议预览（用户勾选后应用） */
   pending_review?: ScriptReview;
-  /** 最近一次质检写入的快照；用于“撤销本次质检” */
+  /** 最近一次质检写入的快照；用于“恢复上版剧本” */
   review_rollback?: ReviewRollback;
   /** 导入路径元信息（生成路径可缺省） */
   meta?: {
@@ -181,6 +181,8 @@ const REVIEW_ACTION_LABEL: Record<string, string> = {
   insert_after: '插入',
   delete: '删除',
 };
+
+const DISABLED_ACTION_CLASS = 'disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-none disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:shadow-none disabled:hover:bg-gray-100 disabled:hover:text-gray-400';
 
 /* ─── Logline 六要素展示卡 ─── */
 function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
@@ -594,6 +596,17 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   return (
     <div className="flex h-full min-w-0 flex-col">
+      {state.status === 'running' && (
+        <div className="sticky top-0 z-20 flex-shrink-0 border-b border-blue-100 bg-white/95 px-4 py-3 shadow-sm backdrop-blur sm:px-6">
+          <StageProgress
+            message={state.progressMessage}
+            fallback={hasContent ? '正在处理剧本...' : '正在生成剧本...'}
+            progress={state.progress}
+            color={hasContent ? 'cyan' : 'blue'}
+            floating
+          />
+        </div>
+      )}
       <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6">
 
         {!!data.meta?.source_format && (
@@ -620,7 +633,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           </div>
         )}
 
-        {/* 运行中 - 进度条 & 已选 Logline & 逐幕生成结果 */}
+        {/* 运行中 - 已选 Logline & 逐幕生成结果 */}
         {state.status === 'running' && (
           <>
             {data.selected_logline && (
@@ -678,7 +691,6 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
               </div>
             )}
 
-            <StageProgress message={state.progressMessage} fallback="正在生成剧本..." progress={state.progress} color="blue" />
           </>
         )}
 
@@ -843,22 +855,22 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                     applyRevision(true, false);
                   }
                 }}
-                disabled={state.status === 'running'}
-                className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                disabled={isRunning}
+                className={`px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 transition-colors ${DISABLED_ACTION_CLASS}`}
               >
                 应用修改
               </button>
               <button
                 onClick={cancelRevision}
-                disabled={state.status === 'running'}
-                className="px-4 py-2 text-gray-600 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                disabled={isRunning}
+                className={`px-4 py-2 text-gray-600 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors ${DISABLED_ACTION_CLASS}`}
               >
                 取消
               </button>
               <button
                 onClick={() => setShowRevisionDialog(true)}
-                disabled={state.status === 'running'}
-                className="px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 disabled:opacity-50 transition-colors"
+                disabled={isRunning}
+                className={`px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 transition-colors ${DISABLED_ACTION_CLASS}`}
               >
                 重新输入
               </button>
@@ -897,18 +909,20 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 <h3 className="text-sm font-bold text-gray-800">剧本内容</h3>
                 <button
                   onClick={createEpisode}
-                  className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors"
+                  disabled={isRunning}
+                  className={`ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                 >
                   <Plus className="w-3 h-3" />
                   新建
                 </button>
                 <button
                   onClick={() => toggleDeleteMode('episodes')}
+                  disabled={isRunning}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                     deleteMode.episodes
                       ? 'text-red-600 bg-red-50 hover:bg-red-100'
                       : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
-                  }`}
+                  } ${DISABLED_ACTION_CLASS}`}
                 >
                   <Trash2 className="w-3 h-3" />
                   删除
@@ -928,7 +942,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         onClick={() => onRegenerateStoryboardEpisodes?.([number])}
                         disabled={isRunning}
                         title={`将重新调用模型生成第 ${number} 集分镜，其他集不受影响`}
-                        className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50"
+                        className={`inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                       >
                         <RefreshCw className="w-3 h-3" />
                         重跑第 {number} 集分镜（会调用模型）
@@ -965,16 +979,16 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <div className="flex items-center gap-2">
                         <button
                           onClick={cancelEpisodeEdit}
-                          disabled={isSavingEpisode}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                          disabled={isRunning || isSavingEpisode}
+                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <X className="w-3.5 h-3.5" />
                           取消
                         </button>
                         <button
                           onClick={() => saveEpisodeEdit(ep, i)}
-                          disabled={isSavingEpisode || !episodeDraft.content.trim()}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-white bg-purple-500 hover:bg-purple-600 disabled:bg-purple-300 disabled:cursor-not-allowed"
+                          disabled={isRunning || isSavingEpisode || !episodeDraft.content.trim()}
+                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-white bg-purple-500 hover:bg-purple-600 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Save className="w-3.5 h-3.5" />
                           {isSavingEpisode ? '保存中' : '保存'}
@@ -983,7 +997,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                     ) : deleteMode.episodes ? (
                       <button
                         onClick={() => deleteEpisode(i)}
-                        className="flex items-center justify-center w-8 h-8 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                        disabled={isRunning}
+                        className={`flex items-center justify-center w-8 h-8 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         title="删除分集"
                       >
                         <X className="w-4 h-4" />
@@ -992,14 +1007,16 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => startEpisodeEdit(ep, i)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors"
+                          disabled={isRunning}
+                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                           手工修改
                         </button>
                         <button
                           onClick={() => openRevisionDialogForEpisode(episodeNumber)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-fuchsia-600 bg-fuchsia-50 hover:bg-fuchsia-100 transition-colors"
+                          disabled={isRunning}
+                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-fuchsia-600 bg-fuchsia-50 hover:bg-fuchsia-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Sparkles className="w-3.5 h-3.5" />
                           剧本AI修改
@@ -1078,18 +1095,20 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 <span>本次剧本AI质检已应用，可恢复为质检前的正文。</span>
                 <button
                   onClick={() => onIntervene({ action: 'rollback_script_review' })}
-                  className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-700 transition-colors hover:bg-amber-100"
+                  disabled={isRunning}
+                  className={`rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-700 transition-colors hover:bg-amber-100 ${DISABLED_ACTION_CLASS}`}
                 >
-                  撤销本次质检
+                  恢复上版剧本
                 </button>
               </div>
             )}
-            {isImportMode && state.status !== 'running' && !revision && (
+            {isImportMode && !revision && (
               <div className="mt-2 flex justify-center">
                 {pendingReview ? (
                   <button
                     onClick={() => setDismissedReviewKey('')}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
+                    disabled={isRunning}
+                    className={`flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm ${DISABLED_ACTION_CLASS}`}
                   >
                     <ShieldCheck className="w-4 h-4" />
                     查看质检结果{reviewIssues.length ? `（${reviewIssues.length}）` : ''}
@@ -1097,7 +1116,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 ) : (
                   <button
                     onClick={startScriptReview}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm"
+                    disabled={isRunning}
+                    className={`flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm ${DISABLED_ACTION_CLASS}`}
                   >
                     <ShieldCheck className="w-4 h-4" />
                     剧本AI质检
@@ -1121,18 +1141,20 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         <h4 className="text-sm font-semibold text-gray-700">人物</h4>
                         <button
                           onClick={createCharacter}
-                          className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+                          disabled={isRunning}
+                          className={`ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Plus className="w-3 h-3" />
                           新建
                         </button>
                         <button
                           onClick={() => toggleDeleteMode('characters')}
+                          disabled={isRunning}
                           className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             deleteMode.characters
                               ? 'text-red-600 bg-red-50 hover:bg-red-100'
                               : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
-                          }`}
+                          } ${DISABLED_ACTION_CLASS}`}
                         >
                           <Trash2 className="w-3 h-3" />
                           删除
@@ -1166,15 +1188,15 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                   <div className="flex flex-shrink-0 items-center gap-1">
                                     <button
                                       onClick={cancelCharacterEdit}
-                                      disabled={isCharacterSaving}
-                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                                      disabled={isRunning || isCharacterSaving}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     >
                                       <X className="w-3 h-3" />取消
                                     </button>
                                     <button
                                       onClick={() => saveCharacterEdit(i)}
-                                      disabled={isCharacterSaving || !characterDraft.name.trim() || !characterDraft.description.trim()}
-                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed"
+                                      disabled={isRunning || isCharacterSaving || !characterDraft.name.trim() || !characterDraft.description.trim()}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     >
                                       <Save className="w-3 h-3" />{isCharacterSaving ? '保存中' : '保存'}
                                     </button>
@@ -1182,7 +1204,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : deleteMode.characters ? (
                                   <button
                                     onClick={() => deleteCharacter(i)}
-                                    className="flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                                    disabled={isRunning}
+                                    className={`flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     title="删除人物"
                                   >
                                     <X className="w-3.5 h-3.5" />
@@ -1190,7 +1213,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : (
                                   <button
                                     onClick={() => startCharacterEdit(c, i)}
-                                    className="flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+                                    disabled={isRunning}
+                                    className={`flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                   >
                                     <Edit3 className="w-3 h-3" />修改
                                   </button>
@@ -1234,18 +1258,20 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         <h4 className="text-sm font-semibold text-gray-700">场景</h4>
                         <button
                           onClick={createSetting}
-                          className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
+                          disabled={isRunning}
+                          className={`ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Plus className="w-3 h-3" />
                           新建
                         </button>
                         <button
                           onClick={() => toggleDeleteMode('settings')}
+                          disabled={isRunning}
                           className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             deleteMode.settings
                               ? 'text-red-600 bg-red-50 hover:bg-red-100'
                               : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
-                          }`}
+                          } ${DISABLED_ACTION_CLASS}`}
                         >
                           <Trash2 className="w-3 h-3" />
                           删除
@@ -1272,15 +1298,15 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                   <div className="flex flex-shrink-0 items-center gap-1">
                                     <button
                                       onClick={cancelSettingEdit}
-                                      disabled={isSettingSaving}
-                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                                      disabled={isRunning || isSettingSaving}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     >
                                       <X className="w-3 h-3" />取消
                                     </button>
                                     <button
                                       onClick={() => saveSettingEdit(i)}
-                                      disabled={isSettingSaving || !settingDraft.name.trim() || !settingDraft.description.trim()}
-                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-green-500 hover:bg-green-600 disabled:bg-green-300 disabled:cursor-not-allowed"
+                                      disabled={isRunning || isSettingSaving || !settingDraft.name.trim() || !settingDraft.description.trim()}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-white bg-green-500 hover:bg-green-600 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     >
                                       <Save className="w-3 h-3" />{isSettingSaving ? '保存中' : '保存'}
                                     </button>
@@ -1288,7 +1314,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : deleteMode.settings ? (
                                   <button
                                     onClick={() => deleteSetting(i)}
-                                    className="flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                                    disabled={isRunning}
+                                    className={`flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     title="删除场景"
                                   >
                                     <X className="w-3.5 h-3.5" />
@@ -1296,7 +1323,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : (
                                   <button
                                     onClick={() => startSettingEdit(s, i)}
-                                    className="flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
+                                    disabled={isRunning}
+                                    className={`flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                   >
                                     <Edit3 className="w-3 h-3" />修改
                                   </button>
@@ -1388,14 +1416,15 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             <div className="mt-6 flex justify-end gap-3">
               <button
                 onClick={() => setShowRevisionDialog(false)}
-                className="px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold"
+                disabled={isRunning}
+                className={`px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold ${DISABLED_ACTION_CLASS}`}
               >
                 取消
               </button>
               <button
                 onClick={submitRevision}
-                disabled={!revisionInstruction.trim()}
-                className="px-6 py-2.5 bg-purple-600 text-white rounded-xl text-sm font-bold transition-colors hover:bg-purple-700 disabled:opacity-50"
+                disabled={isRunning || !revisionInstruction.trim()}
+                className={`px-6 py-2.5 bg-purple-600 text-white rounded-xl text-sm font-bold transition-colors hover:bg-purple-700 ${DISABLED_ACTION_CLASS}`}
               >
                 按此方向修改
               </button>
@@ -1426,13 +1455,15 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   <div className="flex gap-2">
                     <button
                       onClick={selectAllReviewIssues}
-                      className="rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200"
+                      disabled={isRunning}
+                      className={`rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200 ${DISABLED_ACTION_CLASS}`}
                     >
                       全选
                     </button>
                     <button
                       onClick={selectNoReviewIssues}
-                      className="rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200"
+                      disabled={isRunning}
+                      className={`rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200 ${DISABLED_ACTION_CLASS}`}
                     >
                       全不选
                     </button>
@@ -1462,7 +1493,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                             type="checkbox"
                             checked={checked}
                             onChange={() => toggleReviewIssue(issue.id)}
-                            className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400"
+                            disabled={isRunning}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400 disabled:opacity-50"
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -1516,8 +1548,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
               <button
                 onClick={dismissReviewDialog}
-                disabled={state.status === 'running'}
-                className="px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold disabled:opacity-50"
+                disabled={isRunning}
+                className={`px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold ${DISABLED_ACTION_CLASS}`}
               >
                 忽略质检
               </button>
@@ -1525,10 +1557,10 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 {reviewIssues.length > 0 && (
                   <button
                     onClick={applySelectedReview}
-                    disabled={!selectedReviewIds.length || state.status === 'running'}
-                    className="rounded-xl bg-sky-600 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
+                    disabled={isRunning || !selectedReviewIds.length}
+                    className={`rounded-xl bg-sky-600 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-sky-700 ${DISABLED_ACTION_CLASS}`}
                   >
-                    {state.status === 'running' ? '正在应用...' : `应用所选修改（${selectedReviewIds.length}）`}
+                    {isRunning ? '正在应用...' : `应用所选修改（${selectedReviewIds.length}）`}
                   </button>
                 )}
               </div>

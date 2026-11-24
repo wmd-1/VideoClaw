@@ -877,7 +877,7 @@ def test_rollback_script_review_rejects_after_further_edit():
         {"selected_issue_ids": ["qr_1"]},
     ))["payload"]
     applied["episodes"][0]["content"] += "\n额外修改"
-    with pytest.raises(ValueError, match="无法自动撤销"):
+    with pytest.raises(ValueError, match="无法恢复上版剧本"):
         asyncio.run(ScriptWriterAgent()._run_rollback_script_review(
             {
                 "session_id": "rollback_sid",
@@ -960,7 +960,7 @@ def test_rollback_rejects_auxiliary_change():
         {"selected_issue_ids": ["qr_1"]},
     ))["payload"]
     applied["summary"] = "用户后改的摘要"
-    with pytest.raises(ValueError, match="无法自动撤销"):
+    with pytest.raises(ValueError, match="无法恢复上版剧本"):
         asyncio.run(ScriptWriterAgent()._run_rollback_script_review(
             {
                 "session_id": "rollback_sid",

@@ -1,6 +1,7 @@
 ﻿'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   startProject,
@@ -299,6 +300,8 @@ export default function WorkflowPanel() {
   const [autoMode, setAutoMode] = useState(false);
   // 模型不可用（预检 409 / 运行期失败）兜底弹窗状态
   const [modelFallback, setModelFallback] = useState<{ detail: ModelUnavailableDetail; stage: string } | null>(null);
+  // 手动模式确认剧本前的站内提示；取消时不改变执行链状态。
+  const [scriptConfirmStage, setScriptConfirmStage] = useState<string | null>(null);
   const [dispatchNotice, setDispatchNotice] = useState('');
   // 用于顶栏流程图状态判断
   const [currentStageFromSession, setCurrentStageFromSession] = useState<string | null>(null);
@@ -554,6 +557,7 @@ export default function WorkflowPanel() {
     setCompletedStagesFromSession([]);
     setProjectParams(null);
     setModelFallback(null);
+    setScriptConfirmStage(null);
     setActiveStage(null);
     setIsRunning(false);
     stoppedRef.current = false;
@@ -1433,8 +1437,14 @@ export default function WorkflowPanel() {
 
   // ── 确认阶段并继续 ──
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 处理器每渲染重建（闭包捕获最新 state）；onConfirmActiveStage 的 useCallback 仅为满足 react-hooks/refs 的结构包装，不追求记忆化收益
-  const handleConfirmStage = async (stageId: string) => {
+  const handleConfirmStage = async (stageId: string, scriptConfirmed = false) => {
     if (!sessionId || chainRunningRef.current) return;
+    // 手动模式推进剧本前展示站内确认弹窗；第二次进入才真正启动执行链。
+    if (stageId === 'script_generation' && !autoModeRef.current && !scriptConfirmed) {
+      setScriptConfirmStage(stageId);
+      return;
+    }
+    setScriptConfirmStage(null);
     // 本函数是一条新执行链的起点：在此取一次归属令牌贯穿全程（design D9）
     const token = currentToken();
     // 点击「确认并继续」= 明确要继续：清除历史停止标记（否则 runStage 会直接抛 Stopped）
@@ -2308,6 +2318,57 @@ export default function WorkflowPanel() {
       <main className="flex-1 min-w-0 overflow-hidden">
         {mainContent}
       </main>
+
+      {scriptConfirmStage && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget) setScriptConfirmStage(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="script-confirm-title"
+            className="w-[min(480px,calc(100vw-2rem))] rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <div className="mb-4 flex items-center gap-3 border-b border-gray-100 pb-4">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-600">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 id="script-confirm-title" className="text-lg font-bold text-gray-800">确认剧本</h3>
+                <p className="mt-0.5 text-xs text-gray-400">确认后将进入下一阶段</p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium leading-relaxed text-amber-800">
+              剧本确定之后，就不可以修改剧本
+            </div>
+            <p className="mt-3 text-xs text-gray-400">请确认已检查剧本内容、人物与场景。</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setScriptConfirmStage(null)}
+                className="rounded-xl px-5 py-2.5 text-sm font-bold text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+              >
+                返回修改
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const stageId = scriptConfirmStage;
+                  setScriptConfirmStage(null);
+                  if (stageId) void handleConfirmStage(stageId, true);
+                }}
+                className="rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-bold text-white shadow-md transition-colors hover:bg-blue-700"
+              >
+                确认并继续
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {modelFallback && (
         <ModelFallbackDialog

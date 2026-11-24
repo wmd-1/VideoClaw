@@ -105,7 +105,7 @@ export default function StageActions({
           <button
             onClick={onRegenerate}
             disabled={isButtonDisabled}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-orange-300 text-orange-600 rounded-lg text-sm font-medium hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-orange-300 text-orange-600 rounded-lg text-sm font-medium hover:bg-orange-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400"
             title={isButtonDisabled ? (status === 'error' ? '重新尝试生成' : (isContinueStage && !hasPendingItems ? '所有项已生成完毕' : (isRegenStage && hasNextStageStarted ? '后续阶段已开始，无法重新生成' : ''))) : ''}
           >
             {isContinueStage ? <Play className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
@@ -120,7 +120,7 @@ export default function StageActions({
           <button
             onClick={onEdit}
             disabled={isRunning}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400"
           >
             <Edit3 className="w-4 h-4" />
             修改
@@ -131,7 +131,7 @@ export default function StageActions({
           <button
             onClick={onSave}
             disabled={isRunning}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-300 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-300 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400"
           >
             <Save className="w-4 h-4" />
             保存
@@ -142,7 +142,7 @@ export default function StageActions({
           <button
             onClick={handleSaveClick}
             disabled={saveState !== 'idle' || isRunning}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors disabled:opacity-50 min-w-[120px] justify-center"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400 min-w-[120px] justify-center"
           >
             {saveState === 'saving' ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -160,7 +160,7 @@ export default function StageActions({
             onClick={onConfirm}
             disabled={isRunning}
             title={reconfirm ? '确认 = 接受本阶段现有结果并继续（不重新生成）；要按新输入重做请点「继续生成」' : undefined}
-            className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:bg-blue-300"
+            className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-200 disabled:hover:text-gray-400"
           >
             <CheckCircle className="w-4 h-4" />
             确认并继续

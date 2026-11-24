@@ -820,14 +820,14 @@ class ScriptWriterAgent(AgentInterface):
             }
         rollback = current.get("review_rollback")
         if not isinstance(rollback, dict):
-            raise ValueError("没有可撤销的剧本AI质检")
+            raise ValueError("没有可恢复的上版剧本")
         if rollback.get("after_version") != script_revision.structure_fingerprint(current):
-            raise ValueError("剧本已再次修改，无法自动撤销本次质检")
+            raise ValueError("剧本已再次修改，无法恢复上版剧本")
         if rollback.get("after_aux_version") != _review_aux_fingerprint(current):
-            raise ValueError("剧本摘要/标注已修改，无法自动撤销本次质检")
+            raise ValueError("剧本摘要/标注已修改，无法恢复上版剧本")
         episodes = rollback.get("episodes")
         if not isinstance(episodes, list) or not episodes:
-            raise ValueError("质检撤销快照无效")
+            raise ValueError("质检恢复快照无效")
         updated = copy.deepcopy(current)
         updated["episodes"] = copy.deepcopy(episodes)
         updated["summary"] = str(rollback.get("summary") or "")

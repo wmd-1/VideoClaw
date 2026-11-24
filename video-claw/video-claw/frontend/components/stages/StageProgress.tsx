@@ -12,6 +12,8 @@ interface StageProgressProps {
   progress: number;
   /** accent color class, default blue */
   color?: 'blue' | 'amber' | 'emerald' | 'violet' | 'rose' | 'cyan';
+  /** 置于阶段顶部固定区域时去掉底部间距 */
+  floating?: boolean;
 }
 
 const BAR_COLORS: Record<string, { bg: string; bar: string; text: string; ring: string }> = {
@@ -28,6 +30,7 @@ export default function StageProgress({
   fallback = '处理中...',
   progress,
   color = 'blue',
+  floating = false,
 }: StageProgressProps) {
   const p = Math.min(100, Math.max(0, Math.round(progress)));
   const c = BAR_COLORS[color] || BAR_COLORS.blue;
@@ -36,7 +39,7 @@ export default function StageProgress({
   const stepDesc = message?.includes(': ') ? message.split(': ').slice(1).join(': ') : (message || fallback);
 
   return (
-    <div className="mb-6">
+    <div className={floating ? 'mb-0' : 'mb-6'}>
       <div className="flex items-center justify-between mb-2">
         <div className={`flex items-center gap-2 text-sm font-medium ${c.text}`}>
           <Loader className="w-4 h-4 animate-spin" />
