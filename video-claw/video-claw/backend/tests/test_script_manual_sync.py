@@ -23,6 +23,7 @@ from core.agents.base_agent import AgentInterface
 from core.agents.storyboard_agent import StoryboardAgent
 from core.asset_kind import asset_kind_for
 from core.orchestrator import WorkflowStage
+from core.script_errors import ScriptLockedError
 from db.repositories import FileRepo
 
 OWNER = "alice"
@@ -247,6 +248,26 @@ def _art(sid, stage):
     return _state(sid).artifacts.get(stage)
 
 
+def _legacy_internal_script_update(sid, patch):
+    """历史/受信同步机械的测试夹具；公共用户写锁由 test_script_lock_guard 覆盖。"""
+    sync_info = {}
+
+    def apply(state):
+        current = state.artifacts.get("script_generation") or {}
+        before = script_revision.structure_snapshot(current)
+        status_baseline = dict(state.status)
+        cleaned, _ignored = script_revision.sanitize_script_patch(current, patch)
+        workflow_engine._apply_artifact_update(state, "script_generation", cleaned)
+        workflow_engine._recalculate_all_statuses(state)
+        touched_cast = bool({"characters", "settings"} & set(cleaned))
+        sync_info.update(workflow_engine._sync_script_structure(
+            state, before, force_cast_sync=touched_cast, baseline=status_baseline,
+        ) or {})
+
+    workflow_engine._mutate(sid, apply)
+    return sync_info
+
+
 # ───────────────────────── 1. 阶段 2 重建契约（手动路径） ─────────────────────────
 
 
@@ -261,7 +282,7 @@ def test_manual_delete_character_removes_only_that_stage2_item():
     )
     kept = {"name": "甲", "description": "甲的描述", "species": "人类", "character_id": "char_甲"}
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": [kept]})
+    _legacy_internal_script_update(sid, {"characters": [kept]})
 
     chars = _art(sid, "character_design")["characters"]
     assert [item["name"] for item in chars] == ["甲"]
@@ -285,9 +306,7 @@ def test_manual_add_character_creates_pending_item_and_backfills_id():
     )
     added = {"name": "丙", "description": "新角色描述", "species": "人类"}
 
-    workflow_engine.update_artifact(
-        sid, "script_generation", {"characters": [*script["characters"], added]}
-    )
+    _legacy_internal_script_update(sid, {"characters": [*script["characters"], added]})
 
     chars = {item["name"]: item for item in _art(sid, "character_design")["characters"]}
     assert set(chars) == {"甲", "丙"}
@@ -309,10 +328,10 @@ def test_repeated_save_does_not_drift_primary_key():
     _seed(sid, script=script, stage2=_stage2([("char_甲", "甲")], []),
           statuses={"character_design": "completed"})
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": characters})
+    _legacy_internal_script_update(sid, {"characters": characters})
     first = next(i for i in _art(sid, "character_design")["characters"] if i["name"] == "丙")["id"]
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": characters})
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": characters})
+    _legacy_internal_script_update(sid, {"characters": characters})
+    _legacy_internal_script_update(sid, {"characters": characters})
     second = next(i for i in _art(sid, "character_design")["characters"] if i["name"] == "丙")["id"]
 
     assert first == second, "原样再保存不得换主键（否则资产引用漂移）"
@@ -330,7 +349,7 @@ def test_rename_with_existing_id_keeps_generated_asset():
     )
     renamed = {"name": "刘姐", "description": "改名后的描述", "species": "人类", "character_id": "char_liu"}
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": [renamed]})
+    _legacy_internal_script_update(sid, {"characters": [renamed]})
 
     chars = _art(sid, "character_design")["characters"]
     assert len(chars) == 1
@@ -348,7 +367,7 @@ def test_legacy_items_without_id_backfill_then_rename_is_safe():
     _seed(sid, script=script, stage2=_stage2([(legacy_id, "老角色")], []),
           statuses={"character_design": "completed"})
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": script["characters"]})
+    _legacy_internal_script_update(sid, {"characters": script["characters"]})
     backfilled = next(
         item for item in _art(sid, "script_generation")["characters"] if item["name"] == "老角色"
     )
@@ -359,8 +378,8 @@ def test_legacy_items_without_id_backfill_then_rename_is_safe():
     _seed(other, script=_script(char_names=("老角色",)),
           stage2=_stage2([("char_old", "老角色")], []),
           statuses={"character_design": "completed"})
-    workflow_engine.update_artifact(
-        other, "script_generation",
+    _legacy_internal_script_update(
+        other,
         {"characters": [{"name": "全新名字", "description": "d", "species": "人类"}]},
     )
     chars = _art(other, "character_design")["characters"]
@@ -376,7 +395,7 @@ def test_species_change_rederives_asset_kind():
           statuses={"character_design": "completed"})
     cat = {"name": "甲", "description": "甲的描述", "species": "猫", "character_id": "char_甲"}
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": [cat]})
+    _legacy_internal_script_update(sid, {"characters": [cat]})
 
     item = _art(sid, "character_design")["characters"][0]
     assert item["species"] == "猫"
@@ -408,12 +427,11 @@ def test_noop_save_is_not_marked():
     script = _full_pipeline(sid)
     characters = copy.deepcopy(_art(sid, "script_generation")["characters"])
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": characters})
+    _legacy_internal_script_update(sid, {"characters": characters})
 
     assert "reconfirm" not in set(_state(sid).status.values())
-    assert "reconfirm" not in set(workflow_engine.update_artifact(
-        sid, "script_generation", {"characters": characters}
-    )["status_map"].values())
+    _legacy_internal_script_update(sid, {"characters": characters})
+    assert "reconfirm" not in set(_state(sid).status.values())
     assert script  # 前置态构造成功（避免误用空会话）
 
 
@@ -424,7 +442,7 @@ def test_structure_change_marks_downstream_without_touching_artifacts():
               ("storyboard", "reference_generation", "prompt_rewrite", "video_generation", "post_production")}
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    _legacy_internal_script_update(sid, {"characters": kept})
 
     state = _state(sid)
     # 分级标记：角色/场景变更 → 阶段 2 起、后期之前的全部启用阶段（含可选 prompt_rewrite）
@@ -458,7 +476,7 @@ def test_reconfirm_survives_later_writes():
     sid = _session()
     _full_pipeline(sid)
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    _legacy_internal_script_update(sid, {"characters": kept})
     assert _state(sid).status["storyboard"] == "reconfirm"
 
     # 上传一张图（阶段 2 写入）→ 状态重算不得把标记冲回 completed
@@ -480,7 +498,7 @@ def test_running_stage_is_not_marked_and_current_stage_kept():
     _seed(sid, statuses={"reference_generation": "running"})
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    _legacy_internal_script_update(sid, {"characters": kept})
 
     state = _state(sid)
     assert state.status["reference_generation"] == "running", "在途执行不被改写"
@@ -492,7 +510,7 @@ def test_continue_accepts_reconfirm_and_clears_its_details():
     sid = _session()
     _full_pipeline(sid)
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    _legacy_internal_script_update(sid, {"characters": kept})
 
     response = workflow_engine._continue_workflow(sid, "storyboard")
 
@@ -512,7 +530,7 @@ def test_body_change_marks_and_reports_stale_episodes():
     episodes = copy.deepcopy(_art(sid, "script_generation")["episodes"])
     episodes[0]["content"] = "甲：正文被手改了"
 
-    result = workflow_engine.update_artifact(sid, "script_generation", {"episodes": episodes})
+    result = _legacy_internal_script_update(sid, {"episodes": episodes})
 
     assert result["stale_storyboards"] == [1]
     state = _state(sid)
@@ -533,7 +551,7 @@ def test_final_videos_are_kept_and_flagged_only():
     before_post = copy.deepcopy(_art(sid, "post_production"))
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
 
-    result = workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    result = _legacy_internal_script_update(sid, {"characters": kept})
 
     state = _state(sid)
     assert result["stale_final_videos"] is True
@@ -755,7 +773,7 @@ def test_continue_with_stage_only_confirms_that_stage():
     sid = _session()
     _full_pipeline(sid)
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    _legacy_internal_script_update(sid, {"characters": kept})
     assert _state(sid).current_stage == WorkflowStage.SCRIPT_GENERATION
 
     response = workflow_engine._continue_workflow(sid, "reference_generation")
@@ -789,17 +807,16 @@ def test_continue_rejects_illegal_stage_without_breaking():
 def test_patch_response_shape_is_authoritative():
     sid = _session()
     _full_pipeline(sid)
-    characters = copy.deepcopy(_art(sid, "script_generation")["characters"])
-    characters = [item for item in characters if item["name"] == "甲"]
+    before = copy.deepcopy(_art(sid, "script_generation"))
 
-    result = workflow_engine.update_artifact(sid, "script_generation", {"characters": characters})
+    with pytest.raises(ScriptLockedError):
+        workflow_engine.update_artifact(sid, "script_generation", {"characters": []})
+    result = workflow_engine.update_artifact(sid, "script_generation", {"title": "响应形状"})
 
     assert result["status"] == "ok"
-    assert result["artifact"]["characters"] == characters or [
-        item["name"] for item in result["artifact"]["characters"]
-    ] == ["甲"]
+    assert result["artifact"]["title"] == "响应形状"
+    assert result["artifact"]["characters"] == before["characters"]
     status_map = result["status_map"]
-    assert status_map["storyboard"] == "reconfirm"
     assert set(status_map) >= set(STATUS_KEYS)
     assert result["stale_storyboards"] == [] and result["stale_final_videos"] is False
 
@@ -815,7 +832,7 @@ def test_stopped_and_waiting_stages_are_not_flipped_to_reconfirm():
     _seed(sid, statuses={"reference_generation": "stopped", "video_generation": "waiting"})
     kept = [i for i in _art(sid, "script_generation")["characters"] if i["name"] == "甲"]
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": kept})
+    _legacy_internal_script_update(sid, {"characters": kept})
 
     status = _state(sid).status
     # 基线取重算前的现场：这些阶段不得因本次剧本变更被标为待重新确认
@@ -836,10 +853,10 @@ def test_repeated_body_edits_accumulate_stale_episodes():
     episodes = copy.deepcopy(_art(sid, "script_generation")["episodes"])
     episodes.append({"episode_number": 2, "act_title": "第2集", "content": "第二集正文"})
 
-    workflow_engine.update_artifact(sid, "script_generation", {"episodes": episodes})
+    _legacy_internal_script_update(sid, {"episodes": episodes})
     first = (_state(sid).stage_progress.get("storyboard") or {}).get("stale_episodes")
     episodes[0]["content"] = "甲：正文又改了一次"
-    workflow_engine.update_artifact(sid, "script_generation", {"episodes": episodes})
+    _legacy_internal_script_update(sid, {"episodes": episodes})
     second = (_state(sid).stage_progress.get("storyboard") or {}).get("stale_episodes")
 
     assert 2 in first, first
@@ -852,7 +869,7 @@ def test_continue_clears_stale_details_and_always_returns_status_map():
     _full_pipeline(sid)
     episodes = copy.deepcopy(_art(sid, "script_generation")["episodes"])
     episodes[0]["content"] = "甲：正文手改"
-    workflow_engine.update_artifact(sid, "script_generation", {"episodes": episodes})
+    _legacy_internal_script_update(sid, {"episodes": episodes})
     assert (_state(sid).stage_progress.get("storyboard") or {}).get("stale_episodes") == [1]
 
     # 先确认上游阶段（原状态是 reconfirm），再确认一个本来就 waiting 的阶段
@@ -870,66 +887,56 @@ def test_continue_clears_stale_details_and_always_returns_status_map():
 
 
 def test_revision_apply_marks_downstream_through_execute_stage(monkeypatch):
-    """验证 `_finish_stage` 的 `revision_applied` 接线（而不是只测收尾函数本身）。"""
+    """下游已开始后，应用修订必须在 Agent/执行登记前被锁拒绝。"""
     sid = _session()
     _full_pipeline(sid)
+    before = copy.deepcopy(_art(sid, "script_generation"))
+    called = False
 
     async def apply_revision(_agent, input_data, _intervention):
-        source = (input_data.get("_session_artifacts") or {}).get("script_generation") or {}
-        payload = copy.deepcopy(source)
-        payload["session_id"] = input_data.get("session_id")
-        payload["characters"] = [
-            item for item in payload.get("characters", []) if item.get("name") == "甲"
-        ]
-        return {"payload": payload, "stage_completed": True, "revision_applied": True}
+        nonlocal called
+        called = True
+        return {"payload": copy.deepcopy(before), "stage_completed": True}
 
     monkeypatch.setitem(
         workflow_engine.agent_factories, WorkflowStage.SCRIPT_GENERATION,
         lambda: ScriptedAgent(apply_revision),
     )
     state = workflow_engine.get_state(sid)
-    asyncio.run(workflow_engine.execute_stage(
-        state, WorkflowStage.SCRIPT_GENERATION, {"session_id": sid},
-        intervention={"action": "apply_revision"},
-    ))
+    with pytest.raises(ScriptLockedError):
+        asyncio.run(workflow_engine.execute_stage(
+            state, WorkflowStage.SCRIPT_GENERATION, {"session_id": sid},
+            intervention={"action": "apply_revision"},
+        ))
 
-    status = _state(sid).status
-    assert [c["name"] for c in _art(sid, "character_design")["characters"]] == ["甲"]
-    assert status["storyboard"] == "reconfirm" and status["reference_generation"] == "reconfirm"
-    assert status["post_production"] != "reconfirm"
+    assert called is False
+    assert _art(sid, "script_generation") == before
+    assert "script_generation" not in _state(sid).executions
 
 
 def test_revision_apply_path_does_not_mark_stopped_stage(monkeypatch):
-    """应用修订路径与手动路径同口径：`stopped` 现场不得被误标为 reconfirm。
-
-    回归点：`_finish_stage` 的 `revision_applied` 分支曾经漏传重算前的 `baseline`。
-    """
+    """锁态修订拒绝不得改写 stopped 现场或注册执行。"""
     sid = _session()
     _full_pipeline(sid)
     _seed(sid, statuses={"reference_generation": "stopped"})
+    before_status = dict(_state(sid).status)
 
     async def apply_revision(_agent, input_data, _intervention):
-        source = (input_data.get("_session_artifacts") or {}).get("script_generation") or {}
-        payload = copy.deepcopy(source)
-        payload["session_id"] = input_data.get("session_id")
-        payload["characters"] = [
-            item for item in payload.get("characters", []) if item.get("name") == "甲"
-        ]
-        return {"payload": payload, "stage_completed": True, "revision_applied": True}
+        raise AssertionError("锁态不应调用 Agent")
 
     monkeypatch.setitem(
         workflow_engine.agent_factories, WorkflowStage.SCRIPT_GENERATION,
         lambda: ScriptedAgent(apply_revision),
     )
     state = workflow_engine.get_state(sid)
-    asyncio.run(workflow_engine.execute_stage(
-        state, WorkflowStage.SCRIPT_GENERATION, {"session_id": sid},
-        intervention={"action": "apply_revision"},
-    ))
+    with pytest.raises(ScriptLockedError):
+        asyncio.run(workflow_engine.execute_stage(
+            state, WorkflowStage.SCRIPT_GENERATION, {"session_id": sid},
+            intervention={"action": "apply_revision"},
+        ))
 
-    status = _state(sid).status
-    assert status["reference_generation"] != "reconfirm", status
-    assert status["storyboard"] == "reconfirm", "同一次变更里已执行的阶段仍要标上"
+    assert _state(sid).status == before_status
+    assert "script_generation" not in _state(sid).executions
 
 
 def test_prune_guards_bad_payload_and_unknown_episodes():
@@ -973,7 +980,7 @@ def test_explicit_null_characters_clears_stage2_items():
     _seed(sid, script=script, stage2=_stage2([("char_甲", "甲")], []),
           statuses={"character_design": "completed"})
 
-    workflow_engine.update_artifact(sid, "script_generation", {"characters": None})
+    _legacy_internal_script_update(sid, {"characters": None})
 
     assert _art(sid, "character_design")["characters"] == []
 

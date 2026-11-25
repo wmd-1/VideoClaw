@@ -327,6 +327,64 @@ def test_stream_task_suppresses_terminal_event_for_discarded_run():
     assert chunks == [], f"被丢弃的执行不得推送任何事件，实际：{chunks}"
 
 
+def test_stream_task_forwards_cast_rollback_summary():
+    import asyncio
+    import json
+    import queue
+    import types
+
+    from api.services.project_helpers import stream_workflow_task
+
+    class FakeRequest:
+        async def is_disconnected(self):
+            return False
+
+    class FakeEngine:
+        async def execute_stage(self, *args, **kwargs):
+            return {
+                "payload": {},
+                "requires_intervention": False,
+                "cast_restored": False,
+                "cast_diff": {"characters": {"added": [], "removed": [], "updated": []}},
+                "cast_legacy": False,
+            }
+
+        def persist_session_snapshot(self, session_id):
+            return {"script_generation": "completed"}
+
+    class FastTrigger:
+        def clear(self):
+            pass
+
+        async def wait(self):
+            await asyncio.sleep(0)
+            return True
+
+    chunks = []
+
+    async def collect():
+        generator = stream_workflow_task(
+            request=FakeRequest(),
+            workflow_engine=FakeEngine(),
+            state=types.SimpleNamespace(session_id="probe_cast_rollback"),
+            stage="script_generation",
+            input_data={},
+            cancellation_check=lambda: False,
+            progress_callback=lambda *a, **k: None,
+            progress_events=queue.Queue(),
+            event_trigger=FastTrigger(),
+        )
+        async for chunk in generator:
+            chunks.append(chunk)
+
+    asyncio.run(collect())
+    event = json.loads(chunks[-1])
+    assert event["type"] == "stage_complete"
+    assert event["cast_restored"] is False
+    assert event["cast_legacy"] is False
+    assert event["cast_diff"]["characters"]["updated"] == []
+
+
 def test_rejected_start_does_not_leak_active_run(monkeypatch):
     """执行权登记失败时不得残留活跃 run：否则后续每次重试都会被拒，直到点停止或重启。"""
     import asyncio

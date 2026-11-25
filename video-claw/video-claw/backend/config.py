@@ -112,10 +112,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "video_resolution": "720P",
         "video_generation_mode": "first_frame",
     },
+    # 角色/场景图与参考图的 VLM 质量评分：默认关闭，避免额外评估与评分驱动重试。
+    "image_quality": {
+        "vlm_eval_enabled": False,
+    },
+    # 剧本正文变化后的 cast 重解析：全局并发与合并窗口。
+    "cast_sync": {
+        "concurrency": 2,
+        "settle_seconds": 1.5,
+    },
     # 原生 H3 提示词改写（知识资产内嵌，本地 LLM 调用）
-    # enable 默认关闭：禁用时主流程保持基础六阶段（阶段不注入流程）
+    # enable 默认开启：显式禁用时主流程保持基础六阶段（阶段不注入流程）
     "h3_rewrite": {
-        "enable": False,
+        "enable": True,
         # VLM 参考图 grounding 独立开关（与 enable 正交；关闭时改写退化为纯文本输入，模式不变）
         "grounding_enable": True,
         # 改写用 LLM 模型（留空回退会话 llm 模型）
@@ -206,6 +215,25 @@ def _coerce_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
     for key, value in clean["generation"].items():
         clean["generation"][key] = "" if value is None else str(value)
+
+    cast_sync = clean.get("cast_sync")
+    if not isinstance(cast_sync, dict):
+        cast_sync = copy.deepcopy(DEFAULT_CONFIG["cast_sync"])
+        clean["cast_sync"] = cast_sync
+    try:
+        cast_sync["concurrency"] = max(1, min(2, int(cast_sync.get("concurrency", 2))))
+    except (TypeError, ValueError):
+        cast_sync["concurrency"] = 2
+    try:
+        cast_sync["settle_seconds"] = max(0.0, float(cast_sync.get("settle_seconds", 1.5)))
+    except (TypeError, ValueError):
+        cast_sync["settle_seconds"] = 1.5
+
+    image_quality = clean.get("image_quality")
+    if not isinstance(image_quality, dict):
+        image_quality = copy.deepcopy(DEFAULT_CONFIG["image_quality"])
+        clean["image_quality"] = image_quality
+    image_quality["vlm_eval_enabled"] = _as_bool(image_quality.get("vlm_eval_enabled"))
 
     h3_rewrite = clean.get("h3_rewrite")
     if not isinstance(h3_rewrite, dict):
@@ -381,6 +409,8 @@ ENV_COMMON_KEYS = {
 ENV_DATABASE_PATTERN = re.compile(r"^VC_DATABASE__([A-Z0-9_]+)$")
 ENV_STORAGE_PATTERN = re.compile(r"^VC_STORAGE__([A-Z0-9_]+)$")
 ENV_USERS_PATTERN = re.compile(r"^VC_USERS__([A-Z0-9_]+)$")
+ENV_CAST_SYNC_PATTERN = re.compile(r"^VC_CAST_SYNC__(CONCURRENCY|SETTLE_SECONDS)$")
+ENV_IMAGE_QUALITY_PATTERN = re.compile(r"^VC_IMAGE_QUALITY__VLM_EVAL_ENABLED$")
 # 额外纳入收集的非 VC_ 前缀键：用于 server.host/port 与 .env 后端端口对齐
 _ENV_EXTRA_KEYS = ("BACKEND_HOST", "BACKEND_PORT")
 
@@ -486,6 +516,8 @@ def _apply_env_overrides(
     database_fields: Dict[str, str] = {}
     storage_fields: Dict[str, str] = {}
     users_fields: Dict[str, str] = {}
+    cast_sync_fields: Dict[str, str] = {}
+    image_quality_fields: Dict[str, str] = {}
     for key, value in env.items():
         match = ENV_PROVIDER_PATTERN.match(key)
         if match:
@@ -516,6 +548,14 @@ def _apply_env_overrides(
         if match:
             users_fields[match.group(1).lower()] = value
             continue
+        match = ENV_CAST_SYNC_PATTERN.match(key)
+        if match:
+            cast_sync_fields[match.group(1).lower()] = value
+            continue
+        match = ENV_IMAGE_QUALITY_PATTERN.match(key)
+        if match:
+            image_quality_fields[match.group(1).lower()] = value
+            continue
         match = ENV_H3_REWRITE_PATTERN.match(key)
         if match:
             h3_rewrite_fields[match.group(1).lower()] = value
@@ -534,6 +574,8 @@ def _apply_env_overrides(
                 "VC_DATABASE_",
                 "VC_STORAGE_",
                 "VC_USERS_",
+                "VC_CAST_SYNC_",
+                "VC_IMAGE_QUALITY_",
             )
         ):
             logger.warning("Unrecognized VC_* variable ignored: %s", key)
@@ -654,6 +696,29 @@ def _apply_env_overrides(
             "/JUDGE_ENABLE/JUDGE_MODEL/JUDGE_THRESHOLD）；旧变量将被忽略",
             ", ".join(sorted(design_agent_fields)),
         )
+
+    if cast_sync_fields:
+        cast_section = effective.setdefault("cast_sync", {})
+        for field_name, raw in cast_sync_fields.items():
+            try:
+                if field_name == "concurrency":
+                    cast_section[field_name] = max(1, min(2, int(raw)))
+                else:
+                    cast_section[field_name] = max(0.0, float(raw))
+            except (TypeError, ValueError):
+                logger.warning("Env cast_sync.%s ignored: invalid value", field_name)
+                continue
+            env_fields.append(f"cast_sync.{field_name}")
+
+    if image_quality_fields:
+        image_quality_section = effective.setdefault("image_quality", {})
+        for field_name, raw in image_quality_fields.items():
+            normalized = str(raw).strip().lower()
+            if normalized not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+                logger.warning("Env image_quality.%s ignored: invalid boolean", field_name)
+                continue
+            image_quality_section[field_name] = _as_bool(raw)
+            env_fields.append(f"image_quality.{field_name}")
 
     # 原生 H3 提示词改写：VC_H3_REWRITE__* 字段级覆盖
     if h3_rewrite_fields:
@@ -787,6 +852,16 @@ def _strip_env_overridden(
                 server_view.pop(field_name, None)
             else:
                 server_view[field_name] = copy.deepcopy(file_value)
+        elif field_path.startswith("image_quality."):
+            # 图片评分配置：恢复文件原值，不写入 .env 覆盖值
+            field_name = field_path.split(".", 1)[1]
+            file_image_quality = current_file.get("image_quality", {}) if isinstance(current_file, dict) else {}
+            file_value = file_image_quality.get(field_name) if isinstance(file_image_quality, dict) else None
+            image_quality_view = view.setdefault("image_quality", {})
+            if file_value is None:
+                image_quality_view.pop(field_name, None)
+            else:
+                image_quality_view[field_name] = copy.deepcopy(file_value)
         elif field_path.startswith("h3_rewrite."):
             # 原生 H3 提示词改写配置：恢复文件原值，不写入 .env 覆盖值
             field_name = field_path.split(".", 1)[1]
@@ -1042,6 +1117,8 @@ class Config:
     BOOT_ID = BOOT_ID
     VIDEO_DISPATCH_ENABLED = VIDEO_DISPATCH_ENABLED
     VIDEO_PROFILES_FILE = VIDEO_PROFILES_FILE
+    CAST_SYNC_CONCURRENCY = _get(CONFIG, "cast_sync.concurrency", 2)
+    CAST_SYNC_SETTLE_SECONDS = _get(CONFIG, "cast_sync.settle_seconds", 1.5)
 
     DATABASE = _get(CONFIG, "database", {})
     STORAGE = _get(CONFIG, "storage", {})
@@ -1113,9 +1190,10 @@ class Config:
     VIDEO_RESOLUTION = _get(CONFIG, "generation.video_resolution")
     VIDEO_GENERATION_MODE = _get(CONFIG, "generation.video_generation_mode")
     STYLE = _get(CONFIG, "generation.style")
+    IMAGE_QUALITY_VLM_EVAL_ENABLED = _get(CONFIG, "image_quality.vlm_eval_enabled", False)
 
     # 原生 H3 提示词改写
-    H3_REWRITE_ENABLED = _get(CONFIG, "h3_rewrite.enable", False)
+    H3_REWRITE_ENABLED = _get(CONFIG, "h3_rewrite.enable", True)
     H3_REWRITE_GROUNDING_ENABLED = _get(CONFIG, "h3_rewrite.grounding_enable", True)
     H3_REWRITE_LLM_MODEL = _get(CONFIG, "h3_rewrite.llm_model", "")
     H3_REWRITE_VLM_MODEL = _get(CONFIG, "h3_rewrite.vlm_model", "")
@@ -1212,8 +1290,11 @@ class Config:
         cls.VIDEO_RESOLUTION = _get(clean, "generation.video_resolution")
         cls.VIDEO_GENERATION_MODE = _get(clean, "generation.video_generation_mode")
         cls.STYLE = _get(clean, "generation.style")
+        cls.IMAGE_QUALITY_VLM_EVAL_ENABLED = _get(clean, "image_quality.vlm_eval_enabled", False)
+        cls.CAST_SYNC_CONCURRENCY = _get(clean, "cast_sync.concurrency", 2)
+        cls.CAST_SYNC_SETTLE_SECONDS = _get(clean, "cast_sync.settle_seconds", 1.5)
 
-        cls.H3_REWRITE_ENABLED = _get(clean, "h3_rewrite.enable", False)
+        cls.H3_REWRITE_ENABLED = _get(clean, "h3_rewrite.enable", True)
         cls.H3_REWRITE_GROUNDING_ENABLED = _get(clean, "h3_rewrite.grounding_enable", True)
         cls.H3_REWRITE_LLM_MODEL = _get(clean, "h3_rewrite.llm_model", "")
         cls.H3_REWRITE_VLM_MODEL = _get(clean, "h3_rewrite.vlm_model", "")

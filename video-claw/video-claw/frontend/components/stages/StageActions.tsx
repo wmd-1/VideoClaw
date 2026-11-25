@@ -30,6 +30,10 @@ interface StageActionsProps {
    */
   reconfirm?: boolean;
   isRunning: boolean;
+  confirmDisabled?: boolean;
+  confirmDisabledReason?: string;
+  regenerateDisabled?: boolean;
+  regenerateDisabledReason?: string;
 }
 
 export default function StageActions({
@@ -44,7 +48,11 @@ export default function StageActions({
   hasNextStageStarted = false,
   showConfirm = true,
   reconfirm = false,
-  isRunning
+  isRunning,
+  confirmDisabled = false,
+  confirmDisabledReason = '',
+  regenerateDisabled = false,
+  regenerateDisabledReason = '',
 }: StageActionsProps) {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
 
@@ -57,7 +65,7 @@ export default function StageActions({
   const showRegen = !!onRegenerate && status !== 'running';
   
   // 按钮是否禁用逻辑
-  let isButtonDisabled = isRunning;
+  let isButtonDisabled = isRunning || regenerateDisabled;
   if (!isRunning && stageId) {
     // 除第 1/6 阶段外，completed 且「没有待生成/失败条目」时才禁用继续生成（避免误点重跑）；
     // 存在失败或未生成条目时允许重跑——重新配置模型后的常规恢复路径
@@ -106,7 +114,7 @@ export default function StageActions({
             onClick={onRegenerate}
             disabled={isButtonDisabled}
             className="flex items-center gap-2 px-4 py-2 bg-white border border-orange-300 text-orange-600 rounded-lg text-sm font-medium hover:bg-orange-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400"
-            title={isButtonDisabled ? (status === 'error' ? '重新尝试生成' : (isContinueStage && !hasPendingItems ? '所有项已生成完毕' : (isRegenStage && hasNextStageStarted ? '后续阶段已开始，无法重新生成' : ''))) : ''}
+            title={isButtonDisabled ? (regenerateDisabledReason || (status === 'error' ? '重新尝试生成' : (isContinueStage && !hasPendingItems ? '所有项已生成完毕' : (isRegenStage && hasNextStageStarted ? '后续阶段已开始，无法重新生成' : '')))) : ''}
           >
             {isContinueStage ? <Play className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
             {isContinueStage ? '继续生成' : '重新生成'}
@@ -158,8 +166,8 @@ export default function StageActions({
         {showConfirmBtn && (
           <button
             onClick={onConfirm}
-            disabled={isRunning}
-            title={reconfirm ? '确认 = 接受本阶段现有结果并继续（不重新生成）；要按新输入重做请点「继续生成」' : undefined}
+            disabled={isRunning || confirmDisabled}
+            title={confirmDisabled ? confirmDisabledReason : (reconfirm ? '确认 = 接受本阶段现有结果并继续（不重新生成）；要按新输入重做请点「继续生成」' : undefined)}
             className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-200 disabled:hover:text-gray-400"
           >
             <CheckCircle className="w-4 h-4" />

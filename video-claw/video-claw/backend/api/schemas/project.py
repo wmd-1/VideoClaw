@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -62,3 +62,23 @@ class ProjectStartRequest(BaseModel):
 class InterventionRequest(BaseModel):
     stage: str
     modifications: Dict[str, Any]
+
+
+class CastReparseRetryRequest(BaseModel):
+    attempt: int
+    base_version: str
+
+
+class CastReparseAcceptStaleRequest(BaseModel):
+    accepted_attempt: int
+    accepted_base_version: str
+
+
+class CastReparseStopRequest(BaseModel):
+    attempt: int | None = None
+    base_version: str | None = None
+
+
+class CastSuggestionApplyRequest(BaseModel):
+    ids: List[str]
+    base_version: str

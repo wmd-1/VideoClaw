@@ -122,6 +122,8 @@ interface TopBarProps {
   projectStatus?: string;
   /** 当前阶段本地状态同步超时（workflow-poll-timeout-visibility）：顶栏显示“同步超时”角标 */
   timedOut?: boolean;
+  /** 后台人物/场景重解析是否处于活动态 */
+  castReparseActive?: boolean;
 }
 
 /* ─── 模型选择下拉面板 ─── */
@@ -536,6 +538,7 @@ export default function TopBar({
   onModelConfigChange,
   projectStatus,
   timedOut,
+  castReparseActive = false,
 }: TopBarProps) {
   const enabledStages = useEnabledStages();
   const visibleStages = STAGES.filter(s => enabledStages.includes(s.id));
@@ -647,14 +650,14 @@ export default function TopBar({
         )}
 
         {/* 停止按钮 */}
-        {isRunning && (
+        {(isRunning || castReparseActive) && (
           <button
             onClick={onStop}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-medium transition-colors ring-1 ring-red-200"
-            title="停止生成"
+            title={isRunning && castReparseActive ? '停止阶段生成与人物/场景更新' : (isRunning ? '停止阶段生成' : '停止人物/场景更新')}
           >
             <Square className="w-3.5 h-3.5 fill-current" />
-            <span>停止生成</span>
+            <span>{isRunning && castReparseActive ? '停止生成与更新' : (isRunning ? '停止生成' : '停止更新')}</span>
           </button>
         )}
 

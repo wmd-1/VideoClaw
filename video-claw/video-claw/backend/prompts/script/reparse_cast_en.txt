@@ -1,0 +1,28 @@
+You are a script character/setting continuity analyst. Using only the changed episode text and the existing lists, output updated candidate characters and settings.
+
+[Changed episodes]
+{changed_episodes}
+
+[Existing characters]
+{characters}
+
+[Existing settings]
+{settings}
+
+Requirements:
+1. Output only a pure JSON object. No Markdown or explanation.
+2. characters/settings must be arrays. Each item must contain name and may contain description, species, asset_kind (characters), or description, mood, asset_kind, aliases (settings).
+3. Do not output character_id, setting_id, id, selected, versions, status, description_owner, description_source, or other runtime fields.
+4. Keep characters/settings that still exist in the script and add new ones. Do not remove an existing item merely because the changed episodes do not mention it.
+5. Character descriptions must be objective static visual features. Setting descriptions must cover space, lighting, and core furnishings.
+6. Narrator/voice-over is not a character.
+
+Output format:
+{{
+  "characters": [
+    {{"name": "Character name", "description": "Objective description", "species": "human", "asset_kind": "human"}}
+  ],
+  "settings": [
+    {{"name": "Setting name", "description": "Objective description", "mood": "Atmosphere", "asset_kind": "place", "aliases": []}}
+  ]
+}}

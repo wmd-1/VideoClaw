@@ -21,6 +21,8 @@ import {
   StreamIdleError,
   type ModelUnavailableDetail,
   type MissingInput,
+  type CastReparseState,
+  type CastSuggestion,
   type ProjectStatus,
 } from '@/lib/workflowApi';
 import TopBar, { STAGES, useEnabledStages, type ModelConfig } from './TopBar';
@@ -30,6 +32,7 @@ import {
   type ArtifactLike,
 } from '@/lib/assetMerge';
 import { isStageSettled, isStageStillRunning } from '@/lib/chainGuard';
+import { getStoryboardCoverage } from '@/lib/storyboardCoverage';
 import ModelFallbackDialog from './ModelFallbackDialog';
 import HomePage, { type ProjectParams } from './HomePage';
 import { fetchVideoProfiles } from '@/lib/videoPools';
@@ -74,6 +77,29 @@ interface HistoryItem {
 interface ProjectStatusSnapshot extends ProjectStatus {
   artifacts?: Record<string, unknown>;
   meta?: SessionMeta;
+}
+
+interface ScriptControlState {
+  locked: boolean;
+  reparse: CastReparseState | null;
+  ready: boolean;
+  suggestions: CastSuggestion[];
+}
+
+const EMPTY_SCRIPT_CONTROL: ScriptControlState = {
+  locked: false,
+  reparse: null,
+  ready: true,
+  suggestions: [],
+};
+
+function scriptControlFromStatus(status: ProjectStatusSnapshot): ScriptControlState {
+  return {
+    locked: Boolean(status.script_locked),
+    reparse: status.cast_reparse || null,
+    ready: status.cast_reparse_ready !== false,
+    suggestions: Array.isArray(status.cast_suggestions) ? status.cast_suggestions : [],
+  };
 }
 
 /** 会话级生成参数（status.meta 或旧扁平字段，按恢复逻辑实际读取字段声明） */
@@ -308,6 +334,8 @@ export default function WorkflowPanel() {
   const [completedStagesFromSession, setCompletedStagesFromSession] = useState<string[]>([]);
   // 顶栏流程图用的后端阶段状态映射（提前声明：pollForCompletion 等闭包先于其使用点定义）
   const [globalStatusMap, setGlobalStatusMap] = useState<Record<string, string>>({});
+  const [scriptControl, setScriptControl] = useState<ScriptControlState>(EMPTY_SCRIPT_CONTROL);
+  const [castPollPaused, setCastPollPaused] = useState(false);
   // 会话载入空态与失败态（design D5）：两者与 showHome 的优先级固定为
   // sessionLoadError > sessionLoading > showHome，否则复位置空 activeStage 会闪一下首页。
   const [sessionLoading, setSessionLoading] = useState(false);
@@ -435,6 +463,8 @@ export default function WorkflowPanel() {
     completedStages?: string[] | ((prev: string[]) => string[]);
     projectParams?: ProjectParams | null;
     activeStage?: string | null;
+    scriptControl?: ScriptControlState;
+    castPollPaused?: boolean;
   }) => {
     if (!owns(token)) return;
     if (view.globalStatusMap) setGlobalStatusMap(view.globalStatusMap);
@@ -446,6 +476,8 @@ export default function WorkflowPanel() {
     }
     if (view.projectParams !== undefined) setProjectParams(view.projectParams);
     if (view.activeStage !== undefined) setActiveStage(view.activeStage);
+    if (view.scriptControl !== undefined) setScriptControl(view.scriptControl);
+    if (view.castPollPaused !== undefined) setCastPollPaused(view.castPollPaused);
   }, [owns]);
 
   /**
@@ -472,6 +504,51 @@ export default function WorkflowPanel() {
     });
   }, [commitStageStates]);
 
+  /** cast 重解析独立轻轮询；不复用阶段 running 判据，迟到响应按会话令牌丢弃。 */
+  const pollCastReparse = useCallback(async (token: SessionToken, sid: string) => {
+    const key = `${sid}:cast-reparse`;
+    if (pollRef.current.has(key)) return;
+    pollRef.current.add(key);
+    for (let i = 0; i < 450; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (!pollRef.current.has(key) || !owns(token)) return;
+      try {
+        let status: ProjectStatusSnapshot;
+        try {
+          status = await getProjectStatus(sid);
+        } catch {
+          status = await getProjectStatusFromDisk(sid);
+        }
+        if (!pollRef.current.has(key) || !owns(token)) return;
+        const control = scriptControlFromStatus(status);
+        commitSessionView(token, { scriptControl: control });
+        const active = control.reparse && ['pending', 'running', 'superseded'].includes(control.reparse.status);
+        if (!active) {
+          pollRef.current.delete(key);
+          return;
+        }
+      } catch {
+        // 单次查询失败不改变状态，下一轮继续；耗尽后由写后/刷新同步恢复。
+      }
+    }
+    pollRef.current.delete(key);
+    if (owns(token)) {
+      commitSessionView(token, { castPollPaused: true });
+    }
+  }, [commitSessionView, owns]);
+
+  const syncScriptControl = useCallback((token: SessionToken, sid: string, status: ProjectStatusSnapshot) => {
+    const control = scriptControlFromStatus(status);
+    commitSessionView(token, { scriptControl: control, castPollPaused: false });
+    const key = `${sid}:cast-reparse`;
+    const active = control.reparse && ['pending', 'running', 'superseded'].includes(control.reparse.status);
+    if (active && !pollRef.current.has(key)) {
+      void pollCastReparse(token, sid);
+    } else if (!active) {
+      pollRef.current.delete(key);
+    }
+  }, [commitSessionView, pollCastReparse]);
+
   /**
    * 写入成功后的视图同步（openspec: stage-view-resync）。
    *
@@ -486,14 +563,15 @@ export default function WorkflowPanel() {
   ) => {
     if (opts.statusMap) commitSessionView(token, { globalStatusMap: opts.statusMap });
     applyStatusMapToStages(token, opts.statusMap);
-    if (!opts.refreshArtifacts) return;
     try {
       const snapshot = (await getProjectStatus(sid)) as ProjectStatusSnapshot;
       // 请求往返后归属可能已变：迟到的快照直接丢弃
       if (!owns(token)) return;
+      syncScriptControl(token, sid, snapshot);
       const statusMap = snapshot?.status || {};
       commitSessionView(token, { globalStatusMap: statusMap });
       applyStatusMapToStages(token, statusMap);
+      if (!opts.refreshArtifacts) return;
       const artifacts = snapshot?.artifacts || {};
       const progress = (snapshot?.stage_progress || {}) as Record<string, { stale?: unknown; stale_episodes?: unknown }>;
       commitStageStates(token, prev => {
@@ -525,7 +603,7 @@ export default function WorkflowPanel() {
       // 快照取不到不等于保存失败：保留已回写的视图，用户可靠重新进入/刷新纠正
       console.warn('保存后同步阶段视图失败（保存本身已完成）:', error);
     }
-  }, [applyStatusMapToStages, commitSessionView, commitStageStates, owns]);
+  }, [applyStatusMapToStages, commitSessionView, commitStageStates, owns, syncScriptControl]);
 
   /**
    * 写入回调专用的同步入口：本回调在 `await` 之后才跑，它携带的 `token` 是发起写入那次
@@ -553,6 +631,8 @@ export default function WorkflowPanel() {
     pollRef.current.clear();
     setStageStates(initStageStates());
     setGlobalStatusMap({});
+    setScriptControl(EMPTY_SCRIPT_CONTROL);
+    setCastPollPaused(false);
     setCurrentStageFromSession(null);
     setCompletedStagesFromSession([]);
     setProjectParams(null);
@@ -591,6 +671,7 @@ export default function WorkflowPanel() {
         if (!pollRef.current.has(key)) return;
         // getProjectStatus 是一个 await，返回后归属可能已变；先校令牌再落写入（design D1/D11）
         if (!owns(token)) return;
+        syncScriptControl(token, sid, status);
         commitSessionView(token, { globalStatusMap: status.status || {} });
         const done = Object.keys(status.status || {}).filter(k => ["completed", "session_completed"].includes(status.status[k]));
         // 轮询收尾同样走 mapStageStatus：reconfirm/未知值不得被写成 pending（按钮消失）或当成执行中
@@ -709,7 +790,7 @@ export default function WorkflowPanel() {
       commitStageState(token, stageId, { syncState: 'timed_out' });
     }
     pollRef.current.delete(key);
-  }, [commitSessionView, commitStageState, currentToken, owns]);
+  }, [commitSessionView, commitStageState, currentToken, owns, syncScriptControl]);
 
   /**
    * 执行流中断后的补偿（design D4）：以 `/status` 为准对齐阶段状态与产物；
@@ -719,6 +800,7 @@ export default function WorkflowPanel() {
     try {
       const status = await getProjectStatus(sid);
       if (!owns(token)) return;
+      syncScriptControl(token, sid, status);
       commitSessionView(token, { globalStatusMap: status.status || {} });
       const raw = status.status?.[stageId] || 'idle';
       const mapped = mapStageStatus(raw);
@@ -739,7 +821,7 @@ export default function WorkflowPanel() {
     } catch {
       // 后端不可达：保留现状，由用户刷新恢复
     }
-  }, [commitSessionView, commitStageState, owns, pollForCompletion]);
+  }, [commitSessionView, commitStageState, owns, pollForCompletion, syncScriptControl]);
 
   // ── 恢复历史项目 ──
   const handleResumeProject = async (sid: string, targetStage: string | null = null) => {
@@ -778,6 +860,7 @@ export default function WorkflowPanel() {
       }
       // 取数后归属可能已变（用户又切了一次）：迟到响应直接放弃，不写界面
       if (!owns(token)) return;
+      syncScriptControl(token, sid, status);
       commitSessionView(token, { globalStatusMap: status.status || {} });
       const newStates = initStageStates();
       const stMap = status.status || {};
@@ -999,6 +1082,7 @@ export default function WorkflowPanel() {
     try {
       const status = await getProjectStatus(stopSid);
       if (!owns(token)) return;
+      syncScriptControl(token, stopSid, status);
       for (const [s, preview] of Object.entries(status.execution_preview || {})) {
         commitStageState(token, s, { lastRun: preview });
       }
@@ -1232,6 +1316,10 @@ export default function WorkflowPanel() {
             artifact,
           });
           if (artifact && owns(token)) maybeShowFallbackFromArtifact(stageId, artifact);
+          try {
+            const latest = await getProjectStatus(sid);
+            if (owns(token)) syncScriptControl(token, sid, latest);
+          } catch { /* 状态重读失败不改变本次终态 */ }
         } else if (event.type === 'error') {
           terminalSeen = true;
           // 取消/停止类错误：尝试获取部分结果而不是直接报错
@@ -1390,6 +1478,7 @@ export default function WorkflowPanel() {
         const status = await getProjectStatus(result.session_id);
         // 写入由漏斗按令牌丢弃；即使用户已切走，本链仍必须跑完（后端继续执行，design D11）
         const stageStatus = status?.status?.[stageId];
+        syncScriptControl(token, result.session_id, status);
         commitSessionView(token, { globalStatusMap: status.status || {} });
         if (isStageStillRunning(stageStatus)) {
           // 流未确认终态（已由补偿逻辑对齐）：不推进下一阶段，交给轮询跟踪
@@ -1584,12 +1673,15 @@ export default function WorkflowPanel() {
         console.warn('Continue interrupted:', message || err?.name);
         try {
           const status = await getProjectStatus(sessionId);
+          syncScriptControl(token, sessionId, status);
           commitSessionView(token, { globalStatusMap: status.status || {} });
         } catch {
           /* ignore */
         }
       } else {
         console.error('Continue error:', error);
+        const message = (error as Error).message || '确认阶段失败';
+        commitStageState(token, stageId, { error: message, progressMessage: '确认失败' });
         // 确认请求失败（4xx/5xx）后同样拉一次后端事实，避免视图停在“已确认/执行中”的本地猜侧
         await resyncSessionView(token, sessionId, { refreshArtifacts: true });
       }
@@ -1757,6 +1849,10 @@ export default function WorkflowPanel() {
             });
             commitSessionView(token, { globalStatusMap: statusMap });
             applyStatusMapToStages(token, statusMap);
+            try {
+              const latest = await getProjectStatus(sessionId);
+              if (owns(token)) syncScriptControl(token, sessionId, latest);
+            } catch { /* 状态重读失败不改变本次终态 */ }
             // 分镜显式重跑会清理/更新参考图与改写条目；剧本结构变更（应用修订/质检）
             // 会把分镜标为 reconfirm，也必须重取快照，否则剧本页的“分镜待重新确认”
             // 依赖 stageStates.storyboard.staleEpisodes，当前回合不会出现。
@@ -1798,6 +1894,10 @@ export default function WorkflowPanel() {
         console.error('Intervention error:', error);
         if (error instanceof ModelUnavailableError) {
           showModelUnavailable(token, sessionId as string, stageId, error.detail);
+        } else if (!isBackgroundItemRegeneration) {
+          const message = (error as Error).message || '修改请求失败';
+          commitStageState(token, stageId, { status: 'error', error: message, progressMessage: '处理失败' });
+          await refreshLastRun(token, sessionId as string, stageId, true);
         }
       }
     } finally {
@@ -2021,6 +2121,7 @@ export default function WorkflowPanel() {
       await runStage(token, sessionId, stageId, inputData);
 
       const status = await getProjectStatus(sessionId);
+      syncScriptControl(token, sessionId, status);
       if (isStageStillRunning(status?.status?.[stageId])) {
         // 流未确认终态：保持执行中并转为轮询，不误报失败/完成
         commitStageState(token, stageId, { status: 'running' });
@@ -2165,6 +2266,11 @@ export default function WorkflowPanel() {
       hasPendingItems =
         chars.some(c => !c.selected || c.status === 'failed') ||
         sets.some(s => !s.selected || s.status === 'failed');
+    } else if (activeStage === 'storyboard') {
+      const script = (stageStates['script_generation']?.artifact || {}) as { episodes?: Array<{ episode_number?: number; act_number?: number }> };
+      const storyboard = (state?.artifact || {}) as { episodes?: Array<{ episode_number?: number; act_number?: number; segments?: unknown[] }>; payload?: { episodes?: Array<{ episode_number?: number; act_number?: number; segments?: unknown[] }> } };
+      const boardEpisodes = Array.isArray(storyboard.episodes) ? storyboard.episodes : (storyboard.payload?.episodes || []);
+      hasPendingItems = !getStoryboardCoverage(script.episodes || [], boardEpisodes).complete;
     } else if (activeStage === 'reference_generation') {
       const scenes = (state?.artifact as { scenes?: ArtifactItem[] } | undefined)?.scenes || [];
       hasPendingItems = videoMode === 'reference' ? false : scenes.some(s => !s.selected || s.status === 'failed');
@@ -2191,7 +2297,7 @@ export default function WorkflowPanel() {
       : undefined;
 
     // 传递第1阶段的 artifact 到第4、5、6阶段用于获取剧集标题
-    const scriptArtifact = (activeStage === 'reference_generation' || activeStage === 'video_generation' || activeStage === 'post_production')
+    const scriptArtifact = (activeStage === 'storyboard' || activeStage === 'reference_generation' || activeStage === 'video_generation' || activeStage === 'post_production')
       ? stageStates['script_generation']?.artifact
       : undefined;
 
@@ -2251,6 +2357,11 @@ export default function WorkflowPanel() {
         scriptArtifact={scriptArtifact}
         flaggedItems={flaggedByStage[activeStage]}
         onNavigateStage={handleStageClick}
+        scriptLocked={scriptControl.locked}
+        castReparse={scriptControl.reparse}
+        castReparseReady={scriptControl.ready}
+        castSuggestions={scriptControl.suggestions}
+        castPollPaused={castPollPaused}
         artifacts={Object.keys(stageStates).reduce((acc: Record<string, unknown>, key) => {
           acc[key] = stageStates[key].artifact;
           return acc;
@@ -2307,6 +2418,7 @@ export default function WorkflowPanel() {
         onModelConfigChange={handleModelConfigChange}
         projectStatus={projectStatus}
         timedOut={activeStage ? stageStates[activeStage]?.syncState === 'timed_out' : false}
+        castReparseActive={Boolean(scriptControl.reparse && ['pending', 'running', 'superseded'].includes(scriptControl.reparse.status))}
       />
 
       {dispatchNotice && (

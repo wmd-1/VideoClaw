@@ -1,13 +1,22 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Save, X, Users, MapPin, Film, Sparkles, ShieldCheck, BookOpen, Lightbulb, Target, User, Crosshair, RefreshCw, Palette, Edit3, Plus, Trash2 } from 'lucide-react';
+import { Save, X, Users, MapPin, Film, Sparkles, ShieldCheck, BookOpen, Lightbulb, Target, User, Crosshair, RefreshCw, Palette, Edit3, Plus, Trash2, AlertCircle, Loader2, Square, CheckCircle2 } from 'lucide-react';
 import type { StageViewProps } from './types';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 
 import { apiFetch } from "@/lib/identityGuard";
 import { diffText } from "@/lib/textDiff";
+import {
+  acceptCastReparseStale,
+  ApiRequestError,
+  applyCastSuggestions,
+  retryCastReparse,
+  stopCastReparse,
+  throwResponseError,
+  type CastSuggestion,
+} from '@/lib/workflowApi';
 /* ─── 类型 ─── */
 
 interface LoglineData {
@@ -184,6 +193,16 @@ const REVIEW_ACTION_LABEL: Record<string, string> = {
 
 const DISABLED_ACTION_CLASS = 'disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-none disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:shadow-none disabled:hover:bg-gray-100 disabled:hover:text-gray-400';
 
+const REPARSE_STATUS_LABEL: Record<string, string> = {
+  pending: '等待更新人物/场景',
+  running: '正在更新人物/场景',
+  done: '人物/场景已更新',
+  failed: '人物/场景更新失败',
+  stopped: '人物/场景更新已停止',
+  superseded: '已被新版本替代，等待最新重解析',
+  accepted_stale: '已接受旧人物/场景',
+};
+
 /* ─── Logline 六要素展示卡 ─── */
 function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
   const items = [
@@ -215,7 +234,7 @@ function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
   );
 }
 
-export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, staleStoryboardEpisodes, staleFinalVideos, onRegenerateStoryboardEpisodes }: StageViewProps) {
+export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, staleStoryboardEpisodes, staleFinalVideos, onRegenerateStoryboardEpisodes, scriptLocked = false, castReparse = null, castReparseReady = true, castSuggestions = [], castPollPaused = false }: StageViewProps) {
   const data = (state.artifact || {}) as ScriptData;
 
   const isLoglinePhase = data.phase === 'logline_selection' || data.phase === 'logline_confirm' || data.phase === 'mode_selection';
@@ -250,6 +269,11 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
   const [dismissedReviewKey, setDismissedReviewKey] = useState('');
   const [reviewSelectionByKey, setReviewSelectionByKey] = useState<Record<string, string[]>>({});
   const [reviewApplyKey, setReviewApplyKey] = useState('');
+  const [actionError, setActionError] = useState<{ message: string; code?: string; fields?: string[] } | null>(null);
+  const [castControlBusy, setCastControlBusy] = useState(false);
+  const contentLocked = scriptLocked || isRunning;
+  const reparseStatus = castReparse?.status;
+  const reparseActive = Boolean(reparseStatus && ['pending', 'running', 'superseded'].includes(reparseStatus));
   // 质检结果弹窗与勾选状态均由 pending_review 派生，不靠 effect 写 state（新结果自动弹出）。
   // 质检仅导入模式开放：灵感生成会话即使携带历史 pending_review 也不弹窗、不显示入口。
   const showReviewDialog = isImportMode && Boolean(pendingReview) && dismissedReviewKey !== reviewKey;
@@ -281,12 +305,58 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
-    if (!response.ok) throw new Error('保存剧本修改失败');
+    setActionError(null);
+    if (!response.ok) {
+      try {
+        await throwResponseError(response, '保存剧本修改失败');
+      } catch (error) {
+        const apiError = error as ApiRequestError;
+        setActionError({ message: apiError.message, code: apiError.code, fields: apiError.fields });
+        throw error;
+      }
+    }
     const result = await response.json();
     // 写入即同步（openspec: stage-view-resync）：剧本变更会重建阶段 2 条目并标下游为待重新确认，
     // 因此除了回写状态表，还要重取受影响阶段产物，不让用户靠刷新页面才能看到结果。
     onArtifactMutated?.(result?.status_map, { refreshArtifacts: true });
     return result;
+  };
+
+  const runCastControl = async (action: () => Promise<unknown>) => {
+    if (!sessionId || castControlBusy) return;
+    setCastControlBusy(true);
+    setActionError(null);
+    try {
+      await action();
+      onArtifactMutated?.(undefined, { refreshArtifacts: true });
+    } catch (error) {
+      const apiError = error as ApiRequestError;
+      setActionError({ message: apiError.message, code: apiError.code, fields: apiError.fields });
+    } finally {
+      setCastControlBusy(false);
+    }
+  };
+
+  const retryReparse = () => {
+    if (!castReparse || castReparse.attempt == null || !castReparse.base_version) return;
+    void runCastControl(() => retryCastReparse(sessionId, castReparse.attempt as number, castReparse.base_version as string));
+  };
+
+  const acceptStale = () => {
+    if (!castReparse || castReparse.attempt == null || !castReparse.base_version) return;
+    if (!window.confirm('接受旧人物/场景后，下游将使用当前清单继续；新正文仍会再次触发重解析。确定接受吗？')) return;
+    void runCastControl(() => acceptCastReparseStale(sessionId, castReparse.attempt as number, castReparse.base_version as string));
+  };
+
+  const stopReparse = () => {
+    void runCastControl(() => stopCastReparse(sessionId));
+  };
+
+  const applySuggestion = (suggestion: CastSuggestion) => {
+    if (!castReparse?.base_version) return;
+    const risky = suggestion.kind === 'rename' || suggestion.reason === 'removed_from_body';
+    if (risky && !window.confirm('该操作会按建议修改人物/场景清单，确定采纳吗？')) return;
+    void runCastControl(() => applyCastSuggestions(sessionId, [suggestion.id], castReparse.base_version as string));
   };
 
   const revision = data.pending_revision;
@@ -633,6 +703,78 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           </div>
         )}
 
+        {actionError && (
+          <div role="alert" className="mb-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <span>
+              {actionError.message}
+              {actionError.code && <span className="ml-2 font-mono text-[11px]">({actionError.code})</span>}
+              {actionError.fields && actionError.fields.length > 0 && (
+                <span className="ml-2">字段：{actionError.fields.join('、')}</span>
+              )}
+            </span>
+          </div>
+        )}
+
+        {scriptLocked && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <p className="font-bold">剧本已进入角色阶段，正文、人物与场景已锁定；如需修改请新建会话。</p>
+            <p className="mt-1 text-xs text-amber-700">仍可查看剧本、历史记录，或使用下方人物/场景更新控制。</p>
+          </div>
+        )}
+
+        {castReparse && (
+          <div className={`mb-4 rounded-xl border px-4 py-3 ${reparseStatus === 'failed' ? 'border-red-200 bg-red-50' : reparseStatus === 'accepted_stale' ? 'border-amber-200 bg-amber-50' : 'border-blue-200 bg-blue-50'}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              {reparseActive && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
+              {reparseStatus === 'done' && <CheckCircle2 className="h-4 w-4 text-green-600" />}
+              {reparseStatus === 'failed' && <AlertCircle className="h-4 w-4 text-red-600" />}
+              <span className="text-sm font-bold text-gray-800">{REPARSE_STATUS_LABEL[reparseStatus || ''] || reparseStatus}</span>
+              {castReparse.summary && (
+                <span className="text-xs text-gray-500">
+                  新增 {Number(castReparse.summary.added || 0)} · 更新 {Number(castReparse.summary.updated || 0)} · 建议 {castSuggestions.length}
+                </span>
+              )}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {(reparseStatus === 'pending' || reparseStatus === 'running') && (
+                  <button onClick={stopReparse} disabled={castControlBusy} className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 disabled:opacity-50">
+                    <Square className="mr-1 inline h-3 w-3" />停止更新
+                  </button>
+                )}
+                {(reparseStatus === 'failed' || reparseStatus === 'stopped') && (
+                  <>
+                    <button onClick={retryReparse} disabled={castControlBusy} className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-50 disabled:opacity-50">重试</button>
+                    <button onClick={acceptStale} disabled={castControlBusy} className="rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-50 disabled:opacity-50">接受旧清单继续</button>
+                  </>
+                )}
+              </div>
+            </div>
+            {castPollPaused && reparseActive && (
+              <p className="mt-1 text-xs text-amber-700">状态刷新已暂停（已覆盖文本模型最长等待时间），请刷新页面继续跟踪。</p>
+            )}
+            {reparseStatus === 'superseded' && <p className="mt-1 text-xs text-blue-700">旧任务不会覆盖新正文；页面将继续轻轮询最新版本。</p>}
+            {reparseStatus === 'accepted_stale' && <p className="mt-1 text-xs text-amber-700">当前使用旧人物/场景继续，存在与正文不一致的风险。</p>}
+            {reparseStatus === 'failed' && castReparse.error && <p className="mt-1 text-xs text-red-700">{castReparse.error}</p>}
+            {castSuggestions.length > 0 && (
+              <div className="mt-3 space-y-2 border-t border-blue-200 pt-3">
+                {castSuggestions.map(suggestion => (
+                  <div key={suggestion.id} className="flex flex-wrap items-center gap-2 text-xs text-gray-700">
+                    <span>
+                      {suggestion.kind === 'rename'
+                        ? `改名建议：${suggestion.from || ''} → ${suggestion.to || ''}`
+                        : suggestion.reason === 'removed_from_body'
+                          ? `删除候选：${suggestion.name || ''}`
+                          : `描述建议：${suggestion.name || ''}`}
+                    </span>
+                    {suggestion.description && <span className="text-gray-500">{suggestion.description}</span>}
+                    <button onClick={() => applySuggestion(suggestion)} disabled={castControlBusy || scriptLocked} className="ml-auto rounded-lg border border-blue-200 bg-white px-2.5 py-1 font-bold text-blue-600 hover:bg-blue-50 disabled:opacity-50">采纳</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 运行中 - 已选 Logline & 逐幕生成结果 */}
         {state.status === 'running' && (
           <>
@@ -855,21 +997,21 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                     applyRevision(true, false);
                   }
                 }}
-                disabled={isRunning}
+                disabled={contentLocked}
                 className={`px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 transition-colors ${DISABLED_ACTION_CLASS}`}
               >
                 应用修改
               </button>
               <button
                 onClick={cancelRevision}
-                disabled={isRunning}
+                disabled={contentLocked}
                 className={`px-4 py-2 text-gray-600 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors ${DISABLED_ACTION_CLASS}`}
               >
                 取消
               </button>
               <button
                 onClick={() => setShowRevisionDialog(true)}
-                disabled={isRunning}
+                disabled={contentLocked}
                 className={`px-4 py-2 text-purple-600 bg-purple-50 rounded-lg text-sm font-medium hover:bg-purple-100 transition-colors ${DISABLED_ACTION_CLASS}`}
               >
                 重新输入
@@ -909,7 +1051,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 <h3 className="text-sm font-bold text-gray-800">剧本内容</h3>
                 <button
                   onClick={createEpisode}
-                  disabled={isRunning}
+                  disabled={contentLocked}
                   className={`ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                 >
                   <Plus className="w-3 h-3" />
@@ -917,7 +1059,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 </button>
                 <button
                   onClick={() => toggleDeleteMode('episodes')}
-                  disabled={isRunning}
+                  disabled={contentLocked}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                     deleteMode.episodes
                       ? 'text-red-600 bg-red-50 hover:bg-red-100'
@@ -940,7 +1082,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         key={number}
                         type="button"
                         onClick={() => onRegenerateStoryboardEpisodes?.([number])}
-                        disabled={isRunning}
+                        disabled={contentLocked}
                         title={`将重新调用模型生成第 ${number} 集分镜，其他集不受影响`}
                         className={`inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                       >
@@ -958,7 +1100,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             <div className="space-y-6">
               {data.episodes.map((ep, i) => {
                 const episodeNumber = getEpisodeNumber(ep, i);
-                const isEpisodeEditing = editingEpisodeIndex === i;
+                const isEpisodeEditing = editingEpisodeIndex === i && !scriptLocked;
                 const isSavingEpisode = savingEpisodeIndex === i;
                 return (
                 <div key={i} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow">
@@ -997,7 +1139,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                     ) : deleteMode.episodes ? (
                       <button
                         onClick={() => deleteEpisode(i)}
-                        disabled={isRunning}
+                        disabled={contentLocked}
                         className={`flex items-center justify-center w-8 h-8 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         title="删除分集"
                       >
@@ -1007,7 +1149,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => startEpisodeEdit(ep, i)}
-                          disabled={isRunning}
+                          disabled={contentLocked}
                           className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Edit3 className="w-3.5 h-3.5" />
@@ -1015,7 +1157,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         </button>
                         <button
                           onClick={() => openRevisionDialogForEpisode(episodeNumber)}
-                          disabled={isRunning}
+                          disabled={contentLocked}
                           className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-fuchsia-600 bg-fuchsia-50 hover:bg-fuchsia-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Sparkles className="w-3.5 h-3.5" />
@@ -1095,7 +1237,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 <span>本次剧本AI质检已应用，可恢复为质检前的正文。</span>
                 <button
                   onClick={() => onIntervene({ action: 'rollback_script_review' })}
-                  disabled={isRunning}
+                  disabled={contentLocked}
                   className={`rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-700 transition-colors hover:bg-amber-100 ${DISABLED_ACTION_CLASS}`}
                 >
                   恢复上版剧本
@@ -1107,7 +1249,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 {pendingReview ? (
                   <button
                     onClick={() => setDismissedReviewKey('')}
-                    disabled={isRunning}
+                    disabled={contentLocked}
                     className={`flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm ${DISABLED_ACTION_CLASS}`}
                   >
                     <ShieldCheck className="w-4 h-4" />
@@ -1116,7 +1258,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                 ) : (
                   <button
                     onClick={startScriptReview}
-                    disabled={isRunning}
+                    disabled={contentLocked}
                     className={`flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-sky-500 to-cyan-600 text-white rounded-full shadow-md hover:shadow-lg hover:from-sky-600 hover:to-cyan-700 transition-all font-medium text-sm ${DISABLED_ACTION_CLASS}`}
                   >
                     <ShieldCheck className="w-4 h-4" />
@@ -1141,7 +1283,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         <h4 className="text-sm font-semibold text-gray-700">人物</h4>
                         <button
                           onClick={createCharacter}
-                          disabled={isRunning}
+                          disabled={contentLocked}
                           className={`ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Plus className="w-3 h-3" />
@@ -1149,7 +1291,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         </button>
                         <button
                           onClick={() => toggleDeleteMode('characters')}
-                          disabled={isRunning}
+                          disabled={contentLocked}
                           className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             deleteMode.characters
                               ? 'text-red-600 bg-red-50 hover:bg-red-100'
@@ -1163,7 +1305,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <p className="-mt-1 mb-3 text-xs text-gray-400">所有的人物以及非人物主体，包括产品、logo、人物等</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                         {data.characters.map((c, i) => {
-                          const isCharacterEditing = editingCharacterIndex === i;
+                          const isCharacterEditing = editingCharacterIndex === i && !scriptLocked;
                           const isCharacterSaving = savingCharacterIndex === i;
                           return (
                             <div key={i} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition-shadow">
@@ -1204,7 +1346,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : deleteMode.characters ? (
                                   <button
                                     onClick={() => deleteCharacter(i)}
-                                    disabled={isRunning}
+                                    disabled={contentLocked}
                                     className={`flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     title="删除人物"
                                   >
@@ -1213,7 +1355,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : (
                                   <button
                                     onClick={() => startCharacterEdit(c, i)}
-                                    disabled={isRunning}
+                                    disabled={contentLocked}
                                     className={`flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                   >
                                     <Edit3 className="w-3 h-3" />修改
@@ -1258,7 +1400,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         <h4 className="text-sm font-semibold text-gray-700">场景</h4>
                         <button
                           onClick={createSetting}
-                          disabled={isRunning}
+                          disabled={contentLocked}
                           className={`ml-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                         >
                           <Plus className="w-3 h-3" />
@@ -1266,7 +1408,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                         </button>
                         <button
                           onClick={() => toggleDeleteMode('settings')}
-                          disabled={isRunning}
+                          disabled={contentLocked}
                           className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors ${
                             deleteMode.settings
                               ? 'text-red-600 bg-red-50 hover:bg-red-100'
@@ -1280,7 +1422,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                       <p className="-mt-1 mb-3 text-xs text-gray-400">背景地点图片</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                         {data.settings.map((s, i) => {
-                          const isSettingEditing = editingSettingIndex === i;
+                          const isSettingEditing = editingSettingIndex === i && !scriptLocked;
                           const isSettingSaving = savingSettingIndex === i;
                           return (
                             <div key={i} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition-shadow">
@@ -1314,7 +1456,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : deleteMode.settings ? (
                                   <button
                                     onClick={() => deleteSetting(i)}
-                                    disabled={isRunning}
+                                    disabled={contentLocked}
                                     className={`flex flex-shrink-0 items-center justify-center w-7 h-7 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                     title="删除场景"
                                   >
@@ -1323,7 +1465,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                                 ) : (
                                   <button
                                     onClick={() => startSettingEdit(s, i)}
-                                    disabled={isRunning}
+                                    disabled={contentLocked}
                                     className={`flex flex-shrink-0 items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 transition-colors ${DISABLED_ACTION_CLASS}`}
                                   >
                                     <Edit3 className="w-3 h-3" />修改
@@ -1369,6 +1511,10 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           hasPendingItems={hasPendingItems}
           hasNextStageStarted={hasNextStageStarted}
           isRunning={isRunning}
+          confirmDisabled={!castReparseReady}
+          confirmDisabledReason={castReparseReady ? '' : '人物/场景正在更新或尚未就绪，请等待完成、重试或接受旧清单'}
+          regenerateDisabled={scriptLocked}
+          regenerateDisabledReason={scriptLocked ? '剧本已进入角色阶段，如需修改请新建会话' : ''}
         />
       )}
 
@@ -1416,7 +1562,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             <div className="mt-6 flex justify-end gap-3">
               <button
                 onClick={() => setShowRevisionDialog(false)}
-                disabled={isRunning}
+                disabled={contentLocked}
                 className={`px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold ${DISABLED_ACTION_CLASS}`}
               >
                 取消
@@ -1455,14 +1601,14 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                   <div className="flex gap-2">
                     <button
                       onClick={selectAllReviewIssues}
-                      disabled={isRunning}
+                      disabled={contentLocked}
                       className={`rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200 ${DISABLED_ACTION_CLASS}`}
                     >
                       全选
                     </button>
                     <button
                       onClick={selectNoReviewIssues}
-                      disabled={isRunning}
+                      disabled={contentLocked}
                       className={`rounded-lg bg-gray-100 px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-200 ${DISABLED_ACTION_CLASS}`}
                     >
                       全不选
@@ -1493,7 +1639,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
                             type="checkbox"
                             checked={checked}
                             onChange={() => toggleReviewIssue(issue.id)}
-                            disabled={isRunning}
+                            disabled={contentLocked}
                             className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400 disabled:opacity-50"
                           />
                           <div className="min-w-0 flex-1">
@@ -1548,7 +1694,7 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
               <button
                 onClick={dismissReviewDialog}
-                disabled={isRunning}
+                disabled={contentLocked}
                 className={`px-5 py-2.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 rounded-xl text-sm font-bold ${DISABLED_ACTION_CLASS}`}
               >
                 忽略质检

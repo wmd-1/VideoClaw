@@ -118,7 +118,10 @@ def test_r08_preview_rejected_when_body_changed_while_waiting(session_dir, monke
         asyncio.run(workflow_engine.execute_stage(state, stage, {}))
 
     artifact = workflow_engine.get_state("r08_sid").artifacts["script_generation"]
-    assert artifact["episodes"] == EPISODES_B, "已保存的手改正文不能被预览回写"
+    assert artifact["episodes"] == [{
+        "episode_number": 1,
+        "content": "正文 B（用户手改）",
+    }], "已保存的手改正文不能被预览回写；嵌套派生标题按白名单剥离"
     assert "pending_revision" not in artifact
 
 
@@ -610,20 +613,23 @@ def test_r15_title_only_edit_keeps_annotations(client, session_dir):
     state = workflow_engine.get_state("r15a_sid")
     original = "小陈走进办公室，把材料放在桌上。\n小陈：材料放这儿。"
     annotations = annotate_lines(original.split("\n"), [])
-    state.artifacts["script_generation"] = {
-        "episodes": [{"episode_number": 1, "content": original, "line_start": 0, "line_end": 1}],
-        "line_annotations": annotations,
-        "scene_spans": [{"setting": "办公室", "from_line": 0, "to_line": 1}],
-        "meta": {"original_text": original},
-    }
+    def seed(state):
+        state.artifacts["script_generation"] = {
+            "episodes": [{"episode_number": 1, "content": original, "line_start": 0, "line_end": 1}],
+            "line_annotations": annotations,
+            "scene_spans": [{"setting": "办公室", "from_line": 0, "to_line": 1}],
+            "meta": {"original_text": original},
+        }
 
+    workflow_engine._mutate("r15a_sid", seed)
     response = client.patch(
         "/api/project/r15a_sid/artifact/script_generation",
         headers=headers("alice"),
-        json={"episodes": [{"episode_number": 1, "content": original, "title": "改了标题"}]},
+        json={"title": "改了标题"},
     )
     assert response.status_code == 200
     artifact = response.json()["artifact"]
+    assert artifact["title"] == "改了标题"
     assert artifact["line_annotations"] == annotations
     assert artifact["scene_spans"] == [{"setting": "办公室", "from_line": 0, "to_line": 1}]
     assert artifact["episodes"][0]["line_start"] == 0
@@ -697,15 +703,18 @@ def _seed_cast_script(session_id):
     from core.script_import import deterministic_annotations
 
     workflow_engine.create_session(session_id, {}, owner="alice")
-    state = workflow_engine.get_state(session_id)
     lines = CAST_SCRIPT.split("\n")
-    state.artifacts["script_generation"] = {
-        "episodes": [{"episode_number": 1, "content": CAST_SCRIPT, "line_start": 0, "line_end": len(lines) - 1}],
-        "line_annotations": deterministic_annotations(lines),
-        "scene_spans": [],
-        "settings": [{"name": "贷审会会议室"}, {"name": "支行办公室"}],
-        "meta": {"original_text": CAST_SCRIPT},
-    }
+
+    def seed(state):
+        state.artifacts["script_generation"] = {
+            "episodes": [{"episode_number": 1, "content": CAST_SCRIPT, "line_start": 0, "line_end": len(lines) - 1}],
+            "line_annotations": deterministic_annotations(lines),
+            "scene_spans": [],
+            "settings": [{"name": "贷审会会议室"}, {"name": "支行办公室"}],
+            "meta": {"original_text": CAST_SCRIPT},
+        }
+
+    workflow_engine._mutate(session_id, seed)
 
 
 def _patch_episode(client, session_id, content, extra=None):
@@ -849,11 +858,12 @@ def test_r15_split_line_scene_desc_updates_following_dialogue(client, session_di
 
 
 def test_r15_full_artifact_patch_cannot_restore_stale_derived(client, session_dir):
-    """完整产物 PATCH 携带旧标注/旧原文时，必须被服务端重算结果覆盖。"""
+    """派生字段整包拒绝；合法正文 PATCH 再由服务端重算标注。"""
     _seed_cast_script("r15e_sid")
+    before = workflow_engine.get_artifact_snapshot("r15e_sid", "script_generation")
     stale_annotations = [{"line": 0, "type": "heading"}]
     stale_spans = [{"setting": "旧地点", "from_line": 0, "to_line": 1}]
-    response = _patch_episode(
+    rejected = _patch_episode(
         client,
         "r15e_sid",
         CAST_EDITED,
@@ -863,6 +873,11 @@ def test_r15_full_artifact_patch_cannot_restore_stale_derived(client, session_di
             "meta": {"original_text": "旧原文"},
         },
     )
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"]["code"] == "script_field_not_writable"
+    assert workflow_engine.get_artifact_snapshot("r15e_sid", "script_generation") == before
+
+    response = _patch_episode(client, "r15e_sid", CAST_EDITED)
     assert response.status_code == 200
     artifact = response.json()["artifact"]
     assert artifact["line_annotations"] != stale_annotations

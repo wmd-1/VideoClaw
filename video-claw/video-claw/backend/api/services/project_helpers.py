@@ -133,6 +133,11 @@ async def stream_workflow_task(
         }
         if include_payload_summary:
             payload["payload_summary"] = result.get("payload")
+        if "ignored_fields" in result:
+            payload["ignored_fields"] = result.get("ignored_fields") or []
+        for key in ("cast_restored", "cast_diff", "cast_legacy"):
+            if key in result:
+                payload[key] = result[key]
         yield json.dumps(payload) + "\n"
 
     except Exception as e:
@@ -140,7 +145,12 @@ async def stream_workflow_task(
             workflow_engine.persist_session_snapshot(state.session_id)
         except Exception:
             pass
-        yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+        error = {"type": "error", "content": str(e)}
+        code = getattr(e, "code", None)
+        if code:
+            error["code"] = code
+            error["message"] = str(e)
+        yield json.dumps(error) + "\n"
 
 
 def make_cancellation(workflow_engine, session_id: str):

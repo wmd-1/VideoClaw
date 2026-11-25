@@ -1,4 +1,4 @@
-import type { ExecutionPreview, MissingInput } from '@/lib/workflowApi';
+import type { CastReparseState, CastSuggestion, ExecutionPreview, MissingInput } from '@/lib/workflowApi';
 
 export type StageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'error' | 'stopped';
 
@@ -82,4 +82,10 @@ export interface StageViewProps {
   flaggedItems?: Record<string, FlaggedItem>;
   /** 跳转到指定阶段（用于“前往重新选择/重生成”） */
   onNavigateStage?: (stage: string) => void;
+  /** 剧本锁与后台 cast 重解析的权威状态投影 */
+  scriptLocked?: boolean;
+  castReparse?: CastReparseState | null;
+  castReparseReady?: boolean;
+  castSuggestions?: CastSuggestion[];
+  castPollPaused?: boolean;
 }

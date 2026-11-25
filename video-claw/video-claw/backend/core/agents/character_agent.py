@@ -175,7 +175,7 @@ class CharacterDesignerAgent(AgentInterface):
     def _build_asset_info(self, sid: str, asset_type: str,
                           asset_id: str, name: str, desc: str,
                           selected_path: str = "", species: str = "",
-                          asset_kind: str = "") -> dict:
+                          asset_kind: str = "", description_owner: str = "model") -> dict:
         """构建单个素材的信息（含所有历史版本）"""
         versions = self._list_versions(sid, asset_type, asset_id)
         if not selected_path and versions:
@@ -185,6 +185,9 @@ class CharacterDesignerAgent(AgentInterface):
             "id": asset_id,
             "name": name,
             "description": desc,
+            "description_owner": script_revision.resolve_description_owner(
+                {"description_owner": description_owner}
+            ),
             "selected": selected_path,
             "versions": versions,
             "status": status,
@@ -250,6 +253,7 @@ class CharacterDesignerAgent(AgentInterface):
                 "id": asset_id,
                 "name": info.get("name", ""),
                 "description": info.get("description", ""),
+                "description_owner": script_revision.resolve_description_owner(info),
                 "selected": (selected_map.get("characters") or {}).get(asset_id)
                             or (existing[-1] if existing else ""),
                 "versions": existing,
@@ -264,6 +268,7 @@ class CharacterDesignerAgent(AgentInterface):
                 "id": asset_id,
                 "name": name,
                 "description": desc,
+                "description_owner": script_revision.resolve_description_owner(info if isinstance(info, dict) else {}),
                 "selected": (selected_map.get("settings") or {}).get(asset_id)
                             or (existing[-1] if existing else ""),
                 "versions": existing,
@@ -584,6 +589,7 @@ class CharacterDesignerAgent(AgentInterface):
                     "description": c.get("description", ""),
                     "species": c.get("species", ""),
                     "asset_kind": c.get("asset_kind", ""),
+                    "description_owner": script_revision.resolve_description_owner(c),
                 }
 
         sets = {}
@@ -594,6 +600,7 @@ class CharacterDesignerAgent(AgentInterface):
                     "name": s.get("name", ""),
                     "description": s.get("description", ""),
                     "asset_kind": s.get("asset_kind", ""),
+                    "description_owner": script_revision.resolve_description_owner(s),
                 }
 
         return {"characters": chars, "settings": sets}
@@ -663,6 +670,7 @@ class CharacterDesignerAgent(AgentInterface):
                             "description": c.get("description", ""),
                             "species": c.get("species", ""),
                             "asset_kind": c.get("asset_kind", ""),
+                            "description_owner": script_revision.resolve_description_owner(c),
                         }
             elif isinstance(input_chars, dict):
                 chars_desc = input_chars
@@ -675,6 +683,7 @@ class CharacterDesignerAgent(AgentInterface):
                             "name": s.get("name", ""),
                             "description": s.get("description", ""),
                             "asset_kind": s.get("asset_kind", ""),
+                            "description_owner": script_revision.resolve_description_owner(s),
                         }
             elif isinstance(input_sets, dict):
                 sets_desc = input_sets
@@ -698,6 +707,7 @@ class CharacterDesignerAgent(AgentInterface):
                                 chars_desc[asset_id]["name"] = info["name"]
                             if "description" in info:
                                 chars_desc[asset_id]["description"] = info["description"]
+                                chars_desc[asset_id]["description_owner"] = "user"
                             if "species" in info:
                                 chars_desc[asset_id]["species"] = info["species"]
                             if "asset_kind" in info:
@@ -705,6 +715,7 @@ class CharacterDesignerAgent(AgentInterface):
                         else:
                             # 简单字符串格式：直接更新 description
                             chars_desc[asset_id]["description"] = str(info)
+                            chars_desc[asset_id]["description_owner"] = "user"
 
                 # 更新场景描述 (支持两种格式：字符串或字典)
                 for asset_id, info in updated_sets.items():
@@ -714,9 +725,11 @@ class CharacterDesignerAgent(AgentInterface):
                                 sets_desc[asset_id]["name"] = info["name"]
                             if "description" in info:
                                 sets_desc[asset_id]["description"] = info["description"]
+                                sets_desc[asset_id]["description_owner"] = "user"
                         else:
                             # 简单字符串格式：直接更新 description
                             sets_desc[asset_id]["description"] = str(info)
+                            sets_desc[asset_id]["description_owner"] = "user"
 
                 logger.info(f"[CharacterAgent] Updated descriptions for session {sid}")
 
@@ -988,6 +1001,7 @@ class CharacterDesignerAgent(AgentInterface):
             item = self._build_asset_info(
                 sid, 'characters', asset_id, name, desc, sel,
                 species=str(info.get("species") or ""), asset_kind=str(info.get("asset_kind") or ""),
+                description_owner=script_revision.resolve_description_owner(info),
             )
             if rewrite_results.get("characters", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["characters"][asset_id]
@@ -1005,6 +1019,7 @@ class CharacterDesignerAgent(AgentInterface):
             item = self._build_asset_info(
                 sid, 'settings', asset_id, name, desc, sel,
                 asset_kind=str(info.get("asset_kind") or ""),
+                description_owner=script_revision.resolve_description_owner(info),
             )
             if rewrite_results.get("settings", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["settings"][asset_id]

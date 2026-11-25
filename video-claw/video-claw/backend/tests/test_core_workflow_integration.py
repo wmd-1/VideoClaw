@@ -443,9 +443,13 @@ def test_script_review_preview_lives_in_preview_layer_and_can_be_cancelled(monke
     from core import script_revision
 
     sid = _new_session()
-    base = {"episodes": [{"episode_number": 1, "content": "正文"}], "characters": [], "settings": [],
-            "meta": {"source_format": "episode"}}
+    base = {"episodes": [{"episode_number": 1, "content": "正文"}], "characters": [], "settings": []}
     workflow_engine.update_artifact(sid, "script_generation", base)
+
+    def seed_meta(state):
+        state.artifacts["script_generation"]["meta"] = {"source_format": "episode"}
+
+    workflow_engine._mutate(sid, seed_meta)
     version = StageArtifactRepo().get(sid, "script_generation")["version"]
     preview = {
         "summary": "改一处",

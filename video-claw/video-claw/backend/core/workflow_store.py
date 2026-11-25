@@ -19,6 +19,7 @@ import threading
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from core.media_refs import PUBLIC_PREFIX, ResolvedMedia, is_remote, owner_key, to_public
+from core.script_errors import InternalMetaWriteError
 
 PREVIEW_KEYS = ("pending_revision", "pending_review", "new_episodes", "new_characters", "new_settings", "sequel_idea")
 
@@ -183,15 +184,33 @@ _LEGACY_META_SHELL = {"project_params", "model_fallback", "boot_id"}
 
 
 def session_meta(meta_json: Any) -> Dict[str, Any]:
-    """会话 meta 读口径：引擎写入扁平参数；legacy 导入行是 {project_params, model_fallback, boot_id} 外壳，展开为扁平参数。"""
+    """会话 meta 读口径：展开 legacy 外壳，同时保留编排器内部键。"""
     meta = copy.deepcopy(meta_json) if isinstance(meta_json, dict) else {}
-    params = meta.get("project_params")
-    if not isinstance(params, dict) or not set(meta) <= _LEGACY_META_SHELL:
+    internal = {key: value for key, value in meta.items() if str(key).startswith("_")}
+    shell = {key: value for key, value in meta.items() if not str(key).startswith("_")}
+    params = shell.get("project_params")
+    if not isinstance(params, dict) or not set(shell) <= _LEGACY_META_SHELL:
         return meta
     flat = copy.deepcopy(params)
-    if meta.get("model_fallback"):
-        flat.setdefault("model_fallback", copy.deepcopy(meta["model_fallback"]))
+    if shell.get("model_fallback"):
+        flat.setdefault("model_fallback", copy.deepcopy(shell["model_fallback"]))
+    flat.update(copy.deepcopy(internal))
     return flat
+
+
+def public_session_meta(meta_json: Any) -> Dict[str, Any]:
+    """注入 Agent 的公开 meta：不携带 `_cast_*` 等编排器内部状态。"""
+    meta = copy.deepcopy(meta_json) if isinstance(meta_json, dict) else {}
+    return {key: value for key, value in meta.items() if not str(key).startswith("_")}
+
+
+def reject_internal_meta_fields(payload: Any) -> None:
+    """拒绝客户端载荷重新注入 `_` 前缀内部键。"""
+    if not isinstance(payload, dict):
+        return
+    fields = [str(key) for key in payload if str(key).startswith("_")]
+    if fields:
+        raise InternalMetaWriteError(fields)
 
 
 def view_layers(snapshot: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:

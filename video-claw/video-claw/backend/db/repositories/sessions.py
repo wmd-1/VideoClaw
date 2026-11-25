@@ -111,6 +111,21 @@ class SessionRepo:
                 cur.execute("SELECT session_id FROM sessions")
                 return {row["session_id"] for row in cur.fetchall()}
 
+    def list_cast_reparse_recoverable(self) -> List[str]:
+        """启动恢复用：只扫描内部重解析状态为可恢复集合的会话。"""
+        with transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT session_id
+                    FROM sessions
+                    WHERE meta_json->'_cast_reparse'->>'status'
+                      IN ('pending', 'running', 'superseded')
+                    ORDER BY session_id
+                    """
+                )
+                return [str(row["session_id"]) for row in cur.fetchall()]
+
     def delete(self, sid: str) -> bool:
         with transaction() as conn:
             with conn.cursor() as cur:

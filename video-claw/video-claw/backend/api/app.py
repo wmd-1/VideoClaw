@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 import sys
 import time
+from typing import List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
     logger.info("Result directory mounted at /code/result: %s", settings.RESULT_DIR)
     dsn = str(getattr(settings, "DATABASE_DSN", "") or "").strip()
     dispatch_runtime = None
+    cast_sync = None
     if dsn:
         # 生产契约：数据库不可用即启动失败，不做 SQLite/JSON 静默兜底。
         init_db()
@@ -105,10 +108,24 @@ async def lifespan(app: FastAPI):
         pruned = prune_refs()
         empty_dirs = prune_empty_execution_dirs()  # 启动期尚无执行：只移除空目录
         loaded = workflow_engine.load_sessions()
-        # 4.11：受管派发与自动生成共用同一单实例 loop；先恢复再开放派发。
-        from core.video_dispatch_bootstrap import build_dispatch_runtime
+        from core.cast_sync_service import CastSyncService
+
+        cast_sync = CastSyncService(
+            workflow_engine,
+            concurrency=int(getattr(settings, "CAST_SYNC_CONCURRENCY", 2)),
+            settle_seconds=float(getattr(settings, "CAST_SYNC_SETTLE_SECONDS", 1.5)),
+        )
+        workflow_engine.cast_sync_service = cast_sync
+        recovered_cast: List[str] = []
 
         try:
+            cast_sync.start()
+            recovered_cast = await asyncio.to_thread(workflow_engine.recover_cast_reparse_sessions)
+            for session_id in recovered_cast:
+                cast_sync.notify(session_id)
+            # 4.11：受管派发与自动生成共用同一单实例 loop；先恢复再开放派发。
+            from core.video_dispatch_bootstrap import build_dispatch_runtime
+
             dispatch_runtime = build_dispatch_runtime()
             if dispatch_runtime is not None:
                 from api.routers import video_resources
@@ -121,18 +138,24 @@ async def lifespan(app: FastAPI):
             # 对象操作日志清理器：启动后及每 60 秒扫描到期操作（DB 不可用时本轮跳过 ）
             cleanup_stop = start_cleanup_loop(boot_id)
         except Exception:
+            if cast_sync is not None:
+                await cast_sync.stop()
+                workflow_engine.cast_sync_service = None
             if dispatch_runtime is not None:
                 dispatch_runtime.stop()
             close_pool()
             raise
         logger.info(
-            "Startup recovery: boot_id=%s stages=%d tasks=%d refs_pruned=%d empty_dirs=%d sessions=%d",
-            boot_id, stages, tasks, pruned, empty_dirs, loaded,
+            "Startup recovery: boot_id=%s stages=%d tasks=%d refs_pruned=%d empty_dirs=%d sessions=%d cast=%d",
+            boot_id, stages, tasks, pruned, empty_dirs, loaded, len(recovered_cast),
         )
     else:
         logger.warning("database.dsn is empty; startup recovery skipped (dev compatibility only)")
         cleanup_stop = None
     yield
+    if cast_sync is not None:
+        await cast_sync.stop()
+        workflow_engine.cast_sync_service = None
     if dispatch_runtime is not None:
         from api.routers import video_resources
 

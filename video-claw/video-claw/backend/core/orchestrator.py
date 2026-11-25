@@ -18,9 +18,17 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from config import settings
-from core import media_refs, script_revision, workflow_store
+from core import media_refs, script_revision, script_guard, workflow_store
 from core.artifact_publisher import build_file_rows, new_execution_id
 from core.asset_kind import asset_kind_for
+from core.script_errors import (
+    CastReparseNotReadyError,
+    CastReparseStateError,
+    ScriptActionNotSupportedError,
+    ScriptFieldNotWritableError,
+    ScriptLockedError,
+    StoryboardIncompleteError,
+)
 from core.grounding_cache import grounding_cache
 from core.observability import call_context
 from core.language import language_from_meta, resolve_language
@@ -87,8 +95,8 @@ class WorkflowStage(str, Enum):
 def get_stage_order() -> List[WorkflowStage]:
     """按配置组装阶段顺序。
 
-    h3_rewrite.enable=true 时在「参考图」与「视频」之间注入「提示词改写」（七阶段）；
-    默认禁用时保持原六阶段（阶段不注入流程，而非注册后跳过）。
+    h3_rewrite.enable 默认开启，在「参考图」与「视频」之间注入「提示词改写」（七阶段）；
+    显式禁用时保持原六阶段（阶段不注入流程，而非注册后跳过）。
     """
     from config import Config  # 惰性导入，避免循环依赖
 
@@ -117,6 +125,9 @@ _FULL_STAGE_ORDER = [
     WorkflowStage.VIDEO_GENERATION,
     WorkflowStage.POST_PRODUCTION,
 ]
+
+SCRIPT_CONTENT_FIELDS = frozenset({"episodes", "characters", "settings"})
+
 
 SESSION_META_KEYS = (
     "idea",
@@ -366,7 +377,7 @@ STALE_REASON_SCRIPT = "script_structure_changed"
 # `status` 同样在内：执行期间上传会把条目改判 done，不收尾保护则会被本轮 payload 标回 failed
 # （有图却显示失败+重试，诱导不必要的模型调用；openspec: running-stage-write-visibility D9）。
 _USER_EDIT_FIELDS = ("selected", "name", "description", "species", "duration", "rewritten_prompt", "manual_prompt",
-                     "status")
+                     "description_owner", "status")
 
 # 后台单条重生成时按阶段保护的用户手改字段（A1b/B2）。
 # 只纳入“存在用户编辑入口且保留用户值不使下游语义失真”的字段：
@@ -447,6 +458,8 @@ class WorkflowEngine:
         # 本进程运行中的覆盖层（进度/条目预览）：只用于展示，不落库、不作成功快照
         self._overlays: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._errors: Dict[str, Optional[str]] = {}
+        # 由 lifespan 注入；正文提交成功后仅负责线程安全地唤醒调度器。
+        self.cast_sync_service: Any = None
         # 不在 import/构造期读 DB：lifespan 完成 init_db 后再调用 load_sessions()。
 
     # ──────────── DB 读模型与提交 ────────────
@@ -573,7 +586,14 @@ class WorkflowEngine:
             if before is None:
                 raise KeyError(f"Session not found: {session_id}")
             after = copy.deepcopy(before)
-            outcome = fn(after)
+            try:
+                outcome = fn(after)
+            except Exception as exc:
+                # 阶段媒体可能在提交闭包前已发布；闭包拒绝时尚无 DB 提交，
+                # 可确定补偿本批 prepared 对象。提交阶段失败仍由 PersistenceService 判定。
+                if published:
+                    self._persist.compensate(session_id, published, exc)
+                raise
             if outcome is _NO_COMMIT and not execution_deltas and not published:
                 return before, outcome
             states = execution_states(after) if callable(execution_states) else (execution_states or {})
@@ -664,6 +684,492 @@ class WorkflowEngine:
             if fresh is None:
                 raise
             return fresh
+
+    @staticmethod
+    def _cast_reparse_record(state: WorkflowState) -> Dict[str, Any]:
+        record = (state.meta or {}).get("_cast_reparse")
+        return record if isinstance(record, dict) else {}
+
+    @staticmethod
+    def _cast_body_version(state: WorkflowState) -> str:
+        artifact = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
+        return script_revision.structure_fingerprint(
+            artifact if isinstance(artifact, dict) else {}, scope="body"
+        )
+
+    @classmethod
+    def _register_cast_reparse_pending(
+        cls,
+        state: WorkflowState,
+        before_script: Optional[Dict[str, Any]],
+        after_script: Any,
+        *,
+        reason: str,
+    ) -> bool:
+        """在正文提交的同一 _mutate 闭包内登记 pending；首次生成不触发。"""
+        if before_script is None or not isinstance(after_script, dict):
+            return False
+        old_version = script_revision.structure_fingerprint(before_script, scope="body")
+        new_version = script_revision.structure_fingerprint(after_script, scope="body")
+        if old_version == new_version:
+            return False
+        previous = cls._cast_reparse_record(state)
+        try:
+            attempt = int(previous.get("attempt") or 0) + 1
+        except (TypeError, ValueError):
+            attempt = 1
+        record = {
+            "status": "pending",
+            "attempt": attempt,
+            "base_version": new_version,
+            "requested_at": time.time(),
+            "reason": reason,
+            "changed_episodes": script_revision.diff_episode_numbers(
+                before_script.get("episodes"), after_script.get("episodes")
+            ),
+        }
+        if previous.get("status") == "running":
+            record["superseded_at"] = time.time()
+            record["superseded_attempt"] = previous.get("attempt")
+        state.meta["_cast_reparse"] = record
+        state.meta.pop("_cast_suggestions", None)
+        return True
+
+    def _notify_cast_reparse(self, session_id: str) -> None:
+        service = self.cast_sync_service
+        if service is not None:
+            service.notify(session_id)
+
+    def begin_cast_reparse(
+        self, session_id: str, job_id: str, attempt: int, base_version: str
+    ) -> Optional[Dict[str, Any]]:
+        """模型调用前 CAS；返回最小 Agent 输入，不创建阶段 execution。"""
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if (
+                record.get("status") != "pending"
+                or record.get("attempt") != attempt
+                or record.get("base_version") != base_version
+            ):
+                return _NO_COMMIT
+            if self._cast_body_version(after) != base_version:
+                current_version = self._cast_body_version(after)
+                record["status"] = "superseded"
+                record["attempt"] = int(attempt) + 1
+                record["base_version"] = current_version
+                record["requested_at"] = time.time()
+                record["reason"] = "version_drift"
+                record["changed_episodes"] = copy.deepcopy(record.get("changed_episodes") or [
+                    episode.get("episode_number")
+                    for episode in (after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {}).get("episodes") or []
+                    if isinstance(episode, dict)
+                ])
+                record["active_job"] = None
+                record["superseded_at"] = time.time()
+                record["superseded_attempt"] = attempt
+                return None
+            script = after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {}
+            record["status"] = "running"
+            record["active_job"] = job_id
+            record["started_at"] = time.time()
+            record["error"] = None
+            return {
+                "session_id": session_id,
+                "job_id": job_id,
+                "attempt": attempt,
+                "base_version": base_version,
+                "script_artifact": copy.deepcopy(script),
+                "changed_episodes": copy.deepcopy(record.get("changed_episodes") or []),
+                "llm_model": str(after.meta.get("llm_model") or settings.LLM_MODEL or ""),
+                "language": after.meta.get("language"),
+            }
+
+        _state, outcome = self._mutate(session_id, apply)
+        return outcome if isinstance(outcome, dict) else None
+
+    def complete_cast_reparse(
+        self,
+        session_id: str,
+        job_id: str,
+        attempt: int,
+        base_version: str,
+        candidates: Dict[str, Any],
+    ) -> str:
+        """模型返回后的提交 CAS + 安全合并；旧任务只返回 superseded/stale。"""
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if (
+                record.get("status") != "running"
+                or record.get("active_job") != job_id
+                or record.get("attempt") != attempt
+                or record.get("base_version") != base_version
+            ):
+                current_version = self._cast_body_version(after)
+                # 新正文提交已原子登记最新 pending；旧任务只允许把带自身审计的
+                # 最新记录标为 superseded，不得覆盖其 attempt/base_version。
+                if (
+                    record.get("status") == "pending"
+                    and record.get("superseded_attempt") == attempt
+                    and int(record.get("attempt") or 0) > int(attempt)
+                    and record.get("base_version") == current_version
+                ):
+                    record["status"] = "superseded"
+                    record["active_job"] = None
+                    return "superseded"
+                return _NO_COMMIT
+            if self._cast_body_version(after) != base_version:
+                current_version = self._cast_body_version(after)
+                record["status"] = "superseded"
+                record["attempt"] = int(attempt) + 1
+                record["base_version"] = current_version
+                record["requested_at"] = time.time()
+                record["reason"] = "version_drift"
+                record["changed_episodes"] = copy.deepcopy(record.get("changed_episodes") or [
+                    episode.get("episode_number")
+                    for episode in (after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {}).get("episodes") or []
+                    if isinstance(episode, dict)
+                ])
+                record["active_job"] = None
+                record["superseded_at"] = time.time()
+                record["superseded_attempt"] = attempt
+                return "superseded"
+            script = copy.deepcopy(after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {})
+            merged = script_revision.merge_cast_reparse_candidates(script, candidates)
+            cast_payload = script_revision.sanitize_internal_cast_payload({
+                "characters": merged.get("characters") or [],
+                "settings": merged.get("settings") or [],
+            })
+            script.update(cast_payload)
+            after.artifacts[WorkflowStage.SCRIPT_GENERATION.value] = script
+            record["status"] = "done"
+            record["active_job"] = None
+            record["finished_at"] = time.time()
+            record["error"] = None
+            record["summary"] = copy.deepcopy(merged.get("summary") or {})
+            suggestions = [
+                *copy.deepcopy(merged.get("suggestions") or []),
+                *copy.deepcopy(merged.get("remove_candidates") or []),
+            ]
+            if suggestions:
+                after.meta["_cast_suggestions"] = {
+                    "base_version": base_version,
+                    "generated_at": time.time(),
+                    "items": suggestions,
+                }
+            else:
+                after.meta.pop("_cast_suggestions", None)
+            return "done"
+
+        _state, outcome = self._mutate(session_id, apply)
+        if outcome is _NO_COMMIT:
+            record = self._cast_reparse_record(self._require(session_id))
+            if record.get("attempt") != attempt or record.get("base_version") != base_version:
+                return "superseded"
+            return "stale"
+        return str(outcome)
+
+    def fail_cast_reparse(
+        self, session_id: str, job_id: str, attempt: int, base_version: str, error: str
+    ) -> str:
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if (
+                record.get("status") != "running"
+                or record.get("active_job") != job_id
+                or record.get("attempt") != attempt
+                or record.get("base_version") != base_version
+            ):
+                current_version = self._cast_body_version(after)
+                if (
+                    record.get("status") == "pending"
+                    and record.get("superseded_attempt") == attempt
+                    and int(record.get("attempt") or 0) > int(attempt)
+                    and record.get("base_version") == current_version
+                ):
+                    record["status"] = "superseded"
+                    record["active_job"] = None
+                    return "superseded"
+                return _NO_COMMIT
+            record["status"] = "failed"
+            record["active_job"] = None
+            record["finished_at"] = time.time()
+            record["error"] = str(error)
+            return "failed"
+
+        _state, outcome = self._mutate(session_id, apply)
+        return "stale" if outcome is _NO_COMMIT else str(outcome)
+
+    def recover_cast_reparse_conflict(
+        self, session_id: str, job_id: str, attempt: int, base_version: str
+    ) -> bool:
+        """提交 CAS 冲突时把仍属于本 job 的 running 恢复为 pending，供调度器短退避重排。"""
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if (
+                record.get("status") == "running"
+                and record.get("active_job") == job_id
+                and record.get("attempt") == attempt
+                and record.get("base_version") == base_version
+                and self._cast_body_version(after) == base_version
+            ):
+                record["status"] = "pending"
+                record["active_job"] = None
+                record["reason"] = "commit_conflict"
+                record["requested_at"] = time.time()
+                record["started_at"] = None
+                record["finished_at"] = None
+                record["error"] = None
+                return True
+            if (
+                record.get("status") in ("pending", "superseded")
+                and record.get("base_version") == self._cast_body_version(after)
+            ):
+                return True
+            return False
+
+        _state, outcome = self._mutate(session_id, apply)
+        return outcome is True
+
+    def promote_cast_reparse(
+        self, session_id: str, attempt: int, base_version: str
+    ) -> bool:
+        """把已持久化的 superseded 恢复为当前版本 pending，再由 worker 正常起步。"""
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if (
+                record.get("status") != "superseded"
+                or record.get("attempt") != attempt
+                or record.get("base_version") != base_version
+                or self._cast_body_version(after) != base_version
+            ):
+                return _NO_COMMIT
+            record["status"] = "pending"
+            record["active_job"] = None
+            return True
+
+        _state, outcome = self._mutate(session_id, apply)
+        return outcome is True
+
+    def apply_cast_suggestions(
+        self, session_id: str, *, ids: List[str], base_version: str, user: str
+    ) -> Dict[str, Any]:
+        """采纳当前正文版本的 cast 建议；显式确认路径，不改变 body/不触发重解析。"""
+        requested = list(dict.fromkeys(str(item) for item in ids if str(item)))
+        if not requested:
+            raise CastReparseStateError("cast_suggestion_not_found", "未选择要采纳的人物/场景建议")
+
+        def apply(after: WorkflowState) -> Any:
+            if script_guard.script_locked(after):
+                raise ScriptLockedError()
+            current_version = self._cast_body_version(after)
+            record = after.meta.get("_cast_suggestions")
+            if (
+                not isinstance(record, dict)
+                or record.get("base_version") != current_version
+                or base_version != current_version
+            ):
+                raise CastReparseStateError("cast_suggestions_stale", "人物/场景建议已过期，请刷新后重试")
+            reparse_status = self._cast_reparse_record(after).get("status")
+            if reparse_status in ("pending", "running", "superseded"):
+                raise CastReparseStateError("reparse_busy", "人物/场景正在更新，请完成或停止后再采纳建议")
+            items = [item for item in (record.get("items") or []) if isinstance(item, dict)]
+            by_id = {str(item.get("id") or ""): item for item in items}
+            missing = [item_id for item_id in requested if item_id not in by_id]
+            if missing:
+                raise CastReparseStateError("cast_suggestion_not_found", "所选人物/场景建议不存在或已处理")
+
+            script = copy.deepcopy(after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {})
+            requested_set = set(requested)
+            applied = []
+            for suggestion in items:
+                suggestion_id = str(suggestion.get("id") or "")
+                if suggestion_id not in requested_set:
+                    continue
+                kind = str(suggestion.get("kind") or "")
+                container = str(suggestion.get("container") or "")
+                if container not in ("characters", "settings"):
+                    container = "settings" if kind in ("settings", "setting") else "characters"
+                id_key = "character_id" if container == "characters" else "setting_id"
+                target_id = str(suggestion.get("item_id") or "")
+                target_name = str(suggestion.get("name") or suggestion.get("from") or "")
+                cast_items = script.get(container) if isinstance(script.get(container), list) else []
+
+                def find_target():
+                    if target_id:
+                        return next((
+                            item for item in cast_items
+                            if isinstance(item, dict)
+                            and str(item.get(id_key) or item.get("id") or "") == target_id
+                        ), None)
+                    key = script_revision.normalize_name(target_name)
+                    return next((
+                        item for item in cast_items
+                        if isinstance(item, dict) and script_revision.normalize_name(item.get("name")) == key
+                    ), None)
+
+                target = find_target()
+                if kind == "rename":
+                    if target is None:
+                        raise CastReparseStateError("cast_suggestion_not_found", "改名建议对应的人物/场景已不存在")
+                    new_name = str(suggestion.get("to") or "").strip()
+                    if not new_name:
+                        raise CastReparseStateError("cast_suggestion_not_found", "改名建议缺少新名称")
+                    new_key = script_revision.normalize_name(new_name)
+                    if any(
+                        isinstance(item, dict) and item is not target
+                        and script_revision.normalize_name(item.get("name")) == new_key
+                        for item in cast_items
+                    ):
+                        raise CastReparseStateError("cast_suggestion_conflict", "新名称已存在，请先处理重名条目")
+                    target["name"] = new_name
+                    target["description_owner"] = "model"
+                elif suggestion.get("reason") == "removed_from_body" or kind in ("remove", "removed"):
+                    if target is None:
+                        raise CastReparseStateError("cast_suggestion_not_found", "删除建议对应的人物/场景已不存在")
+                    cast_items.remove(target)
+                else:
+                    if target is None:
+                        raise CastReparseStateError("cast_suggestion_not_found", "描述建议对应的人物/场景已不存在")
+                    if "description" in suggestion:
+                        target["description"] = copy.deepcopy(suggestion.get("description"))
+                    target["description_owner"] = "model"
+                script[container] = cast_items
+                applied.append(suggestion_id)
+
+            script.update(script_revision.sanitize_internal_cast_payload(
+                script_revision.normalize_cast_owners({
+                    "characters": script.get("characters") or [],
+                    "settings": script.get("settings") or [],
+                })
+            ))
+            after.artifacts[WorkflowStage.SCRIPT_GENERATION.value] = script
+            # 已存在阶段 2 时同步描述/owner，保留资产与主键；无产物时不创建空壳。
+            self._rebuild_stage_items_from_script(after)
+            remaining = [item for item in items if str(item.get("id") or "") not in requested_set]
+            if remaining:
+                record["items"] = copy.deepcopy(remaining)
+                record["updated_at"] = time.time()
+            else:
+                after.meta.pop("_cast_suggestions", None)
+            return {
+                "artifact": copy.deepcopy(script),
+                "cast_suggestions": copy.deepcopy(remaining),
+                "applied_ids": applied,
+                "applied_by": user,
+                "applied_at": time.time(),
+            }
+
+        _state, outcome = self._mutate(session_id, apply)
+        return copy.deepcopy(outcome)
+
+    def stop_cast_reparse(
+        self, session_id: str, *, attempt: Optional[int] = None, base_version: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        if attempt is None or base_version is None:
+            snapshot = self.get_state(session_id)
+            record = self._cast_reparse_record(snapshot) if snapshot is not None else {}
+            if not record:
+                return None
+            attempt = int(record.get("attempt") or 0)
+            base_version = str(record.get("base_version") or "")
+
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if not record:
+                return _NO_COMMIT
+            if record.get("attempt") != attempt:
+                raise CastReparseStateError("cast_reparse_version_mismatch", "人物/场景更新版本已变化")
+            if record.get("base_version") != base_version:
+                raise CastReparseStateError("cast_reparse_version_mismatch", "人物/场景更新版本已变化")
+            if record.get("status") == "stopped":
+                return copy.deepcopy(record)
+            if record.get("status") not in ("pending", "running", "superseded"):
+                raise CastReparseStateError("cast_reparse_not_stoppable", "当前人物/场景更新状态不可停止")
+            record["status"] = "stopped"
+            record["active_job"] = None
+            record["finished_at"] = time.time()
+            record["error"] = None
+            return copy.deepcopy(record)
+
+        state, outcome = self._mutate(session_id, apply)
+        if outcome is _NO_COMMIT:
+            return None
+        self.cast_sync_service.stop_session(session_id) if self.cast_sync_service is not None else None
+        return copy.deepcopy(outcome)
+
+    def retry_cast_reparse(
+        self, session_id: str, *, attempt: int, base_version: str
+    ) -> Dict[str, Any]:
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if record.get("status") not in ("failed", "stopped"):
+                raise CastReparseStateError("cast_reparse_not_retryable", "仅失败或已停止的人物/场景更新可重试")
+            if record.get("attempt") != attempt or record.get("base_version") != base_version:
+                raise CastReparseStateError("cast_reparse_version_mismatch", "人物/场景更新版本已变化")
+            if self._cast_body_version(after) != base_version:
+                raise CastReparseStateError("cast_reparse_version_mismatch", "正文版本已变化，请刷新后重试")
+            record["status"] = "pending"
+            record["attempt"] = int(attempt) + 1
+            record["requested_at"] = time.time()
+            record["reason"] = "retry"
+            record["active_job"] = None
+            record["started_at"] = None
+            record["finished_at"] = None
+            record["error"] = None
+            record.pop("summary", None)
+            after.meta.pop("_cast_suggestions", None)
+            for key in (
+                "accepted_by", "accepted_at", "accepted_base_version", "accepted_attempt",
+                "superseded_at", "superseded_attempt", "interrupted_by_restart",
+            ):
+                record.pop(key, None)
+            return copy.deepcopy(record)
+
+        _state, outcome = self._mutate(session_id, apply)
+        self._notify_cast_reparse(session_id)
+        return copy.deepcopy(outcome)
+
+    def accept_cast_reparse_stale(
+        self, session_id: str, *, accepted_attempt: int, accepted_base_version: str, user: str
+    ) -> Dict[str, Any]:
+        service = self.cast_sync_service
+        if service is not None and service.has_active_or_pending(session_id):
+            raise CastReparseStateError("reparse_busy", "人物/场景更新仍在运行或等待，请先停止或等待")
+
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if record.get("status") not in ("failed", "stopped"):
+                raise CastReparseStateError("cast_reparse_not_acceptable", "仅失败或已停止的人物/场景更新可接受旧清单")
+            if record.get("attempt") != accepted_attempt:
+                raise CastReparseStateError("cast_reparse_version_mismatch", "人物/场景更新版本已变化")
+            if record.get("base_version") != accepted_base_version or self._cast_body_version(after) != accepted_base_version:
+                raise CastReparseStateError("cast_reparse_version_mismatch", "正文版本已变化，请刷新后重试")
+            record["status"] = "accepted_stale"
+            record["accepted_by"] = user
+            record["accepted_at"] = time.time()
+            record["accepted_base_version"] = accepted_base_version
+            record["accepted_attempt"] = int(accepted_attempt)
+            record["active_job"] = None
+            return copy.deepcopy(record)
+
+        _state, outcome = self._mutate(session_id, apply)
+        return copy.deepcopy(outcome)
+
+    def recover_cast_reparse_startup(self, session_id: str) -> bool:
+        def apply(after: WorkflowState) -> Any:
+            record = self._cast_reparse_record(after)
+            if record.get("status") not in ("pending", "running", "superseded"):
+                return _NO_COMMIT
+            if record.get("status") in ("running", "superseded"):
+                record["status"] = "pending"
+                record["interrupted_by_restart"] = True
+                record["active_job"] = None
+                record["started_at"] = None
+                record["finished_at"] = None
+            return True
+
+        _state, outcome = self._mutate(session_id, apply)
+        return outcome is True
 
     @staticmethod
     def _status_column(state: WorkflowState) -> str:
@@ -831,6 +1337,10 @@ class WorkflowEngine:
                 )
                 if merged_versions or "versions" in item:
                     item["versions"] = merged_versions
+                if stage == "character_design" and container in ("characters", "settings"):
+                    item["description_owner"] = script_revision.resolve_description_owner(
+                        current, default=script_revision.resolve_description_owner(item)
+                    )
             # 执行期间新写入的条目（committed 有、预览无、基线也无）MUST 可见；
             # 基线有而预览无 = 本轮主动排除，MUST NOT 回填（同 _prefer_user_edits 判据）
             present = {item.get("id") for item in preview_items if isinstance(item, dict)}
@@ -872,6 +1382,29 @@ class WorkflowEngine:
                 annotate_regeneration(data.get("artifacts") or {}, getattr(state, "meta", None))
             except Exception as exc:  # noqa: BLE001 - 派生失败不影响快照
                 logger.warning("needs_regeneration 派生失败：%s", exc)
+        # 内部运行态只通过稳定顶层投影暴露，meta 保持 Agent/public 口径。
+        reparse = self._cast_reparse_record(state)
+        reparse_fields = (
+            "status", "base_version", "attempt", "error", "accepted_base_version",
+            "accepted_attempt", "accepted_by", "accepted_at", "summary", "reason",
+            "changed_episodes", "requested_at", "started_at", "finished_at",
+            "superseded_at", "superseded_attempt", "interrupted_by_restart",
+        )
+        data["cast_reparse"] = (
+            {key: copy.deepcopy(reparse.get(key)) for key in reparse_fields}
+            if reparse else None
+        )
+        suggestions = (state.meta or {}).get("_cast_suggestions")
+        current_version = self._cast_body_version(state)
+        locked = script_guard.script_locked(state)
+        data["cast_suggestions"] = (
+            copy.deepcopy(suggestions.get("items") or [])
+            if not locked and isinstance(suggestions, dict) and suggestions.get("base_version") == current_version
+            else []
+        )
+        data["script_locked"] = locked
+        data["cast_reparse_ready"] = script_guard.cast_reparse_ready(state)
+        data["meta"] = workflow_store.public_session_meta(workflow_store.session_meta(state.meta))
         return data
 
     # ──────────── 会话读取 ────────────
@@ -1047,18 +1580,41 @@ class WorkflowEngine:
             ("language", "language_source"),
         )
 
+    @staticmethod
+    def _validate_stage_entry(state: WorkflowState, stage: str, intervention: Any = None) -> None:
+        if stage == WorkflowStage.SCRIPT_GENERATION.value:
+            if script_guard.script_locked(state) and not WorkflowEngine._is_preview_only_delete(intervention):
+                raise ScriptLockedError()
+            return
+        if stage in script_guard.DOWNSTREAM_STAGES and not script_guard.cast_reparse_ready(state):
+            raise CastReparseNotReadyError()
+
+    @staticmethod
+    def _is_preview_only_delete(modifications: Any) -> bool:
+        if not isinstance(modifications, dict) or modifications.get("action") != "delete_continue":
+            return False
+        if set(modifications) - {"action", "pending_revision", "pending_review"}:
+            return False
+        return all(modifications.get(key) is None for key in ("pending_revision", "pending_review"))
+
     def prepare_stage_execution(self, session_id: str, stage: str, body: Dict[str, Any]) -> tuple[WorkflowState, Dict[str, Any]]:
         """Build stage input from the committed meta without exposing mutable state to routers.
 
         媒体物化不在这里做：execute_stage 在完整快照注入后按 D14 消费计划只物化实际读取的字段。
         """
         validate_upload_identifier(str(session_id), "session_id")
+        input_data = copy.deepcopy(body) if isinstance(body, dict) else {}
+        state = self.get_state(session_id)
+        if state is None:
+            raise KeyError(f"Session not found: {session_id}")
+        workflow_store.reject_internal_meta_fields(input_data)
+        # 门禁必须先于种子化/语言回填等写操作，失败请求不得留下任何派生产物。
+        self._validate_stage_entry(state, stage)
         self._ensure_stage_seeded(session_id, stage)
         self._ensure_session_language(session_id)
         state = self.get_or_create_state(session_id)
-        input_data = copy.deepcopy(body) if isinstance(body, dict) else {}
         input_data["session_id"] = session_id
-        for key, value in copy.deepcopy(state.meta).items():
+        for key, value in copy.deepcopy(workflow_store.public_session_meta(state.meta)).items():
             if value is not None and (key not in input_data or not input_data[key]):
                 input_data[key] = value
         return state, input_data
@@ -1070,19 +1626,29 @@ class WorkflowEngine:
         modifications: Dict[str, Any],
     ) -> tuple[WorkflowState, Dict[str, Any]]:
         """Build intervention input from the latest committed artifact/meta snapshot."""
+        modifications = copy.deepcopy(modifications) if isinstance(modifications, dict) else {}
         state = self.get_state(session_id)
         if not state:
             raise KeyError(f"Session not found: {session_id}")
+        workflow_store.reject_internal_meta_fields(modifications)
+        if modifications.get("action") == "reparse_cast":
+            raise ScriptActionNotSupportedError("reparse_cast")
+        if stage == WorkflowStage.SCRIPT_GENERATION.value:
+            if script_guard.script_locked(state) and not self._is_preview_only_delete(modifications):
+                raise ScriptLockedError()
+        elif stage in script_guard.DOWNSTREAM_STAGES and not script_guard.cast_reparse_ready(state):
+            raise CastReparseNotReadyError()
         self._ensure_stage_seeded(session_id, stage)
         self._ensure_session_language(session_id)
         state = self._require(session_id)
         current_artifact = copy.deepcopy(state.artifacts.get(stage, {}))
         input_data = current_artifact if isinstance(current_artifact, dict) else {}
         input_data["session_id"] = session_id
-        for key, value in copy.deepcopy(state.meta).items():
+        for key, value in copy.deepcopy(workflow_store.public_session_meta(state.meta)).items():
             if value is not None and key not in input_data:
                 input_data[key] = value
-        input_data.update(modifications or {})
+        input_data.update(modifications)
+        workflow_store.reject_internal_meta_fields(input_data)
         return state, input_data
 
     @staticmethod
@@ -1158,6 +1724,7 @@ class WorkflowEngine:
                 "name": char.get("name", ""),
                 "description": char.get("description", ""),
                 "species": char.get("species", ""),
+                "description_owner": script_revision.resolve_description_owner(char),
                 "asset_kind": asset_kind_for(char.get("asset_kind") or char.get("species"), container="characters"),
                 "selected": "",
                 "versions": [],
@@ -1179,6 +1746,7 @@ class WorkflowEngine:
                 "id": setting_id,
                 "name": setting.get("name", ""),
                 "description": setting.get("description", ""),
+                "description_owner": script_revision.resolve_description_owner(setting),
                 "asset_kind": asset_kind_for(setting.get("asset_kind") or setting.get("species"), container="settings"),
                 "selected": "",
                 "versions": [],
@@ -1270,6 +1838,9 @@ class WorkflowEngine:
                     "id": item_id,
                     "name": name,
                     "description": item.get("description", ""),
+                    "description_owner": script_revision.resolve_description_owner(
+                        item, default=script_revision.resolve_description_owner(previous)
+                    ),
                     "selected": previous.get("selected", ""),
                     "versions": copy.deepcopy(previous.get("versions") or []),
                     "status": previous.get("status", "pending"),
@@ -1554,6 +2125,13 @@ class WorkflowEngine:
         return copy.deepcopy(self._view_dict(state, annotate=False)["status"])
 
     def stop_session(self, session_id: str):
+        if self.cast_sync_service is not None:
+            self.cast_sync_service.stop_session(session_id)
+        state = self.get_state(session_id)
+        if state is not None and self._cast_reparse_record(state).get("status") in (
+            "pending", "running", "superseded"
+        ):
+            self.stop_cast_reparse(session_id)
         self.get_stop_event(session_id).set()
         # 执行级令牌同样置位：会话级事件会被下一个 /execute、/intervene 复位，
         # 在途执行只认自己的令牌才能保证“停止后立即重做”不会复活旧执行。
@@ -1640,70 +2218,84 @@ class WorkflowEngine:
             return None
 
     # ──────────── 跨阶段同步逻辑 ────────────
+    @staticmethod
+    def _writeback_character_cast_to_script(state: WorkflowState, payload: Any) -> None:
+        """阶段 2 → 剧本的受信 cast 回写：只改名称/描述/物种/owner，不碰正文。"""
+        if not isinstance(payload, dict):
+            return
+        script_art = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
+        if not isinstance(script_art, dict):
+            return
+        char_by_id = {
+            item.get("id"): item for item in (payload.get("characters") or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        setting_by_id = {
+            item.get("id"): item for item in (payload.get("settings") or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        for char in script_art.get("characters") or []:
+            if not isinstance(char, dict):
+                continue
+            source = char_by_id.get(script_revision.item_id(char, "character_id", "char"))
+            if not source:
+                continue
+            description_changed = (
+                source.get("description") not in (None, "")
+                and str(source.get("description")) != str(char.get("description") or "")
+            )
+            for key in ("name", "description", "species"):
+                if source.get(key):
+                    char[key] = copy.deepcopy(source[key])
+            char["description_owner"] = script_revision.resolve_description_owner(
+                source, default="user" if description_changed else script_revision.resolve_description_owner(char)
+            )
+        for setting in script_art.get("settings") or []:
+            if not isinstance(setting, dict):
+                continue
+            source = setting_by_id.get(script_revision.item_id(setting, "setting_id", "set"))
+            if not source:
+                continue
+            description_changed = (
+                source.get("description") not in (None, "")
+                and str(source.get("description")) != str(setting.get("description") or "")
+            )
+            for key in ("name", "description"):
+                if source.get(key):
+                    setting[key] = copy.deepcopy(source[key])
+            setting["description_owner"] = script_revision.resolve_description_owner(
+                source, default="user" if description_changed else script_revision.resolve_description_owner(setting)
+            )
+
+    def apply_cast_reparse_writeback(self, session_id: str, cast_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """重解析结果的受信内部提交；仅供内部链路/测试，不得作为用户写入口。"""
+        cast_payload = script_revision.normalize_cast_owners(
+            script_revision.sanitize_internal_cast_payload(cast_payload)
+        )
+        if not cast_payload:
+            raise ValueError("cast 重解析写回载荷不能为空")
+
+        def apply(after: WorkflowState) -> None:
+            script = copy.deepcopy(after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {})
+            if not isinstance(script, dict):
+                script = {}
+            for key, value in cast_payload.items():
+                script[key] = copy.deepcopy(value)
+            # 专用路径不调用 _sync_script_structure，也不登记 pending：body 指纹不变。
+            after.artifacts[WorkflowStage.SCRIPT_GENERATION.value] = script
+
+        state, _ = self._mutate(session_id, apply)
+        return copy.deepcopy(state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value))
+
     def _sync_artifacts_cross_stages(self, state: WorkflowState, stage: WorkflowStage, payload: Dict):
-        """
-        跨阶段数据同步钩子：当某个阶段产生新数据时，自动推送到后续阶段。
-        例如：剧本续写产生的新角色/分镜，自动同步到 Stage 2 和 Stage 3。
-        """
+        """跨阶段同步钩子；confirm_continue 只写剧本，不预建下游产物。"""
         if not isinstance(payload, dict):
             return
 
-        # 案例 1: 剧本续写确认 (Script Confirmation)
+        # confirm_continue 的 episodes/characters/settings 已在剧本 payload 中追加；
+        # 此处不再创建 character_design/storyboard 空壳，进入对应阶段时再种子化。
         if stage == WorkflowStage.SCRIPT_GENERATION:
-            # 获取合并后的角色、场景和剧集
-            new_chars = payload.get("new_characters", [])
-            new_settings = payload.get("new_settings", [])
-            new_episodes = payload.get("new_episodes", [])
-            # 如果没有新增剧集数据，无需同步到 Stage 2 和 3
-            if not new_episodes: 
-                return 
-            
-            # (A) 同步到第二阶段 (角色设计)
-            if new_chars or new_settings:
-                # 注意：WorkflowStage.CHARACTER_DESIGN 是 Enum，这里需要使用 .value
-                char_stage_key = WorkflowStage.CHARACTER_DESIGN.value
-                char_art = state.artifacts.get(char_stage_key)
-                if not isinstance(char_art, dict):
-                    char_art = {"characters": [], "settings": [], "version": 1}
-                
-                existing_chars = char_art.get("characters", [])
-                for nc in new_chars:
-                    if not any(c.get("id") == nc.get("character_id") for c in existing_chars):
-                        existing_chars.append({
-                            "id": nc.get("character_id"), "name": nc.get("name"), "description": nc.get("description"),
-                            "selected": "", "versions": []
-                        })
-                char_art["characters"] = existing_chars
-                
-                existing_sets = char_art.get("settings", [])
-                for ns in new_settings:
-                    if not any(s.get("id") == ns.get("setting_id") for s in existing_sets):
-                        existing_sets.append({
-                            "id": ns.get("setting_id"), "name": ns.get("name"), "description": ns.get("description"),
-                            "selected": "", "versions": []
-                        })
-                char_art["settings"] = existing_sets
-                state.artifacts[char_stage_key] = char_art
-
-            # (B) 同步到第三阶段 (分镜设计)
-            if new_episodes:
-                story_stage_key = WorkflowStage.STORYBOARD.value
-                story_art = state.artifacts.get(story_stage_key)
-                if not isinstance(story_art, dict):
-                    story_art = {"episodes": [], "version": 1}
-                
-                existing_eps = story_art.get("episodes", [])
-                for ne in new_episodes:
-                    ep_num = ne.get("episode_number")
-                    if not any(e.get("episode_number") == ep_num for e in existing_eps):
-                        existing_eps.append({
-                            "episode_number": ep_num,
-                            "episode_title": ne.get("act_title") or f"第{ep_num}集",
-                            "segments": []
-                        })
-                existing_eps.sort(key=lambda x: x.get("episode_number", 0))
-                story_art["episodes"] = existing_eps
-                state.artifacts[story_stage_key] = story_art
+            return
 
         # 案例 2: 分镜生成或修改同步到第四、第五阶段 (Storyboard -> Ref/Video)
         if stage == WorkflowStage.STORYBOARD:
@@ -1818,40 +2410,6 @@ class WorkflowEngine:
                         if isinstance(item, dict) and item.get("id") in synced_ids and item.get("status") == "done":
                             item["status"] = "pending"
                     state.artifacts[pr_key] = pr_art
-
-        # 案例 3: 角色/场景描述修改同步回剧本元数据，保证后续阶段读到用户最新描述。
-        if stage == WorkflowStage.CHARACTER_DESIGN:
-            script_art = state.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value)
-            if not isinstance(script_art, dict):
-                return
-
-            char_by_id = {
-                c.get("id"): c for c in payload.get("characters", [])
-                if isinstance(c, dict) and c.get("id")
-            }
-            setting_by_id = {
-                s.get("id"): s for s in payload.get("settings", [])
-                if isinstance(s, dict) and s.get("id")
-            }
-
-            for char in script_art.get("characters", []):
-                if not isinstance(char, dict):
-                    continue
-                # 与种子化/取数同源：剧本条目缺主键时按名称派生，否则描述永远回写不到剧本
-                source = char_by_id.get(script_revision.item_id(char, "character_id", "char"))
-                if source:
-                    for key in ("name", "description", "species"):
-                        if source.get(key):
-                            char[key] = source[key]
-
-            for setting in script_art.get("settings", []):
-                if not isinstance(setting, dict):
-                    continue
-                source = setting_by_id.get(script_revision.item_id(setting, "setting_id", "set"))
-                if source:
-                    for key in ("name", "description"):
-                        if source.get(key):
-                            setting[key] = source[key]
 
     def _recalculate_all_statuses(self, state: WorkflowState):
         """
@@ -2068,6 +2626,10 @@ class WorkflowEngine:
                     WorkflowEngine._apply_protected_fields(
                         merged_item, current, item, base_item, protected_fields
                     )
+                    if key in ("characters", "settings"):
+                        merged_item["description_owner"] = script_revision.resolve_description_owner(
+                            current, default=script_revision.resolve_description_owner(item)
+                        )
                     if merged_item.get("selected") and item.get("status") in {"done", "failed"}:
                         merged_item["status"] = "done"
                     by_id[item_id] = merged_item
@@ -2080,6 +2642,10 @@ class WorkflowEngine:
                     WorkflowEngine._apply_protected_fields(
                         merged_item, current, item, base_item, protected_fields
                     )
+                    if key in ("characters", "settings"):
+                        merged_item["description_owner"] = script_revision.resolve_description_owner(
+                            current, default=script_revision.resolve_description_owner(item)
+                        )
                     if merged_item.get("selected") and item.get("status") in {"done", "failed"}:
                         merged_item["status"] = "done"
                     if merged_versions:
@@ -2232,7 +2798,7 @@ class WorkflowEngine:
             inputs = await asyncio.to_thread(self._materialize_inputs, run, view, input_data, user, history)
             run.publisher.runtime_map.update(inputs.runtime_map)
 
-            input_data["_session_meta"] = copy.deepcopy(view.meta)
+            input_data["_session_meta"] = copy.deepcopy(workflow_store.public_session_meta(view.meta))
             input_data["_session_artifacts"] = inputs.runtime
             input_data["_runtime_map"] = dict(inputs.runtime_map)
             # 阶段执行必须携带会话归属：上传文档等用户输入的 owner 校验依赖它
@@ -2334,6 +2900,7 @@ class WorkflowEngine:
                 run.active_registered = True
             try:
                 before = self._require(sid)
+                self._validate_stage_entry(before, stage.value, run.intervention)
                 stale = before.executions.get(stage.value)
                 if isinstance(stale, dict) and stale.get("status") == "running" and stale.get("execution_id"):
                     # 本进程内未收尾的旧执行（如上次结束提交失败）：先以 interrupted 结束
@@ -2343,7 +2910,16 @@ class WorkflowEngine:
                     }})
 
                 def start(after: WorkflowState) -> None:
-                    after.current_stage = stage
+                    # 提交级复检：prepare 之后可能已被其它写入推进到下游或登记新正文版本。
+                    self._validate_stage_entry(after, stage.value, run.intervention)
+                    locked_preview_delete = (
+                        stage == WorkflowStage.SCRIPT_GENERATION
+                        and self._is_preview_only_delete(run.intervention)
+                        and script_guard.script_locked(after)
+                    )
+                    # 锁态 delete_continue 只丢弃预览，不得把停点退回剧本而解除锁。
+                    if not locked_preview_delete:
+                        after.current_stage = stage
                     after.status[stage.value] = "running"
                     # 归属凭据与“真正持有执行权”同生命周期（D6）
                     after.boot_id = self._boot_id
@@ -2640,6 +3216,7 @@ class WorkflowEngine:
         stage = run.stage
         stage_key = stage.value
         requires_intervention = bool(result.get("requires_intervention", False))
+        cast_reparse_requested = False
         if run.preempted or not self._owns_current_execution(run):
             # 被新执行抢占：迟到收尾一律丢弃（不写状态、不覆盖产物）
             run.discarded = True
@@ -2652,15 +3229,37 @@ class WorkflowEngine:
         stop_requested = run.stop_event.is_set()
 
         def apply(after: WorkflowState) -> None:
-            nonlocal payload
+            nonlocal payload, cast_reparse_requested
             # 停止态改写的判定基准：必须在重置 running 与重算之前取，
             # 重算会把 stopped 归一为 waiting/completed（“停止不是粘滞状态”）。
             status_before = after.status.get(stage_key)
             before_script = None
             if stage == WorkflowStage.SCRIPT_GENERATION:
                 payload = self._drop_injected_params(after.artifacts.get(stage_key), payload)
+                if isinstance(payload, dict):
+                    cast = script_revision.normalize_cast_owners({
+                        "characters": payload.get("characters") or [],
+                        "settings": payload.get("settings") or [],
+                    })
+                    if "characters" in payload:
+                        payload["characters"] = cast["characters"]
+                    if "settings" in payload:
+                        payload["settings"] = cast["settings"]
                 # 应用修订后的下游同步与手动 PATCH 走同一收尾：快照 MUST 在产物被覆写前取
                 existing_script = after.artifacts.get(stage_key)
+                if script_guard.script_locked(after):
+                    preview_only = self._is_preview_only_delete(run.intervention)
+                    if isinstance(payload, dict) and isinstance(existing_script, dict):
+                        ignored = set(workflow_store.PREVIEW_KEYS) | {
+                            "new_episodes", "new_characters", "new_settings", "sequel_idea",
+                        }
+                        before = {key: value for key, value in existing_script.items() if key not in ignored}
+                        incoming = {key: value for key, value in payload.items() if key not in ignored}
+                        preview_only = preview_only and before == incoming
+                    else:
+                        preview_only = False
+                    if not preview_only:
+                        raise ScriptLockedError()
                 before_script = (
                     script_revision.structure_snapshot(existing_script)
                     if isinstance(existing_script, dict)
@@ -2718,7 +3317,10 @@ class WorkflowEngine:
                     payload = self._prefer_user_edits(
                         stage_key, run.start_artifacts.get(stage_key), after.artifacts.get(stage_key), payload,
                     )
-                self._sync_artifacts_cross_stages(after, stage, payload)
+                if stage == WorkflowStage.CHARACTER_DESIGN:
+                    self._writeback_character_cast_to_script(after, payload)
+                else:
+                    self._sync_artifacts_cross_stages(after, stage, payload)
                 # 阶段完成时保留失败条目的 error_type/error（payload 未携带时从上一版产物覆盖）
                 self._preserve_item_error_fields(after.artifacts.get(stage_key), payload, stage)
                 after.artifacts[stage_key] = payload
@@ -2742,6 +3344,12 @@ class WorkflowEngine:
             # 的处理会不一致（修订路径会误标）
             if stage == WorkflowStage.SCRIPT_GENERATION and result.get("revision_applied"):
                 self._sync_script_structure(after, before_script, baseline=status_baseline)
+            if stage == WorkflowStage.SCRIPT_GENERATION:
+                action = (run.intervention or {}).get("action") if isinstance(run.intervention, dict) else None
+                cast_reparse_requested = self._register_cast_reparse_pending(
+                    after, before_script, after.artifacts.get(stage_key),
+                    reason=str(action or "script_generation"),
+                )
             # 分镜显式重跑：清理该集已成孤儿的下游条目引用，并把参考图/改写/视频标为待重新确认。
             # “旧 segments”以执行开始时的快照为准：运行中的 assets_preview 会先把已提交
             # 产物刷成新集，拿收尾时的实时 artifact 判孤儿会落空。
@@ -2788,6 +3396,8 @@ class WorkflowEngine:
                 execution_states=execution_states, publisher=run.publisher, publish_stage=stage_key,
             )
         run.finished = True
+        if cast_reparse_requested:
+            self._notify_cast_reparse(run.session_id)
         return state
 
     def _fail_stage(self, run: "_StageRun", error: Optional[str],
@@ -2915,6 +3525,10 @@ class WorkflowEngine:
                     elif WorkflowEngine._field_edited_by_user(current, original, field):
                         item[field] = copy.deepcopy(current[field])
                 item["versions"] = WorkflowEngine._merge_asset_versions(current.get("versions"), item.get("versions"))
+                if stage == "character_design" and container in ("characters", "settings"):
+                    item["description_owner"] = script_revision.resolve_description_owner(
+                        current, default=script_revision.resolve_description_owner(item)
+                    )
             present = {item.get("id") for item in items if isinstance(item, dict)}
             for item_id, current in latest_items.items():
                 if item_id not in present and item_id not in base_items:
@@ -2961,6 +3575,17 @@ class WorkflowEngine:
             # waiting/completed/reconfirm：用户确认后直接进入下一阶段
             # reconfirm 的语义是“接受现有产物并继续”：不重跑、不清空产物
             if current_status in ("waiting", "completed", "session_completed", STATUS_RECONFIRM):
+                if target_str == WorkflowStage.SCRIPT_GENERATION.value and not script_guard.cast_reparse_ready(after):
+                    raise CastReparseNotReadyError()
+                if target_str == WorkflowStage.STORYBOARD.value:
+                    coverage = script_revision.storyboard_coverage(
+                        after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {},
+                        after.artifacts.get(WorkflowStage.STORYBOARD.value) or {},
+                    )
+                    if not coverage["complete"]:
+                        raise StoryboardIncompleteError(
+                            coverage["missing_episodes"], coverage["empty_episodes"]
+                        )
                 # 参考图阶段：非 reference 模式且无可用选中图时，拒绝直接置为已完成；
                 # 否则“继续”会绕过“切回首帧后必须重新生成分镜图”的要求（design D7）
                 if target_str == WorkflowStage.REFERENCE_GENERATION.value:
@@ -3018,8 +3643,11 @@ class WorkflowEngine:
     def update_artifact(self, session_id: str, stage: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """Apply a user edit (plus cross-stage sync) and commit it in one transaction."""
         sync_info: Dict[str, Any] = {}
+        ignored_fields: List[str] = []
+        cast_reparse_requested = False
 
         def apply(after: WorkflowState) -> None:
+            nonlocal ignored_fields, cast_reparse_requested
             # 变更前快照 MUST 在就地合并之前取（_apply_artifact_update 直接改 state 里的产物）；
             # 尚无剧本产物时传 None，首次写入不算“相对旧输入已变”
             previous_art = (
@@ -3034,15 +3662,29 @@ class WorkflowEngine:
             )
             # 阶段状态基线同样要在任何重算之前取
             status_baseline = dict(after.status)
-            self._apply_artifact_update(after, stage, copy.deepcopy(body) if isinstance(body, dict) else {})
+            patch = copy.deepcopy(body) if isinstance(body, dict) else {}
+            if stage == WorkflowStage.SCRIPT_GENERATION.value:
+                current_script = after.artifacts.get(stage)
+                patch, ignored_fields = script_revision.sanitize_script_patch(
+                    current_script if isinstance(current_script, dict) else {}, patch
+                )
+                if SCRIPT_CONTENT_FIELDS & set(patch) and script_guard.script_locked(after):
+                    raise ScriptLockedError()
+            self._apply_artifact_update(after, stage, patch)
             self._recalculate_all_statuses(after)
             # 下游同步与标记 MUST 排在重算之后，否则标记会被“产物完整即 completed”冲回
-            touched_cast = isinstance(body, dict) and bool({"characters", "settings"} & set(body))
+            touched_cast = isinstance(patch, dict) and bool({"characters", "settings"} & set(patch))
             sync_info.update(self._sync_script_structure(
                 after, before_script, force_cast_sync=touched_cast, baseline=status_baseline,
             ) or {})
+            if stage == WorkflowStage.SCRIPT_GENERATION.value:
+                cast_reparse_requested = self._register_cast_reparse_pending(
+                    after, before_script, after.artifacts.get(stage), reason="manual_edit"
+                )
 
         state, _ = self._mutate(session_id, apply, publish_stage=stage)
+        if cast_reparse_requested:
+            self._notify_cast_reparse(session_id)
         view = self._view_dict(state)
         response: Dict[str, Any] = {
             "status": "ok",
@@ -3053,6 +3695,7 @@ class WorkflowEngine:
             # 形状稳定：未发生结构变更时也返回空列表/False，前端无需区分键存在性
             response["stale_storyboards"] = list(sync_info.get("stale_storyboards") or [])
             response["stale_final_videos"] = bool(sync_info.get("stale_final_videos"))
+            response["ignored_fields"] = ignored_fields
         return response
 
     @staticmethod
@@ -3211,6 +3854,13 @@ class WorkflowEngine:
                             current.get("versions"),
                             incoming.get("versions"),
                         )
+                        if stage == "character_design" and list_key in ("characters", "settings"):
+                            if not current:
+                                merged["description_owner"] = "user"
+                            elif str(merged.get("description") or "") != str(current.get("description") or ""):
+                                merged["description_owner"] = "user"
+                            else:
+                                merged["description_owner"] = script_revision.resolve_description_owner(current)
                         if stage == "video_generation" and "manual_prompt" in incoming:
                             self._stamp_manual_prompt(state, merged, item_id)
                         if current.get("selected") and incoming.get("status") in {"failed", "pending"}:
@@ -3508,6 +4158,20 @@ class WorkflowEngine:
         raise ValueError("Unsupported upload target")
 
     # ──────────── 会话持久化 ────────────
+
+    def recover_cast_reparse_sessions(self) -> List[str]:
+        """启动扫描内部状态并逐会话经 _mutate 归一；不直接改写 JSONB。"""
+        from db.repositories.sessions import SessionRepo
+
+        recovered = []
+        for session_id in SessionRepo().list_cast_reparse_recoverable():
+            try:
+                if self.recover_cast_reparse_startup(session_id):
+                    recovered.append(session_id)
+            except KeyError:
+                # 扫描与恢复之间会话可能已被删除；不阻断其它会话启动。
+                continue
+        return recovered
 
     def load_sessions(self) -> int:
         """lifespan 入口：只恢复上一进程遗留的 running；会话按需从 DB 懒加载（不预读全量、不读 JSON）。"""

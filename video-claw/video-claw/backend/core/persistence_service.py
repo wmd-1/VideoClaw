@@ -105,7 +105,7 @@ class PersistenceService:
         self._locks_guard = threading.Lock()
 
     @staticmethod
-    def _compensate(session_id: str, published: Dict[str, Any], exc: BaseException) -> None:
+    def compensate(session_id: str, published: Dict[str, Any], exc: BaseException) -> None:
         """补偿只附加诊断，绝不替换原异常（调用方依赖其类型做合并/重试）。"""
         try:
             issues = abort_publication(published)
@@ -160,7 +160,7 @@ class PersistenceService:
         except _DEFINITE_FAILURES as exc:
             self.cache.evict(session_id)
             if published:
-                self._compensate(session_id, published, exc)
+                self.compensate(session_id, published, exc)
             raise
         except Exception as exc:
             self.cache.evict(session_id)
@@ -173,7 +173,7 @@ class PersistenceService:
                 self._install(session_id, snapshot)
                 return snapshot
             if outcome == "rolled_back":
-                self._compensate(session_id, published, exc)
+                self.compensate(session_id, published, exc)
                 raise
             raise CommitOutcomeUnknown(
                 f"commit outcome unknown for {session_id}; objects left for cleanup: {exc}", published,

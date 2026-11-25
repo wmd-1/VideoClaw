@@ -9,6 +9,7 @@ import {
 import type { StageViewProps } from './types';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
+import { getStoryboardCoverage, type ScriptEpisodeLike } from '@/lib/storyboardCoverage';
 
 // ─── 类型定义 ───
 
@@ -33,6 +34,8 @@ interface Episode {
   episode_number: number;
   episode_title: string;
   segments: Segment[];
+  /** 由剧本派生的只读待生成占位，不写入 storyboard artifact */
+  placeholder?: boolean;
   /** 导入质检给出的本集建议总时长（无质检时缺省） */
   suggested_total_seconds?: number | null;
 }
@@ -57,7 +60,9 @@ export default function StoryboardStage({
   showConfirm, 
   isRunning, 
   hasPendingItems,
-  hasNextStageStarted
+  hasNextStageStarted,
+  scriptArtifact,
+  castReparseReady = true
 }: StageViewProps) {
   const artifactData = (state.artifact ?? {}) as { episodes?: Episode[]; payload?: { episodes?: Episode[] } };
 
@@ -67,6 +72,33 @@ export default function StoryboardStage({
     if (artifactData?.payload?.episodes) return artifactData.payload.episodes;
     return [];
   }, [artifactData]);
+
+  const scriptEpisodes = useMemo(() => {
+    const artifact = (scriptArtifact || {}) as { episodes?: ScriptEpisodeLike[] };
+    return Array.isArray(artifact.episodes) ? artifact.episodes : [];
+  }, [scriptArtifact]);
+
+  const coverage = useMemo(() => getStoryboardCoverage(scriptEpisodes, episodes), [scriptEpisodes, episodes]);
+  const displayEpisodes = useMemo(() => {
+    const present = new Set(episodes.map(episode => Number(episode.episode_number)));
+    const placeholders: Episode[] = scriptEpisodes
+      .filter(episode => !present.has(Number(episode.episode_number ?? episode.act_number)))
+      .map(episode => {
+        const number = Number(episode.episode_number ?? episode.act_number);
+        return {
+          episode_number: number,
+          episode_title: episode.act_title || `第${number}集`,
+          segments: [],
+          placeholder: true,
+        };
+      });
+    return [...episodes, ...placeholders].sort((a, b) => a.episode_number - b.episode_number);
+  }, [episodes, scriptEpisodes]);
+  const confirmDisabledReason = [
+    ...(!castReparseReady ? ['人物/场景正在更新或尚未就绪，请等待完成、重试或接受旧清单'] : []),
+    ...(coverage.missingEpisodes.length ? [`缺少第 ${coverage.missingEpisodes.join('、')} 集分镜`] : []),
+    ...(coverage.emptyEpisodes.length ? [`第 ${coverage.emptyEpisodes.join('、')} 集分镜为空`] : []),
+  ].join('；');
 
   const [isEditing, setIsEditing] = useState(false);
   const [editMode, setEditMode] = useState<'structured' | 'raw'>('structured');
@@ -155,8 +187,8 @@ export default function StoryboardStage({
 
   // ─── 渲染部分 ───
 
-  const episodesToRender = isEditing ? editEpisodes : episodes;
-  const hasEpisodes = episodes.length > 0;
+  const episodesToRender = isEditing ? editEpisodes : displayEpisodes;
+  const hasEpisodes = displayEpisodes.length > 0;
 
   // 计算统计数据
   const stats = useMemo(() => {
@@ -234,9 +266,22 @@ export default function StoryboardStage({
           </div>
         </div>
 
+        {state.error && (
+          <div role="alert" className="mb-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <span>{state.error}</span>
+          </div>
+        )}
+
         {/* 进度提示 */}
         {isRunning && state.progress < 100 && (
           <StageProgress message={state.progressMessage} progress={state.progress} color="violet" />
+        )}
+
+        {!coverage.complete && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+            {confirmDisabledReason || '分镜尚未覆盖剧本全集，暂不能确认继续。'}
+          </div>
         )}
 
         {/* 主体内容 */}
@@ -260,6 +305,24 @@ export default function StoryboardStage({
               const segs = episode.segments || [];
               const epTotalTime = segs.reduce((sum, s) => sum + (s.total_duration || 0), 0);
               const epShotCount = segs.reduce((sum, s) => sum + ((s.shots || []).length), 0);
+              if (episode.placeholder) {
+                return (
+                  <div key={`placeholder-${episode.episode_number}`} className="rounded-xl border border-dashed border-violet-200 bg-violet-50/50 px-5 py-8 text-center">
+                    <Film className="mx-auto mb-3 h-8 w-8 text-violet-300" />
+                    <p className="text-sm font-bold text-violet-700">第 {episode.episode_number} 集：{episode.episode_title}</p>
+                    <p className="mt-1 text-xs text-violet-500">待生成分镜（由剧本派生，不写入分镜产物）</p>
+                  </div>
+                );
+              }
+              if (segs.length === 0) {
+                return (
+                  <div key={`empty-${episode.episode_number}`} className="rounded-xl border border-dashed border-amber-200 bg-amber-50/60 px-5 py-8 text-center">
+                    <AlertCircle className="mx-auto mb-3 h-8 w-8 text-amber-300" />
+                    <p className="text-sm font-bold text-amber-700">第 {episode.episode_number} 集：{episode.episode_title}</p>
+                    <p className="mt-1 text-xs text-amber-600">本集分镜为空，请生成或编辑后再确认继续。</p>
+                  </div>
+                );
+              }
               return (
                 <div key={epIdx} className="space-y-4">
                   {/* 一级：剧集抬头 (参考第一阶段) */}
@@ -416,6 +479,8 @@ export default function StoryboardStage({
         isRunning={isRunning} 
         hasPendingItems={hasPendingItems} 
         hasNextStageStarted={hasNextStageStarted}
+        confirmDisabled={!coverage.complete || !castReparseReady}
+        confirmDisabledReason={confirmDisabledReason}
         stageId="storyboard"
       />
 

@@ -76,11 +76,54 @@ export interface MissingInput {
   message: string;
 }
 
+export type CastReparseStatus =
+  | 'pending'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'stopped'
+  | 'superseded'
+  | 'accepted_stale';
+
+export interface CastReparseState {
+  status: CastReparseStatus;
+  base_version: string | null;
+  attempt: number | null;
+  error: string | null;
+  accepted_base_version: string | null;
+  accepted_attempt: number | null;
+  summary: Record<string, unknown> | null;
+  reason?: string | null;
+  changed_episodes?: number[] | null;
+  requested_at?: number | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+  superseded_at?: number | null;
+  superseded_attempt?: number | null;
+  interrupted_by_restart?: boolean | null;
+}
+
+export interface CastSuggestion {
+  id: string;
+  kind: string;
+  container?: string;
+  item_id?: string;
+  name?: string;
+  description?: string;
+  reason?: string;
+  from?: string;
+  to?: string;
+}
+
 export interface ProjectStatus {
   session_id: string;
   current_stage: string;
   status: Record<string, string>;
   error: string | null;
+  script_locked?: boolean;
+  cast_reparse?: CastReparseState | null;
+  cast_reparse_ready?: boolean;
+  cast_suggestions?: CastSuggestion[];
   /** 按阶段的上次未完成执行摘要；正式结果仍以 artifacts 为准 */
   execution_preview?: Record<string, ExecutionPreview>;
   /** 阶段进度快照；失败且缺必需输入时带 missing_inputs */
@@ -101,6 +144,9 @@ export interface StreamEvent {
   content?: string;
   time?: number;
   data?: Record<string, unknown>;
+  cast_restored?: boolean;
+  cast_diff?: Record<string, unknown>;
+  cast_legacy?: boolean;
 }
 
 export interface PipelineTask {
@@ -302,8 +348,26 @@ export class ModelUnavailableError extends Error {
   }
 }
 
-async function throwResponseError(resp: Response, fallback: string): Promise<never> {
-  let detail: { code?: string; reason?: string; message?: string } | string | null = null;
+export class ApiRequestError extends Error {
+  code?: string;
+  fields?: string[];
+  missingEpisodes?: number[];
+  emptyEpisodes?: number[];
+  detail: Record<string, unknown>;
+
+  constructor(message: string, detail: Record<string, unknown>) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.detail = detail;
+    this.code = typeof detail.code === 'string' ? detail.code : undefined;
+    this.fields = Array.isArray(detail.fields) ? detail.fields.map(String) : undefined;
+    this.missingEpisodes = Array.isArray(detail.missing_episodes) ? detail.missing_episodes.map(Number) : undefined;
+    this.emptyEpisodes = Array.isArray(detail.empty_episodes) ? detail.empty_episodes.map(Number) : undefined;
+  }
+}
+
+export async function throwResponseError(resp: Response, fallback: string): Promise<never> {
+  let detail: { code?: string; reason?: string; message?: string; [key: string]: unknown } | string | null = null;
   try {
     const body = await resp.json();
     detail = body?.detail ?? null;
@@ -318,6 +382,9 @@ async function throwResponseError(resp: Response, fallback: string): Promise<nev
     throw new ModelUnavailableError(detail as ModelUnavailableDetail);
   }
   const message = typeof detail === 'string' ? detail : detail?.reason || detail?.message || fallback;
+  if (detail && typeof detail === 'object') {
+    throw new ApiRequestError(message || fallback, detail);
+  }
   throw new Error(message || fallback);
 }
 
@@ -561,7 +628,7 @@ export async function getProjectStatus(sessionId: string): Promise<ProjectStatus
 }
 
 // 兼容旧路由名；后端实际会通过统一的 workflow state 入口返回状态。
-export async function getProjectStatusFromDisk(sessionId: string): Promise<unknown> {
+export async function getProjectStatusFromDisk(sessionId: string): Promise<ProjectStatus> {
   const resp = await apiFetch(`/api/project/${sessionId}/status/from_disk`);
   if (!resp.ok) throw new Error('Failed to get project status snapshot');
   return resp.json();
@@ -665,7 +732,7 @@ export async function saveSelections(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(selections),
   });
-  if (!resp.ok) throw new Error('保存选项失败');
+  if (!resp.ok) await throwResponseError(resp, '保存选项失败');
   return resp.json();
 }
 
@@ -688,10 +755,52 @@ export async function continueWorkflow(
     ...(stage ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage }) } : {}),
   });
   // 4xx/5xx MUST NOT 被当成“已确认”（否则阶段会被本地误置 completed 并接着跑后续阶段）
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: '确认阶段失败' }));
-    throw new Error(String(err.detail || err.message || '确认阶段失败'));
-  }
+  if (!resp.ok) await throwResponseError(resp, '确认阶段失败');
+  return resp.json();
+}
+
+export async function retryCastReparse(sessionId: string, attempt: number, baseVersion: string) {
+  const resp = await apiFetch(`/api/project/${sessionId}/cast-reparse/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attempt, base_version: baseVersion }),
+  });
+  if (!resp.ok) await throwResponseError(resp, '重试人物/场景更新失败');
+  return resp.json();
+}
+
+export async function acceptCastReparseStale(
+  sessionId: string,
+  acceptedAttempt: number,
+  acceptedBaseVersion: string,
+) {
+  const resp = await apiFetch(`/api/project/${sessionId}/cast-reparse/accept-stale`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      accepted_attempt: acceptedAttempt,
+      accepted_base_version: acceptedBaseVersion,
+    }),
+  });
+  if (!resp.ok) await throwResponseError(resp, '接受旧人物/场景失败');
+  return resp.json();
+}
+
+export async function stopCastReparse(sessionId: string) {
+  const resp = await apiFetch(`/api/project/${sessionId}/cast-reparse/stop`, {
+    method: 'POST',
+  });
+  if (!resp.ok) await throwResponseError(resp, '停止人物/场景更新失败');
+  return resp.json();
+}
+
+export async function applyCastSuggestions(sessionId: string, ids: string[], baseVersion: string) {
+  const resp = await apiFetch(`/api/project/${sessionId}/cast-suggestions/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, base_version: baseVersion }),
+  });
+  if (!resp.ok) await throwResponseError(resp, '采纳人物/场景建议失败');
   return resp.json();
 }
 

@@ -843,6 +843,13 @@ def test_apply_script_review_stores_rollback_and_restores():
 
     assert applied["episodes"][0]["content"] == "第一行\n第二行（改）\n第三行"
     assert applied["review_rollback"]["episodes"][0]["content"] == "第一行\n第二行\n第三行"
+    assert applied["review_rollback"]["cast_snapshot"]["characters"][0]["description"] == "青年"
+    assert applied["review_rollback"]["cast_fingerprint"] == script_revision.structure_fingerprint(
+        applied, scope="cast"
+    )
+    assert applied["review_rollback"]["after_version"] == script_revision.structure_fingerprint(
+        applied, scope="body"
+    )
 
     restored = asyncio.run(ScriptWriterAgent()._run_rollback_script_review(
         {
@@ -853,9 +860,82 @@ def test_apply_script_review_stores_rollback_and_restores():
     ))
     payload = restored["payload"]
     assert restored["revision_applied"] is True
+    assert restored["cast_restored"] is True
+    assert restored["cast_diff"] == {}
+    assert payload["characters"] == current["characters"]
     assert payload["episodes"][0]["content"] == "第一行\n第二行\n第三行"
     assert "review_rollback" not in payload
     assert "pending_review" not in payload
+
+
+def test_rollback_keeps_changed_cast_and_returns_diff():
+    current = _artifact()
+    preview = {
+        "summary": "一条建议",
+        "base_version": script_revision.content_fingerprint(current),
+        "issues": [{
+            "id": "qr_1", "episode_number": 1, "line": 2, "problem": "生硬",
+            "action": "replace", "original": "第二行", "text": "第二行（改）",
+        }],
+    }
+    applied = asyncio.run(ScriptWriterAgent()._run_apply_script_review(
+        {
+            "session_id": "rollback_sid",
+            "_session_artifacts": {"script_generation": current},
+            "pending_review": preview,
+        },
+        {"selected_issue_ids": ["qr_1"]},
+    ))["payload"]
+    applied["characters"][0]["description"] = "自动重解析后的描述"
+    applied["characters"][0]["species"] = "机器人"
+    applied["settings"].append({"name": "新场景", "description": "重解析新增"})
+
+    restored = asyncio.run(ScriptWriterAgent()._run_rollback_script_review(
+        {"session_id": "rollback_sid", "_session_artifacts": {"script_generation": applied}},
+        {"action": "rollback_script_review"},
+    ))
+    assert restored["cast_restored"] is False
+    assert restored["payload"]["characters"][0]["description"] == "自动重解析后的描述"
+    assert restored["payload"]["settings"][-1]["name"] == "新场景"
+    assert restored["cast_diff"]["characters"]["updated"][0]["name"] == "小陈"
+    assert restored["cast_diff"]["characters"]["updated"][0]["before_species"] == ""
+    assert restored["cast_diff"]["characters"]["updated"][0]["after_species"] == "机器人"
+    assert restored["cast_diff"]["settings"]["added"][0]["name"] == "新场景"
+    assert restored["payload"]["revision_history"][-1]["cast_restored"] is False
+    assert restored["payload"]["revision_history"][-1]["cast_diff"] == restored["cast_diff"]
+
+
+def test_legacy_rollback_snapshot_does_not_report_all_cast_as_added():
+    current = _artifact()
+    preview = {
+        "summary": "一条建议",
+        "base_version": script_revision.content_fingerprint(current),
+        "issues": [{
+            "id": "qr_1", "episode_number": 1, "line": 2, "problem": "生硬",
+            "action": "replace", "original": "第二行", "text": "第二行（改）",
+        }],
+    }
+    applied = asyncio.run(ScriptWriterAgent()._run_apply_script_review(
+        {
+            "session_id": "rollback_sid",
+            "_session_artifacts": {"script_generation": current},
+            "pending_review": preview,
+        },
+        {"selected_issue_ids": ["qr_1"]},
+    ))["payload"]
+    rollback = applied["review_rollback"]
+    rollback.pop("cast_snapshot", None)
+    rollback.pop("cast_fingerprint", None)
+    rollback["after_version"] = script_revision.structure_fingerprint(applied)
+
+    restored = asyncio.run(ScriptWriterAgent()._run_rollback_script_review(
+        {"session_id": "rollback_sid", "_session_artifacts": {"script_generation": applied}},
+        {"action": "rollback_script_review"},
+    ))
+    assert restored["cast_legacy"] is True
+    assert restored["cast_restored"] is False
+    assert restored["cast_diff"] == {}
+    assert restored["payload"]["revision_history"][-1]["cast_legacy"] is True
 
 
 def test_rollback_script_review_rejects_after_further_edit():

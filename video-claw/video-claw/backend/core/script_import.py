@@ -606,18 +606,19 @@ def extract_cast(lines: List[str]) -> List[dict]:
                         "name": single,
                         "description": item.group(2).strip(),
                         "description_source": "uploaded",
+                        "description_owner": "user",
                     }
                 )
         elif "," in inline or "、" in inline:
             # 英文/中文名单：`Characters: Alice, Bob` / `角色设定：小明、小红`（无描述）
             for single in [part.strip() for part in re.split(r"[,，、]", inline) if part.strip()]:
                 characters.append(
-                    {"name": single, "description": "", "description_source": "uploaded"}
+                    {"name": single, "description": "", "description_source": "uploaded", "description_owner": "user"}
                 )
         else:
             # 单个英文名：`Characters: Alice`
             characters.append(
-                {"name": inline, "description": "", "description_source": "uploaded"}
+                {"name": inline, "description": "", "description_source": "uploaded", "description_owner": "user"}
             )
     seen = {item["name"] for item in characters}
     for line in lines[start + 1:end + 1]:
@@ -638,6 +639,7 @@ def extract_cast(lines: List[str]) -> List[dict]:
                     "name": single,
                     "description": description,
                     "description_source": "uploaded",
+                    "description_owner": "user",
                 }
             )
             seen.add(single)
@@ -800,6 +802,7 @@ def merge_characters(
             "description": item.get("description", ""),
             "species": item.get("species") or extra.get("species", ""),
             "description_source": "uploaded",
+            "description_owner": "user",
         }
         kind = item.get("asset_kind") or extra.get("asset_kind") or ""
         if kind:
@@ -815,6 +818,7 @@ def merge_characters(
             "description": item.get("description", ""),
             "species": item.get("species", ""),
             "description_source": "inferred",
+            "description_owner": "model",
         }
         if item.get("asset_kind"):
             record["asset_kind"] = item["asset_kind"]
@@ -844,6 +848,7 @@ def merge_settings(
             "name": name,
             "description": item.get("description", ""),
             "description_source": "inferred",
+            "description_owner": "model",
             "aliases": list(item.get("aliases") or []),
         }
         if item.get("asset_kind"):

@@ -8,7 +8,14 @@ from fastapi.responses import StreamingResponse
 from api.dependencies import workflow_engine
 from api.media_paths import resolve_uploaded_document
 from api.routers.files import merge_uploaded_file_into_idea
-from api.schemas.project import InterventionRequest, ProjectStartRequest
+from api.schemas.project import (
+    CastReparseAcceptStaleRequest,
+    CastReparseRetryRequest,
+    CastReparseStopRequest,
+    CastSuggestionApplyRequest,
+    InterventionRequest,
+    ProjectStartRequest,
+)
 from api.services.project_helpers import (
     make_cancellation,
     make_progress_channel,
@@ -20,6 +27,15 @@ from core.identity import CurrentUser, get_current_user
 from core.media_refs import MediaInputError, MediaNotFound, canonicalize_media_payload, canonicalize_media_value
 from core.orchestrator import validate_upload_identifier
 from core.ownership import assert_session_owner
+from core.script_errors import (
+    CastReparseNotReadyError,
+    CastReparseStateError,
+    InternalMetaWriteError,
+    ScriptActionNotSupportedError,
+    ScriptFieldNotWritableError,
+    ScriptLockedError,
+    StoryboardIncompleteError,
+)
 from db.repositories.commits import CommitConflict
 
 router = APIRouter(tags=["Workflow"])
@@ -42,6 +58,21 @@ async def _engine_call(fn, *args, **kwargs):
         raise HTTPException(400, detail=f"媒体引用无法发布: {exc}") from exc
     except CommitConflict as exc:
         raise HTTPException(409, detail=f"会话已被并发修改，请刷新后重试: {exc}") from exc
+    except (ScriptLockedError, CastReparseNotReadyError, CastReparseStateError) as exc:
+        raise HTTPException(
+            409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except ScriptActionNotSupportedError as exc:
+        raise HTTPException(
+            400,
+            detail={"code": exc.code, "message": str(exc), "action": exc.action},
+        ) from exc
+    except (ScriptFieldNotWritableError, InternalMetaWriteError) as exc:
+        raise HTTPException(
+            400,
+            detail={"code": exc.code, "message": str(exc), "fields": exc.fields},
+        ) from exc
 
 
 def _canonical_payload(body: dict, session_id: str, user: CurrentUser) -> dict:
@@ -845,6 +876,77 @@ async def continue_workflow(
         return await workflow_engine.continue_workflow(session_id, stage)
     except CommitConflict as exc:
         raise HTTPException(409, detail=f"会话已被并发修改，请刷新后重试: {exc}") from exc
+    except (ScriptLockedError, CastReparseNotReadyError) as exc:
+        raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
+    except StoryboardIncompleteError as exc:
+        raise HTTPException(409, detail={
+            "code": exc.code,
+            "message": str(exc),
+            "missing_episodes": exc.missing_episodes,
+            "empty_episodes": exc.empty_episodes,
+        }) from exc
+
+
+@router.post("/api/project/{session_id}/cast-reparse/retry")
+async def retry_cast_reparse(
+    session_id: str,
+    req: CastReparseRetryRequest,
+    user: CurrentUser = Depends(current_owner_session),
+):
+    record = await _engine_call(
+        workflow_engine.retry_cast_reparse,
+        session_id,
+        attempt=req.attempt,
+        base_version=req.base_version,
+    )
+    return {"status": "ok", "cast_reparse": record}
+
+
+@router.post("/api/project/{session_id}/cast-reparse/accept-stale")
+async def accept_cast_reparse_stale(
+    session_id: str,
+    req: CastReparseAcceptStaleRequest,
+    user: CurrentUser = Depends(current_owner_session),
+):
+    record = await _engine_call(
+        workflow_engine.accept_cast_reparse_stale,
+        session_id,
+        accepted_attempt=req.accepted_attempt,
+        accepted_base_version=req.accepted_base_version,
+        user=user.login,
+    )
+    return {"status": "ok", "cast_reparse": record}
+
+
+@router.post("/api/project/{session_id}/cast-suggestions/apply")
+async def apply_cast_suggestions(
+    session_id: str,
+    req: CastSuggestionApplyRequest,
+    user: CurrentUser = Depends(current_owner_session),
+):
+    result = await _engine_call(
+        workflow_engine.apply_cast_suggestions,
+        session_id,
+        ids=req.ids,
+        base_version=req.base_version,
+        user=user.login,
+    )
+    return {"status": "ok", **result}
+
+
+@router.post("/api/project/{session_id}/cast-reparse/stop")
+async def stop_cast_reparse(
+    session_id: str,
+    req: CastReparseStopRequest | None = None,
+    user: CurrentUser = Depends(current_owner_session),
+):
+    record = await _engine_call(
+        workflow_engine.stop_cast_reparse,
+        session_id,
+        attempt=req.attempt if req else None,
+        base_version=req.base_version if req else None,
+    )
+    return {"status": "ok", "cast_reparse": record}
 
 
 @router.post("/api/project/{session_id}/stop")

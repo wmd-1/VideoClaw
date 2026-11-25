@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from prompts.loader import load_prompt_with_fallback
 
 from .. import script_import, script_review, script_revision
+from ..script_errors import ScriptActionNotSupportedError
 from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
@@ -415,10 +416,16 @@ class ScriptWriterAgent(AgentInterface):
             script_revision.assert_untouched_episodes(episodes, new_episodes, target_number)
             # 单集修订不动角色/场景，但产物本身可能已经缺 ID（旧版全剧修订遗留）：
             # 先复制一份再补齐，不能改 current（base_version 以修订前正文为准）。
-            new_characters = copy.deepcopy(current.get("characters") or [])
-            new_settings = copy.deepcopy(current.get("settings") or [])
-            script_revision.ensure_item_ids(new_characters, new_characters, "character_id", "char")
-            script_revision.ensure_item_ids(new_settings, new_settings, "setting_id", "set")
+            cast = script_revision.normalize_cast_owners({
+                "characters": copy.deepcopy(current.get("characters") or []),
+                "settings": copy.deepcopy(current.get("settings") or []),
+            })
+            new_characters = script_revision.ensure_item_ids(
+                current.get("characters") or [], cast["characters"], "character_id", "char"
+            )
+            new_settings = script_revision.ensure_item_ids(
+                current.get("settings") or [], cast["settings"], "setting_id", "set"
+            )
             revised = next(
                 ep for ep in new_episodes
                 if int(ep.get("episode_number", ep.get("act_number", 0))) == target_number
@@ -471,14 +478,15 @@ class ScriptWriterAgent(AgentInterface):
                 if isinstance(parsed.get("settings"), list)
                 else (current.get("settings") or [])
             )
-            # 模型输出的角色/场景不带 character_id/setting_id：原样落入预览会在应用后把产物主键
-            # 抹掉，阶段 2 按 ID 取数会整段丢条目（“未能从剧本中读取到角色或场景描述数据”）。
-            # 同名先复用修订前 ID（保住选中/版本/资产），新增条目按名称派生补齐并随预览回写产物。
-            new_characters = script_revision.ensure_item_ids(
-                current.get("characters") or [], new_characters, "character_id", "char"
+            # 模型 cast 不携带服务端主键/provenance：同名复用 ID 与资产字段，
+            # 描述变化且用户确认应用后归 model，未变化保留原 owner。
+            new_characters = script_revision.merge_model_cast_provenance(
+                current.get("characters") or [], new_characters,
+                container="characters", id_key="character_id", prefix="char",
             )
-            new_settings = script_revision.ensure_item_ids(
-                current.get("settings") or [], new_settings, "setting_id", "set"
+            new_settings = script_revision.merge_model_cast_provenance(
+                current.get("settings") or [], new_settings,
+                container="settings", id_key="setting_id", prefix="set",
             )
             preview_body = {"episodes": new_episodes}
 
@@ -776,6 +784,11 @@ class ScriptWriterAgent(AgentInterface):
         rollback_snapshot = {
             "episodes": copy.deepcopy(current.get("episodes") or []),
             "summary": current.get("summary") or "",
+            "cast_snapshot": {
+                "characters": copy.deepcopy(current.get("characters") or []),
+                "settings": copy.deepcopy(current.get("settings") or []),
+            },
+            "cast_fingerprint": script_revision.structure_fingerprint(current, scope="cast"),
             "before_version": preview.get("base_version") or script_revision.content_fingerprint(current),
             "applied_at": datetime.now(timezone.utc).isoformat(),
             "issue_ids": [str(issue.get("id")) for issue in issues],
@@ -799,7 +812,7 @@ class ScriptWriterAgent(AgentInterface):
         updated.pop("pending_review", None)
         updated.pop("review_rollback", None)
         # 撤销校验只看用户可编辑内容，忽略服务端回写的 line_start/end/主键等派生字段
-        rollback_snapshot["after_version"] = script_revision.structure_fingerprint(updated)
+        rollback_snapshot["after_version"] = script_revision.structure_fingerprint(updated, scope="body")
         rollback_snapshot["after_aux_version"] = _review_aux_fingerprint(updated)
         updated["review_rollback"] = rollback_snapshot
         _log(100, "质检修改已应用")
@@ -821,8 +834,12 @@ class ScriptWriterAgent(AgentInterface):
         rollback = current.get("review_rollback")
         if not isinstance(rollback, dict):
             raise ValueError("没有可恢复的上版剧本")
-        if rollback.get("after_version") != script_revision.structure_fingerprint(current):
-            raise ValueError("剧本已再次修改，无法恢复上版剧本")
+        body_version = script_revision.structure_fingerprint(current, scope="body")
+        if rollback.get("after_version") != body_version:
+            # 兼容旧快照：旧版 after_version 覆盖全量结构；新快照必须严格匹配 body。
+            legacy_snapshot = "cast_snapshot" not in rollback
+            if not legacy_snapshot or rollback.get("after_version") != script_revision.structure_fingerprint(current):
+                raise ValueError("剧本已再次修改，无法恢复上版剧本")
         if rollback.get("after_aux_version") != _review_aux_fingerprint(current):
             raise ValueError("剧本摘要/标注已修改，无法恢复上版剧本")
         episodes = rollback.get("episodes")
@@ -831,6 +848,22 @@ class ScriptWriterAgent(AgentInterface):
         updated = copy.deepcopy(current)
         updated["episodes"] = copy.deepcopy(episodes)
         updated["summary"] = str(rollback.get("summary") or "")
+        cast_snapshot = rollback.get("cast_snapshot")
+        current_cast_fingerprint = script_revision.structure_fingerprint(current, scope="cast")
+        cast_restored = False
+        cast_legacy = not isinstance(cast_snapshot, dict)
+        if (
+            isinstance(cast_snapshot, dict)
+            and rollback.get("cast_fingerprint") == current_cast_fingerprint
+        ):
+            updated["characters"] = copy.deepcopy(cast_snapshot.get("characters") or [])
+            updated["settings"] = copy.deepcopy(cast_snapshot.get("settings") or [])
+            cast_restored = True
+            cast_diff = {}
+        else:
+            cast_diff = (
+                {} if cast_legacy else script_revision.cast_diff_summary(cast_snapshot, current)
+            )
         for key in ("line_annotations", "scene_spans", "import_review"):
             if key in rollback:
                 updated[key] = copy.deepcopy(rollback[key])
@@ -847,6 +880,9 @@ class ScriptWriterAgent(AgentInterface):
                 "summary": "恢复质检前正文",
                 "applied_at": datetime.now(timezone.utc).isoformat(),
                 "base_version": rollback.get("after_version", ""),
+                "cast_restored": cast_restored,
+                "cast_diff": copy.deepcopy(cast_diff),
+                "cast_legacy": cast_legacy,
             }
         )
         updated["revision_history"] = history[-script_revision.REVISION_HISTORY_LIMIT:]
@@ -858,6 +894,9 @@ class ScriptWriterAgent(AgentInterface):
             "requires_intervention": False,
             "stage_completed": True,
             "revision_applied": True,
+            "cast_restored": cast_restored,
+            "cast_diff": cast_diff,
+            "cast_legacy": cast_legacy,
         }
 
     @staticmethod
@@ -1138,7 +1177,61 @@ class ScriptWriterAgent(AgentInterface):
             deduped[ep["episode_number"]] = ep
         return [deduped[num] for num in cls._expected_episode_numbers(expected_episodes) if num in deduped]
 
+    async def reparse_cast(
+        self,
+        script_artifact: Dict[str, Any],
+        changed_episodes: List[int],
+        llm_model: str,
+        cancellation_check,
+    ) -> Dict[str, Any]:
+        """内部后台方法：只从变更集正文生成 cast 候选，不接触会话提交/阶段状态。"""
+        if not isinstance(script_artifact, dict):
+            raise ValueError("script_artifact 必须是对象")
+        if cancellation_check and cancellation_check():
+            raise RuntimeError("人物/场景更新已停止")
+        episodes = script_artifact.get("episodes") or []
+        changed = {int(number) for number in (changed_episodes or []) if str(number).isdigit()}
+        selected = [
+            episode for episode in episodes
+            if isinstance(episode, dict) and int(episode.get("episode_number") or 0) in changed
+        ]
+        if not selected:
+            selected = [episode for episode in episodes if isinstance(episode, dict)]
+        changed_text = "\n\n".join(
+            f"第{episode.get('episode_number')}集 {episode.get('act_title') or ''}\n{episode.get('content') or ''}"
+            for episode in selected
+        )
+        title = str(script_artifact.get("title") or "")
+        from core.language import resolve_language
+
+        lang = resolve_language(body=changed_text, title=title).get("language") or "zh"
+        template = _get_script_prompt("reparse_cast", lang)
+        prompt = template.format(
+            changed_episodes=changed_text,
+            characters=json.dumps(script_artifact.get("characters") or [], ensure_ascii=False),
+            settings=json.dumps(script_artifact.get("settings") or [], ensure_ascii=False),
+        )
+        from models.llm_client import LLM
+
+        llm = LLM()
+
+        def query():
+            if cancellation_check and cancellation_check():
+                raise RuntimeError("人物/场景更新已停止")
+            raw = llm.query(prompt, [], llm_model, False, None, False)
+            if cancellation_check and cancellation_check():
+                raise RuntimeError("人物/场景更新已停止")
+            return raw
+
+        raw = await asyncio.to_thread(query)
+        parsed = self._extract_json_from_text(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("人物/场景重解析结果不是 JSON 对象")
+        return script_revision.normalize_cast_candidates(parsed)
+
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
+        if intervention and intervention.get("action") == "reparse_cast":
+            raise ScriptActionNotSupportedError("reparse_cast")
         if str(input_data.get("script_source") or "") == "upload" and not intervention:
             return await self._run_import_script(input_data)
         if intervention and intervention.get("action") == "revise_script":
@@ -1153,28 +1246,43 @@ class ScriptWriterAgent(AgentInterface):
             return await self._run_rollback_script_review(input_data, intervention)
 
         if intervention and "modified_script" in intervention:
+            current = self._session_artifact(input_data, "script_generation")
+            if not current:
+                current = {
+                    key: copy.deepcopy(value)
+                    for key, value in input_data.items()
+                    if not str(key).startswith("_")
+                }
             modified = intervention["modified_script"]
-            sid = input_data.get("session_id", "")
             if isinstance(modified, str):
                 modified = self._extract_json_from_text(modified) or {}
-            modified["session_id"] = sid
+            patch, ignored_fields = script_revision.sanitize_script_patch(
+                current, modified if isinstance(modified, dict) else {}, reject_unknown=False
+            )
+            payload = copy.deepcopy(current)
+            payload.update(patch)
             # 手动编辑提交的是完整产物：预览字段一律清除，不随产物落盘
-            modified.pop("pending_revision", None)
-            # 类型缺省回填：保证"类型随产物持久化"对人工干预路径同样成立
-            modified_meta = modified.get("meta")
-            if not isinstance(modified_meta, dict):
-                modified_meta = {}
-                modified["meta"] = modified_meta
-            if not self._normalize_film_type(modified_meta.get("film_type")):
-                modified_meta["film_type"] = DEFAULT_FILM_TYPE
-            if not self._normalize_subject_mode(modified_meta.get("subject_mode")):
-                modified_meta["subject_mode"] = DEFAULT_SUBJECT_MODE
+            payload.pop("pending_revision", None)
+            payload.pop("pending_review", None)
+            # 类型缺省回填：meta 由服务端管理，人工路径不能覆盖既有值
+            payload_meta = payload.get("meta")
+            if not isinstance(payload_meta, dict):
+                payload_meta = {}
+                payload["meta"] = payload_meta
+            if not self._normalize_film_type(payload_meta.get("film_type")):
+                payload_meta["film_type"] = DEFAULT_FILM_TYPE
+            if not self._normalize_subject_mode(payload_meta.get("subject_mode")):
+                payload_meta["subject_mode"] = DEFAULT_SUBJECT_MODE
             # 【优化】移除手动调用 self._save_result，依靠 Orchestrator 自动保存
-            return {"payload": modified, "requires_intervention": False, "stage_completed": True}
+            return {
+                "payload": payload,
+                "requires_intervention": False,
+                "stage_completed": True,
+                "ignored_fields": ignored_fields,
+            }
 
         # 处理确认续写或删除续写的结果，更新script_genenration和character_design数据结构，并保存最终结果
         if intervention and intervention.get("action") in ["confirm_continue", "delete_continue"]:
-            import copy
             final_data = copy.deepcopy(input_data)
             final_data.pop("pending_revision", None)
             sid = final_data.get("session_id", "")
