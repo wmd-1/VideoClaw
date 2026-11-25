@@ -410,7 +410,7 @@ ENV_DATABASE_PATTERN = re.compile(r"^VC_DATABASE__([A-Z0-9_]+)$")
 ENV_STORAGE_PATTERN = re.compile(r"^VC_STORAGE__([A-Z0-9_]+)$")
 ENV_USERS_PATTERN = re.compile(r"^VC_USERS__([A-Z0-9_]+)$")
 ENV_CAST_SYNC_PATTERN = re.compile(r"^VC_CAST_SYNC__(CONCURRENCY|SETTLE_SECONDS)$")
-ENV_IMAGE_QUALITY_PATTERN = re.compile(r"^VC_IMAGE_QUALITY__VLM_EVAL_ENABLED$")
+ENV_IMAGE_QUALITY_PATTERN = re.compile(r"^VC_IMAGE_QUALITY__(VLM_EVAL_ENABLED)$")
 # 额外纳入收集的非 VC_ 前缀键：用于 server.host/port 与 .env 后端端口对齐
 _ENV_EXTRA_KEYS = ("BACKEND_HOST", "BACKEND_PORT")
 

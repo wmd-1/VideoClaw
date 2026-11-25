@@ -99,12 +99,11 @@ generation:
   video_resolution: 720P
   video_generation_mode: first_frame
 
-# 原生 H3 提示词改写：enable=false（默认）时主流程保持基础六阶段，
-# 该阶段不出现在工作流引擎 / GET /api/stages / 前端导航中。
-# enable=true 时在「参考图」与「视频」之间注入「提示词改写」阶段（本地 LLM 调用，
-# 知识资产内嵌于 prompts/prompt_rewrite/，无外部服务依赖）。
+# 原生 H3 提示词改写：默认开启，在「参考图」与「视频」之间注入「提示词改写」阶段
+# （本地 LLM 调用，知识资产内嵌于 prompts/prompt_rewrite/，无外部服务依赖）。
+# 显式 enable=false 时主流程保持基础六阶段，该阶段不出现在工作流引擎 / GET /api/stages / 前端导航中。
 h3_rewrite:
-  enable: false
+  enable: true
   # VLM 参考图 grounding 独立开关（与 enable 正交；关闭时改写退化为纯文本输入，模式不变）
   grounding_enable: true
   # 改写用 LLM 模型（留空回退会话 llm 模型）

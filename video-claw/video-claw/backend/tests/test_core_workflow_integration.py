@@ -7,16 +7,19 @@ against `videoclaw_test` and the `videoclaw-test*` buckets only.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
+import re
 import types
 import uuid
 
 import pytest
 
+import config as config_module
 import core.persistence_service as persistence_service
 from api.dependencies import workflow_engine
-from config import settings
+from config import Config, settings
 from core import media_refs
 from core.agents.base_agent import AgentInterface
 from core.media_refs import ResolvedMedia
@@ -728,3 +731,84 @@ def test_delete_session_queues_object_cleanup(monkeypatch, client):
     assert counts["deleted"] >= 1
     assert get_storage().stat(str(row["object_key"]), bucket=str(row["bucket"])) is None
     assert not os.path.exists(row["local_path"])
+
+
+# ── workflow-quality-guidance 1.2：配置默认值与保存链 ─────────────────
+def test_workflow_quality_config_defaults_and_env_override(monkeypatch, caplog):
+    assert config_module.DEFAULT_CONFIG["image_quality"]["vlm_eval_enabled"] is False
+    assert config_module.DEFAULT_CONFIG["h3_rewrite"]["enable"] is True
+    coerced = config_module._coerce_config({
+        "image_quality": {"vlm_eval_enabled": "true"},
+        "h3_rewrite": {"enable": "false"},
+    })
+    assert coerced["image_quality"]["vlm_eval_enabled"] is True
+    assert coerced["h3_rewrite"]["enable"] is False
+
+    base = copy.deepcopy(config_module.DEFAULT_CONFIG)
+    monkeypatch.setattr(config_module, "_load_env_sources", lambda: {
+        "VC_IMAGE_QUALITY__VLM_EVAL_ENABLED": "true",
+    })
+    effective, env_info = config_module._apply_env_overrides(base)
+    assert effective["image_quality"]["vlm_eval_enabled"] is True
+    assert "image_quality.vlm_eval_enabled" in env_info["fields"]
+    file_view = config_module._strip_env_overridden(base, env_info, base)
+    assert file_view["image_quality"]["vlm_eval_enabled"] is False
+
+    monkeypatch.setattr(config_module, "_load_env_sources", lambda: {
+        "VC_IMAGE_QUALITY__VLM_EVAL_ENABLED": "not-a-bool",
+    })
+    invalid, invalid_info = config_module._apply_env_overrides(base)
+    assert invalid["image_quality"]["vlm_eval_enabled"] is False
+    assert "image_quality.vlm_eval_enabled" not in invalid_info["fields"]
+    assert "invalid boolean" in caplog.text
+
+
+def test_update_config_syncs_workflow_quality_flags(monkeypatch):
+    original = copy.deepcopy(Config.CONFIG)
+    monkeypatch.setattr(Config, "CONFIG", original)
+    monkeypatch.setattr(Config, "ENV_OVERRIDES", copy.deepcopy(Config.ENV_OVERRIDES))
+    monkeypatch.setattr(Config, "IMAGE_QUALITY_VLM_EVAL_ENABLED", False)
+    monkeypatch.setattr(Config, "H3_REWRITE_ENABLED", True)
+    monkeypatch.setattr(config_module, "_FILE_CONFIG_VALUES", copy.deepcopy(original))
+    monkeypatch.setattr(config_module, "_FILE_RAW_PROVIDER_KEYS", set((original.get("api_providers") or {}).keys()))
+    monkeypatch.setattr(config_module, "_load_env_sources", lambda: {})
+    written = {}
+    monkeypatch.setattr(config_module, "_write_config_file", lambda view: written.update(copy.deepcopy(view)))
+    monkeypatch.setattr(config_module, "_validate_effective_config", lambda effective: None)
+
+    values = copy.deepcopy(original)
+    values["image_quality"] = {"vlm_eval_enabled": True}
+    values["h3_rewrite"]["enable"] = False
+    Config.update_config(values)
+
+    assert Config.IMAGE_QUALITY_VLM_EVAL_ENABLED is True
+    assert Config.H3_REWRITE_ENABLED is False
+    assert written["image_quality"]["vlm_eval_enabled"] is True
+    assert written["h3_rewrite"]["enable"] is False
+
+
+def test_workflow_quality_env_example_defaults():
+    from pathlib import Path
+
+    explicit = os.environ.get("VIDEOCLAW_ENV_EXAMPLE", "").strip()
+    candidates = [
+        Path.cwd() / ".env.example",
+        Path("/tmp/.env.example"),
+        Path("/tmp/wqg1/.env.example"),
+        *(parent / ".env.example" for parent in Path(__file__).resolve().parents),
+    ]
+    env_example = Path(explicit) if explicit else next((path for path in candidates if path.exists()), candidates[0])
+    assert env_example.exists(), f"缺少 .env.example，请设置 VIDEOCLAW_ENV_EXAMPLE 或复制到 /tmp/wqg1/.env.example: {env_example}"
+    text = env_example.read_text(encoding="utf-8")
+    assert re.search(r"^VC_IMAGE_QUALITY__VLM_EVAL_ENABLED=false$", text, re.MULTILINE)
+    assert re.search(r"^# VC_H3_REWRITE__ENABLE=true$", text, re.MULTILINE)
+    assert not re.search(r"^VC_H3_REWRITE__ENABLE=", text, re.MULTILINE)
+
+
+def test_workflow_quality_stage_toggle(monkeypatch):
+    from api.routers.stages import _enabled_stages
+
+    monkeypatch.setattr(Config, "H3_REWRITE_ENABLED", True)
+    assert "prompt_rewrite" in [stage["id"] for stage in _enabled_stages()]
+    monkeypatch.setattr(Config, "H3_REWRITE_ENABLED", False)
+    assert "prompt_rewrite" not in [stage["id"] for stage in _enabled_stages()]
