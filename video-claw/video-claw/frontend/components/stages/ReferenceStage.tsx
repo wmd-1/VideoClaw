@@ -390,7 +390,7 @@ function SceneRow({
 }
 
 /* ─── 主组件 ─── */
-export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, videoGenerationMode }: StageViewProps) {
+export default function ReferenceStage({ state, sessionId, onConfirm, onIntervene, onExecute, onRegenerateStage, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, scriptArtifact, flaggedItems, onNavigateStage, videoGenerationMode }: StageViewProps) {
   const artifact = (state.artifact ?? {}) as ReferenceStageArtifact;
   // 跳过形态以“当前视频生成方式”为首要判据；skip 标记仅在 reference 下作辅助证据，
   // 历史残留标记在非 reference 模式下 MUST NOT 触发跳过说明（D5）
@@ -727,7 +727,8 @@ export default function ReferenceStage({ state, sessionId, onConfirm, onInterven
         onConfirm={onConfirm}
         showConfirm={showConfirm}
         reconfirm={state.reconfirm}
-        onRegenerate={onRegenerate}
+        onExecute={onExecute}
+        onRegenerateStage={onRegenerateStage}
         stageId="reference_generation"
         hasPendingItems={hasPendingItems}
         hasNextStageStarted={hasNextStageStarted}

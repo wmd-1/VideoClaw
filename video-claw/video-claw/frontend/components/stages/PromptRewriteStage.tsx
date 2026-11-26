@@ -5,8 +5,10 @@ import { AlertCircle, CheckCircle, Loader, RefreshCw, Save, Sparkles, XCircle, W
 import clsx from 'clsx';
 import type { StageViewProps } from './types';
 import StageProgress from './StageProgress';
+import StageActions from './StageActions';
 import { pruneDraftsByContent } from '@/lib/assetMerge';
 import { formatStaleReasons } from '@/lib/promptSources';
+import { assessPromptRewrite } from '@/lib/promptRewriteQuality';
 
 import { apiFetch } from "@/lib/identityGuard";
 interface RewriteItem {
@@ -109,11 +111,12 @@ export default function PromptRewriteStage({
   artifacts,
   onConfirm,
   onIntervene,
-  onRegenerate,
+  onExecute,
+  onRegenerateStage,
+  storyboardReconfirm = false,
   onUpdateArtifact,
   showConfirm,
   isRunning,
-  hasPendingItems,
 }: StageViewProps) {
   const artifact = (state.artifact || {}) as PromptRewriteArtifact;
   const items: RewriteItem[] = useMemo(
@@ -124,6 +127,27 @@ export default function PromptRewriteStage({
   // 编辑草稿（按条目 id）：切换/重生成后以最新产物为准
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [instructions, setInstructions] = useState<Record<string, string>>({});
+  const [showFailedConfirm, setShowFailedConfirm] = useState(false);
+  const quality = useMemo(
+    () => assessPromptRewrite(artifacts?.storyboard, state.artifact, storyboardReconfirm),
+    [artifacts?.storyboard, state.artifact, storyboardReconfirm],
+  );
+  const confirmDisabledReason = quality.hasMissingItems
+    ? `缺少改写条目：${quality.missingIds.join('、')}`
+    : quality.hasIncompleteItems
+      ? `存在未完成条目：${quality.incompleteIds.join('、')}`
+      : storyboardReconfirm
+        ? '分镜需要重新确认后才能继续'
+        : !quality.hasMeaningfulArtifact
+          ? '尚无有意义的改写产物'
+          : '';
+  const handleConfirm = (options?: { allowFailedItems?: boolean }) => {
+    if (quality.hasFailedItems && !options?.allowFailedItems) {
+      setShowFailedConfirm(true);
+      return;
+    }
+    onConfirm(options);
+  };
 
   // 编辑草稿（按条目 id）：仅清除「正文实际变化」条目的草稿，内容未变条目的草稿保留（I-2）。
   // 清理依据是条目内容签名而非产物对象/数组引用身份：轮询、SSE 增量、后台重生成回填都会
@@ -253,16 +277,25 @@ export default function PromptRewriteStage({
                   ? `执行失败：${state.error || '未知错误'}`
                   : '暂无改写结果'}
           </p>
-          {state.status === 'error' && !isRunning && (
-            <button
-              onClick={() => onRegenerate()}
-              className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              重新执行
-            </button>
-          )}
         </div>
+        {confirmDisabledReason && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+            {confirmDisabledReason}
+          </div>
+        )}
+        <StageActions
+          status={state.status}
+          onConfirm={handleConfirm}
+          onExecute={onExecute}
+          onRegenerateStage={onRegenerateStage}
+          stageId="prompt_rewrite"
+          hasPendingItems={quality.hasMissingItems || quality.hasIncompleteItems || quality.hasFailedItems}
+          showConfirm={showConfirm}
+          confirmDisabled={!quality.canContinue}
+          confirmDisabledReason={confirmDisabledReason}
+          confirmLabel="确认改写结果并继续"
+          isRunning={isRunning}
+        />
       </div>
     );
   }
@@ -271,6 +304,9 @@ export default function PromptRewriteStage({
     <div className="h-full overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar">
       {disabledNotice}
       {progressNode}
+      <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-700">
+        修改 H3 正文不会自动重生成视频；保存后请前往视频阶段，手动重生成对应片段。
+      </div>
       {/* 汇总条 */}
       <div className="rounded-2xl border border-gray-200 bg-white p-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-500">
         <span className="flex items-center gap-1.5 font-medium text-gray-700">
@@ -404,40 +440,55 @@ export default function PromptRewriteStage({
         ))}
       </div>
 
-      {/* 停点操作 */}
-      {state.status === 'waiting' && !isRunning && (
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 flex flex-wrap items-center gap-3">
-          {failedCount > 0 && (
-            <span className="flex items-center gap-1.5 text-xs text-amber-600">
-              <AlertCircle className="w-3.5 h-3.5" />
-              有 {failedCount} 条改写失败，可直接继续（视频阶段将回退默认拼装）或逐条重新生成
-            </span>
-          )}
-          {showConfirm && (
-            <button
-              onClick={onConfirm}
-              className="ml-auto inline-flex items-center gap-1.5 px-5 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors"
-            >
-              <CheckCircle className="w-4 h-4" />
-              确认改写结果并继续
-            </button>
-          )}
+      {confirmDisabledReason && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+          {confirmDisabledReason}
         </div>
       )}
+      {quality.hasFailedItems && quality.canContinue && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+          有 {quality.failedIds.length} 条改写失败；可逐条重试，或确认后接受失败条目继续（视频阶段将回退默认拼装）。
+        </div>
+      )}
+      <StageActions
+        status={state.status}
+        onConfirm={handleConfirm}
+        onExecute={onExecute}
+        onRegenerateStage={onRegenerateStage}
+        stageId="prompt_rewrite"
+        hasPendingItems={quality.hasMissingItems || quality.hasIncompleteItems || quality.hasFailedItems}
+        showConfirm={showConfirm}
+        confirmDisabled={!quality.canContinue}
+        confirmDisabledReason={confirmDisabledReason}
+        confirmLabel="确认改写结果并继续"
+        isRunning={isRunning}
+      />
 
-      {/* 待改写条目提示 */}
-      {hasPendingItems && !isRunning && state.status !== 'waiting' && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex items-center gap-3">
-          <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />
-          <span className="text-xs text-amber-700">有 {pendingCount} 条分镜待改写（分镜内容可能已更新）</span>
-          <button
-            onClick={() => onRegenerate()}
-            disabled={isRunning}
-            className="ml-auto inline-flex items-center gap-1.5 px-4 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            重新生成
-          </button>
+      {showFailedConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="w-[min(520px,calc(100vw-2rem))] rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-gray-800 mb-3">接受失败条目继续？</h3>
+            <p className="text-sm text-gray-600 leading-relaxed">
+              以下条目仍为失败：{quality.failedIds.join('、')}。继续后失败状态会保留，视频阶段将回退默认拼装。
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowFailedConfirm(false)}
+                className="px-5 py-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl text-sm font-bold"
+              >
+                返回重试
+              </button>
+              <button
+                onClick={() => {
+                  setShowFailedConfirm(false);
+                  onConfirm({ allowFailedItems: true });
+                }}
+                className="px-6 py-2.5 bg-amber-600 text-white rounded-xl text-sm font-bold hover:bg-amber-700"
+              >
+                接受失败条目继续
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

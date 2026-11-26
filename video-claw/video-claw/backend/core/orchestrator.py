@@ -24,6 +24,8 @@ from core.asset_kind import asset_kind_for
 from core.script_errors import (
     CastReparseNotReadyError,
     CastReparseStateError,
+    PromptRewriteFailedItemsError,
+    PromptRewriteIncompleteError,
     ScriptActionNotSupportedError,
     ScriptFieldNotWritableError,
     ScriptLockedError,
@@ -33,6 +35,7 @@ from core.grounding_cache import grounding_cache
 from core.observability import call_context
 from core.language import language_from_meta, resolve_language
 from core.persistence_service import PersistenceService
+from core.prompt_rewrite_quality import assess_prompt_rewrite
 from core.reference_skip import build_reference_skip, reference_skip_marker
 from db.repositories.commits import (
     CommitConflict,
@@ -397,12 +400,13 @@ class _StageRun:
     """一次阶段执行的可信上下文（仅内存）：execution_id、发布器、条目事件序号与受管暂存。"""
 
     def __init__(self, *, session_id: str, stage: "WorkflowStage", execution_id: str,
-                 background: bool, intervention: Optional[Dict]) -> None:
+                 background: bool, intervention: Optional[Dict], force_regenerate: bool = False) -> None:
         self.session_id = session_id
         self.stage = stage
         self.execution_id = execution_id
         self.background = background
         self.intervention = intervention
+        self.force_regenerate = force_regenerate
         self.owner = ""
         self.start_artifacts: Dict[str, Any] = {}
         # 本次执行的字段基线（懒计算一次；所有事件与收尾看到同一份）
@@ -2757,6 +2761,11 @@ class WorkflowEngine:
         else:
             input_data = copy.deepcopy(input_data)
 
+        force_regenerate = bool(
+            input_data.get("force_regenerate")
+            or (isinstance(intervention, dict) and intervention.get("force_regenerate"))
+        )
+        input_data["force_regenerate"] = force_regenerate
         sid = state.session_id
         run = _StageRun(
             session_id=sid,
@@ -2764,6 +2773,7 @@ class WorkflowEngine:
             execution_id=new_execution_id(),
             background=self._is_background_item_regeneration(stage, intervention),
             intervention=intervention,
+            force_regenerate=force_regenerate,
         )
         session_stop = self.get_stop_event(sid)
         self._register_run(run)
@@ -2795,7 +2805,13 @@ class WorkflowEngine:
             )
             user = {"login": view.owner, "owner_key": media_refs.owner_key(view.owner)}
             history = self._version_history(stage.value, view)
-            inputs = await asyncio.to_thread(self._materialize_inputs, run, view, input_data, user, history)
+            agent_view = view
+            if run.force_regenerate:
+                # 阶段级重做：Agent 看不到本阶段旧产物/历史版本；下游仍使用原始快照作为清理基线。
+                agent_view = copy.deepcopy(view)
+                agent_view.artifacts.pop(stage.value, None)
+                history = {}
+            inputs = await asyncio.to_thread(self._materialize_inputs, run, agent_view, input_data, user, history)
             run.publisher.runtime_map.update(inputs.runtime_map)
 
             input_data["_session_meta"] = copy.deepcopy(workflow_store.public_session_meta(view.meta))
@@ -3314,9 +3330,10 @@ class WorkflowEngine:
                         protected_fields=_BACKGROUND_PROTECTED_FIELDS.get(stage_key, ()),
                     )
                 else:
-                    payload = self._prefer_user_edits(
-                        stage_key, run.start_artifacts.get(stage_key), after.artifacts.get(stage_key), payload,
-                    )
+                    if not run.force_regenerate:
+                        payload = self._prefer_user_edits(
+                            stage_key, run.start_artifacts.get(stage_key), after.artifacts.get(stage_key), payload,
+                        )
                 if stage == WorkflowStage.CHARACTER_DESIGN:
                     self._writeback_character_cast_to_script(after, payload)
                 else:
@@ -3325,6 +3342,15 @@ class WorkflowEngine:
                 self._preserve_item_error_fields(after.artifacts.get(stage_key), payload, stage)
                 after.artifacts[stage_key] = payload
 
+            if run.force_regenerate:
+                order = list(get_stage_order())
+                stage_index = order.index(stage)
+                for downstream in order[stage_index + 1:]:
+                    # 写空 artifact 而不是 pop：提交层只对 after 中存在的键生成 stage change，
+                    # pop 不会持久化删除，旧下游产物会继续从 DB 合并回来。
+                    after.artifacts[downstream.value] = {}
+                    after.stage_progress.pop(downstream.value, None)
+                    after.status[downstream.value] = "pending"
             # 重新计算所有阶段的状态（基于 artifacts 里的数据完整性）
             if not run.background and after.status.get(stage_key) == "running":
                 after.status[stage_key] = "pending"
@@ -3386,9 +3412,22 @@ class WorkflowEngine:
             execution = after.executions.get(stage_key) or {}
             final_leaves = {str(value) for value in workflow_store.iter_media(stage_key, after.artifacts.get(stage_key))}
             merged = [key for key in (execution.get("version_candidates") or {}) if key in final_leaves]
-            return {stage_key: {"action": "finish", "execution_id": run.execution_id,
-                                "status": "interrupted" if stop_requested else "completed",
-                                "merged_candidates": merged}}
+            states = {stage_key: {"action": "finish", "execution_id": run.execution_id,
+                                 "status": "interrupted" if stop_requested else "completed",
+                                 "merged_candidates": merged}}
+            if run.force_regenerate:
+                order = list(get_stage_order())
+                for downstream in order[order.index(stage) + 1:]:
+                    previous = after.executions.get(downstream.value) or {}
+                    execution_id = str(previous.get("execution_id") or "")
+                    if execution_id:
+                        states[downstream.value] = {
+                            "action": "finish",
+                            "execution_id": execution_id,
+                            "status": "interrupted",
+                            "error": "上游阶段重做，下游执行记录已失效",
+                        }
+            return states
 
         with run.lock:
             state, _ = self._mutate(
@@ -3535,10 +3574,14 @@ class WorkflowEngine:
                     items.append(copy.deepcopy(current))
         return merged
 
-    async def continue_workflow(self, session_id: str, stage: Optional[str] = None) -> Dict:
-        return await asyncio.to_thread(self._continue_workflow, session_id, stage)
+    async def continue_workflow(
+        self, session_id: str, stage: Optional[str] = None, allow_failed_items: bool = False
+    ) -> Dict:
+        return await asyncio.to_thread(self._continue_workflow, session_id, stage, allow_failed_items)
 
-    def _continue_workflow(self, session_id: str, stage: Optional[str] = None) -> Dict:
+    def _continue_workflow(
+        self, session_id: str, stage: Optional[str] = None, allow_failed_items: bool = False
+    ) -> Dict:
         if self.get_state(session_id) is None:
             return {
                 "status": "error",
@@ -3577,6 +3620,16 @@ class WorkflowEngine:
             if current_status in ("waiting", "completed", "session_completed", STATUS_RECONFIRM):
                 if target_str == WorkflowStage.SCRIPT_GENERATION.value and not script_guard.cast_reparse_ready(after):
                     raise CastReparseNotReadyError()
+                if target_str == WorkflowStage.PROMPT_REWRITE.value:
+                    assessment = assess_prompt_rewrite(
+                        after.artifacts.get(WorkflowStage.STORYBOARD.value) or {},
+                        after.artifacts.get(WorkflowStage.PROMPT_REWRITE.value) or {},
+                        storyboard_reconfirm=after.status.get(WorkflowStage.STORYBOARD.value) == STATUS_RECONFIRM,
+                    )
+                    if not assessment["canContinue"]:
+                        raise PromptRewriteIncompleteError(assessment)
+                    if assessment["hasFailedItems"] and not allow_failed_items:
+                        raise PromptRewriteFailedItemsError(assessment)
                 if target_str == WorkflowStage.STORYBOARD.value:
                     coverage = script_revision.storyboard_coverage(
                         after.artifacts.get(WorkflowStage.SCRIPT_GENERATION.value) or {},

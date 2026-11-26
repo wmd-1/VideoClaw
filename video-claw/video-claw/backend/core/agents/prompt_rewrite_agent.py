@@ -20,6 +20,7 @@
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -40,6 +41,7 @@ from core.h3_modes import resolve_grounding_model, resolve_h3_mode, resolve_styl
 from core.h3_modes import setting_description as _shared_setting_description
 from core.h3_modes import setting_entry as _shared_setting_entry
 from core.observability import call_context, content_version, record_call
+from core.prompt_rewrite_quality import assess_prompt_rewrite
 from prompts.loader import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -1338,11 +1340,30 @@ class PromptRewriteAgent(AgentInterface):
             items = [results[sid] for sid in regenerate_items if sid in results]
             return {"payload": {"items": items}, "requires_intervention": True}
 
-        # ── 首次 / 全量执行 ──
-        self._report_progress("提示词改写", "开始改写分镜提示词...", 2)
-        results = await self._rewrite_segments(segments, input_data, prev_items_by_id)
+        # ── 普通执行：只补缺失/未完成/失败条目，保留已完成条目与用户编辑 ──
+        assessment = assess_prompt_rewrite(storyboard_artifact, prev_artifact)
+        target_ids = assessment["missing_ids"] + assessment["incomplete_ids"] + assessment["failed_ids"]
+        if input_data.get("force_regenerate") or not prev_items:
+            target_segments = segments
+        else:
+            target_set = set(target_ids)
+            target_segments = [seg for seg in segments if seg["id"] in target_set]
 
-        items = [results[seg["id"]] for seg in segments if seg["id"] in results]
+        if not target_segments:
+            items = [copy.deepcopy(prev_items_by_id[seg["id"]]) for seg in segments if seg["id"] in prev_items_by_id]
+            self._report_progress("提示词改写", "所有分镜均已有改写结果，无需重复调用模型", 100)
+            return {"payload": {"items": items}, "requires_intervention": True, "stage_completed": True}
+
+        self._report_progress("提示词改写", f"开始改写 {len(target_segments)}/{len(segments)} 个待处理分镜...", 2)
+        results = await self._rewrite_segments(
+            target_segments, input_data, prev_items_by_id, ordered_segments=segments
+        )
+        items = []
+        for seg in segments:
+            if seg["id"] in results:
+                items.append(results[seg["id"]])
+            elif seg["id"] in prev_items_by_id:
+                items.append(copy.deepcopy(prev_items_by_id[seg["id"]]))
         done_count = sum(1 for item in items if item["status"] == "done")
         self._report_progress("提示词改写", f"改写完成（{done_count}/{len(items)} 成功）", 100)
         return {

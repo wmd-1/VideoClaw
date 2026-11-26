@@ -30,7 +30,7 @@ interface ClipStatItem {
   duration?: number | string;
 }
 
-export default function PostProductionStage({ state, onConfirm, onIntervene, onRegenerate, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, artifacts, scriptArtifact }: StageViewProps) {
+export default function PostProductionStage({ state, onConfirm, onIntervene, onExecute, onRegenerateStage, isRunning, hasPendingItems, hasNextStageStarted, artifacts, scriptArtifact }: StageViewProps) {
   // 提取最终视频列表
   const artifact = state.artifact as PostProductionArtifact | undefined;
   const finalVideos: FinalVideoItem[] = artifact?.final_videos || [];
@@ -175,7 +175,8 @@ export default function PostProductionStage({ state, onConfirm, onIntervene, onR
         status={state.status}
         onConfirm={onConfirm}
         showConfirm={false}
-        onRegenerate={onRegenerate}
+        onExecute={onExecute}
+        onRegenerateStage={onRegenerateStage}
         stageId="post_production"
         hasPendingItems={hasPendingItems}
         hasNextStageStarted={hasNextStageStarted}

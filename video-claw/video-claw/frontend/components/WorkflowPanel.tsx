@@ -33,6 +33,7 @@ import {
 } from '@/lib/assetMerge';
 import { isStageSettled, isStageStillRunning } from '@/lib/chainGuard';
 import { getStoryboardCoverage } from '@/lib/storyboardCoverage';
+import { assessPromptRewrite } from '@/lib/promptRewriteQuality';
 import ModelFallbackDialog from './ModelFallbackDialog';
 import HomePage, { type ProjectParams } from './HomePage';
 import { fetchVideoProfiles } from '@/lib/videoPools';
@@ -53,6 +54,13 @@ import { MissingInputsNotice, flagsFromMissingInputs } from './stages/MissingInp
 
 // 全量阶段（含 prompt_rewrite）；实际驱动/渲染的集合由 useEnabledStages 按后端开关过滤
 const ALL_stageOrder: string[] = STAGES.map(s => s.id);
+
+function isInterruptedError(error: unknown): boolean {
+  const err = error as { message?: string; name?: string } | null;
+  const message = String(err?.message || '');
+  return err?.name === 'AbortError' || err?.name === 'StreamLostError'
+    || /abort|stopped/i.test(message) || message === 'Stopped';
+}
 
 const STAGE_COMPONENTS: Record<string, React.ComponentType<StageViewProps>> = {
   script_generation: ScriptStage,
@@ -939,6 +947,7 @@ export default function WorkflowPanel() {
         commitSessionView(token, {
           projectParams: {
             idea: s.idea || s.user_textbox_input || '',
+            script_source: s.script_source === 'upload' ? 'upload' : 'idea',
             style: s.style || '',
             video_ratio: s.video_ratio || '16:9',
             video_resolution: s.video_resolution || '720P',
@@ -1362,6 +1371,10 @@ export default function WorkflowPanel() {
         await syncAfterStreamLoss(token, sid, stageId);
         throw new StreamLostError();
       }
+      if (isInterruptedError(error)) {
+        await syncAfterStreamLoss(token, sid, stageId);
+        throw error;
+      }
       if ((error as { name?: string }).name !== 'AbortError') {
         if (error instanceof ModelUnavailableError) {
           // 预检失败：刷新阶段产物（种子化条目）并弹出上传兜底引导
@@ -1526,7 +1539,11 @@ export default function WorkflowPanel() {
 
   // ── 确认阶段并继续 ──
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 处理器每渲染重建（闭包捕获最新 state）；onConfirmActiveStage 的 useCallback 仅为满足 react-hooks/refs 的结构包装，不追求记忆化收益
-  const handleConfirmStage = async (stageId: string, scriptConfirmed = false) => {
+  const handleConfirmStage = async (
+    stageId: string,
+    scriptConfirmed = false,
+    options?: { allowFailedItems?: boolean },
+  ) => {
     if (!sessionId || chainRunningRef.current) return;
     // 手动模式推进剧本前展示站内确认弹窗；第二次进入才真正启动执行链。
     if (stageId === 'script_generation' && !autoModeRef.current && !scriptConfirmed) {
@@ -1544,7 +1561,7 @@ export default function WorkflowPanel() {
     try {
       // 确认作用于当前查看的阶段（openspec: script-manual-edit-resync）：
       // 剧本变更会把 current_stage 归位到剧本，从其它阶段点确认时不能被它误伤
-      const result = await continueWorkflow(sessionId, stageId);
+      const result = await continueWorkflow(sessionId, stageId, options);
       // 后端拒绝继续（阶段还在执行、或状态不允许）时不得本地谎报“已确认”，也不得接着跑后续阶段
       if (result.status !== 'ready' && result.status !== 'completed') {
         const message = result.message || result.openclaw || '当前状态不允许继续，请检查会话状态。';
@@ -1665,10 +1682,7 @@ export default function WorkflowPanel() {
     } catch (error: unknown) {
       const err = error as { message?: string; name?: string } | null;
       const message = String(err?.message || '');
-      const isInterrupted =
-        err?.name === 'AbortError' || err?.name === 'StreamLostError'
-        || /abort|stopped/i.test(message) || message === 'Stopped';
-      if (isInterrupted) {
+      if (isInterruptedError(error)) {
         // 流被中止（停止/刷新等），不当作错误：尽力同步后端真实状态
         console.warn('Continue interrupted:', message || err?.name);
         try {
@@ -1693,13 +1707,15 @@ export default function WorkflowPanel() {
 
   // 供 StageViewProps.onConfirm 直接引用：经 useCallback 包装，避免渲染期箭头
   // 引用读取 ref 的处理器（react-hooks/refs）
-  const onConfirmActiveStage = useCallback(() => {
-    if (activeStage) void handleConfirmStage(activeStage);
+  const onConfirmActiveStage = useCallback((options?: { allowFailedItems?: boolean }) => {
+    if (activeStage) void handleConfirmStage(activeStage, false, options);
   }, [activeStage, handleConfirmStage]);
 
   // ── 用户介入修改 ──
   const handleIntervene = async (stageId: string, modifications: Record<string, unknown>) => {
     if (!sessionId) return;
+    // 条目级重试/修订同样是一条新执行链：清除历史停止标记，避免 runStage 首行直接 Stopped。
+    stoppedRef.current = false;
     // 介入同样是一条执行链的起点：链内写入均用本令牌（design D9）
     const token = currentToken();
     const isBackgroundItemRegeneration =
@@ -2059,6 +2075,76 @@ export default function WorkflowPanel() {
     }
   };
 
+  // ── 执行/恢复当前阶段（保留已有产物，由后端跳过已完成项并补缺失项） ──
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 处理器每渲染重建；useCallback 仅满足 refs 结构包装
+  const handleExecute = async (stageId: string) => {
+    if (!sessionId || chainRunningRef.current) return;
+    const token = currentToken();
+    stoppedRef.current = false;
+    chainRunningRef.current = true;
+    setIsRunning(true);
+    commitStageState(token, stageId, {
+      status: 'running',
+      progress: 0,
+      progressMessage: '执行中...',
+      error: null,
+      missingInputs: null,
+      lastRun: null,
+    });
+
+    try {
+      const inputData: Record<string, unknown> = {
+        session_id: sessionId,
+        style: projectParams?.style,
+        llm_model: projectParams?.llm_model,
+        vlm_model: projectParams?.vlm_model,
+        image_t2i_model: projectParams?.image_t2i_model,
+        image_it2i_model: projectParams?.image_it2i_model,
+        video_generation_mode: projectParams?.video_generation_mode,
+        video_first_frame_model: projectParams?.video_first_frame_model,
+        video_start_end_model: projectParams?.video_start_end_model,
+        video_reference_model: projectParams?.video_reference_model,
+        video_model: projectParams?.video_model,
+        video_ratio: projectParams?.video_ratio,
+        video_resolution: projectParams?.video_resolution,
+        video_duration: projectParams?.video_duration,
+        video_fps: projectParams?.video_fps,
+      };
+      try {
+        const scriptArt = await getArtifact(sessionId, 'script_generation');
+        const scenes = (scriptArt?.artifact as { scenes?: unknown[] } | undefined)?.scenes;
+        if (scenes?.length) inputData.scene_number = scenes.length;
+      } catch { /* ignore */ }
+
+      await runStage(token, sessionId, stageId, inputData);
+      const status = await getProjectStatus(sessionId);
+      syncScriptControl(token, sessionId, status);
+      const stageStatus = status?.status?.[stageId];
+      if (isStageStillRunning(stageStatus)) {
+        commitStageState(token, stageId, { status: 'running' });
+        pollForCompletion(sessionId, stageId);
+      } else if (stageStatus === 'waiting') {
+        commitStageState(token, stageId, { status: 'waiting' });
+        commitSessionView(token, { activeStage: stageId });
+      } else if (stageStatus === 'completed' || stageStatus === 'session_completed') {
+        commitStageState(token, stageId, { status: 'completed', progress: 100 });
+      }
+    } catch (error: unknown) {
+      if (isInterruptedError(error)) {
+        await syncAfterStreamLoss(token, sessionId, stageId);
+      } else if (!stoppedRef.current) {
+        console.error('Execute error:', error);
+      }
+    } finally {
+      chainRunningRef.current = false;
+      setIsRunning(false);
+    }
+  };
+
+  const onExecuteActiveStage = useCallback(() => {
+    if (activeStage) void handleExecute(activeStage);
+  }, [activeStage, handleExecute]);
+
   // ── 重新生成当前阶段 ──
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 处理器每渲染重建（闭包捕获最新 state）；onRegenerateActiveStage 的 useCallback 仅为满足 react-hooks/refs 的结构包装，不追求记忆化收益
   const handleRegenerate = async (stageId: string) => {
@@ -2093,6 +2179,7 @@ export default function WorkflowPanel() {
     try {
       const inputData: Record<string, unknown> = {
         session_id: sessionId,
+        force_regenerate: true,
         style: projectParams?.style,
         llm_model: projectParams?.llm_model,
         vlm_model: projectParams?.vlm_model,
@@ -2133,8 +2220,12 @@ export default function WorkflowPanel() {
         commitSessionView(token, { activeStage: stageId });
       }
     } catch (error: unknown) {
-      if (!stoppedRef.current && (error as { name?: string } | null)?.name !== 'StreamLostError') {
+      if (isInterruptedError(error)) {
+        await syncAfterStreamLoss(token, sessionId, stageId);
+      } else if (!stoppedRef.current) {
         console.error('Regenerate error:', error);
+        // 阶段重做会预清本地下游；后端拒绝/失败时必须拉回权威快照，避免前后端产物不一致。
+        await resyncSessionView(token, sessionId, { refreshArtifacts: true });
       }
     } finally {
       chainRunningRef.current = false;
@@ -2275,8 +2366,12 @@ export default function WorkflowPanel() {
       const scenes = (state?.artifact as { scenes?: ArtifactItem[] } | undefined)?.scenes || [];
       hasPendingItems = videoMode === 'reference' ? false : scenes.some(s => !s.selected || s.status === 'failed');
     } else if (activeStage === 'prompt_rewrite') {
-      const items = (state?.artifact as { items?: Array<{ status?: string }> } | undefined)?.items || [];
-      hasPendingItems = items.some(i => i.status === 'pending' || i.status === 'failed');
+      const quality = assessPromptRewrite(
+        stageStates['storyboard']?.artifact,
+        state?.artifact,
+        Boolean(stageStates['storyboard']?.reconfirm),
+      );
+      hasPendingItems = quality.hasMissingItems || quality.hasIncompleteItems || quality.hasFailedItems;
     } else if (activeStage === 'video_generation') {
       const clips = (state?.artifact as { clips?: ArtifactItem[] } | undefined)?.clips || [];
       // 检查是否有未选中或失败的 clips
@@ -2290,6 +2385,11 @@ export default function WorkflowPanel() {
 
     // 计算后续阶段是否已开始（阶段1、3）
     const hasNextStageStarted = hasSubsequentExecution;
+    const downstreamStage = stageOrder.slice(idx + 1).find(stage => {
+      const status = stageStates[stage]?.status;
+      return status === 'running' || status === 'completed' || status === 'error'
+        || status === 'waiting' || status === 'stopped';
+    });
 
     // 传递第4阶段的 artifact 到第5阶段用于依赖检查
     const referenceArtifact = activeStage === 'video_generation'
@@ -2333,12 +2433,26 @@ export default function WorkflowPanel() {
       {state?.status === 'error' && state.missingInputs && state.missingInputs.length > 0 && (
         <MissingInputsNotice items={state.missingInputs} onNavigateStage={handleStageClick} />
       )}
+      {downstreamStage && (
+        <div className="mx-4 mt-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 flex flex-wrap items-center gap-3">
+          <span className="text-xs text-blue-700">后续阶段已推进，请前往处理后续产物；上游确认不会隐式重跑。</span>
+          <button
+            onClick={() => handleStageClick(downstreamStage)}
+            className="ml-auto px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700"
+          >
+            前往{STAGES.find(stage => stage.id === downstreamStage)?.name || downstreamStage}
+          </button>
+        </div>
+      )}
       <Component
         state={state}
         sessionId={sessionId || ''}
         onConfirm={onConfirmActiveStage}
         onIntervene={mods => handleIntervene(activeStage, mods)}
-        onRegenerate={onRegenerateActiveStage}
+        onExecute={onExecuteActiveStage}
+        onRegenerateStage={onRegenerateActiveStage}
+        scriptSource={projectParams?.script_source}
+        storyboardReconfirm={Boolean(stageStates['storyboard']?.reconfirm)}
         onUpdateArtifact={patch => handleUpdateArtifact(activeStage, patch)}
         onArtifactMutated={(map, opts) => resyncAfterWrite(sessionId || '', viewToken, map, opts)}
         onSaveSelections={selections => handleSaveSelections(activeStage, selections)}

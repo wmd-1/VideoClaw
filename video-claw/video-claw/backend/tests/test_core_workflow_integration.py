@@ -805,6 +805,51 @@ def test_workflow_quality_env_example_defaults():
     assert not re.search(r"^VC_H3_REWRITE__ENABLE=", text, re.MULTILINE)
 
 
+def test_force_regenerate_hides_current_artifact_and_clears_downstream(monkeypatch):
+    sid = _new_session()
+
+    def seed(state):
+        state.artifacts["script_generation"] = {
+            "episodes": [{"episode_number": 1, "content": "正文"}],
+            "characters": [{"id": "c1", "name": "甲", "description": "旧描述"}],
+            "settings": [],
+        }
+        state.artifacts["character_design"] = {"characters": [{"id": "c1", "description": "旧描述"}], "settings": []}
+        state.artifacts["storyboard"] = {"episodes": [{"episode_number": 1, "segments": [{"segment_id": "seg1"}]}]}
+        state.artifacts["reference_generation"] = {"scenes": [{"id": "seg1"}]}
+        state.artifacts["video_generation"] = {"clips": [{"id": "seg1"}]}
+        state.current_stage = WorkflowStage.CHARACTER_DESIGN
+        for stage in ("script_generation", "character_design", "storyboard", "reference_generation", "video_generation"):
+            state.status[stage] = "completed"
+
+    workflow_engine._mutate(sid, seed)
+    workflow_engine._mutate(
+        sid, lambda state: None,
+        execution_states={
+            downstream: {"action": "start", "execution_id": f"old-{downstream}", "boot_id": "old-boot"}
+            for downstream in ("storyboard", "reference_generation", "video_generation")
+        },
+    )
+    seen = {}
+
+    def behavior(agent, input_data, intervention):
+        seen["artifacts"] = copy.deepcopy(input_data.get("_session_artifacts") or {})
+        return {
+            "payload": {"characters": [{"id": "c1", "name": "甲", "description": "新描述"}], "settings": []},
+            "stage_completed": True,
+        }
+
+    _use_agent(monkeypatch, WorkflowStage.CHARACTER_DESIGN, behavior)
+    _run(WorkflowStage.CHARACTER_DESIGN, sid, input_data={"force_regenerate": True})
+    assert "character_design" not in seen["artifacts"]
+    state = workflow_engine.get_state(sid)
+    assert state.artifacts["character_design"]["characters"][0]["description"] == "新描述"
+    for downstream in ("storyboard", "reference_generation", "video_generation"):
+        assert not state.artifacts.get(downstream)
+        assert state.status[downstream] == "pending"
+        assert state.executions[downstream]["status"] == "interrupted"
+
+
 def test_workflow_quality_stage_toggle(monkeypatch):
     from api.routers.stages import _enabled_stages
 

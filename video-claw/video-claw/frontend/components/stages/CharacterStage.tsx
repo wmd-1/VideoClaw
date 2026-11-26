@@ -352,7 +352,7 @@ function AssetRow({
 }
 
 /* ─── 主组件 ─── */
-export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, flaggedItems, onNavigateStage }: StageViewProps) {
+export default function CharacterStage({ state, sessionId, onConfirm, onIntervene, onExecute, onRegenerateStage, onUpdateArtifact, onArtifactMutated, onSaveSelections, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, flaggedItems, onNavigateStage }: StageViewProps) {
   const characters: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.characters || [];
   const settingsData: AssetVersion[] = (state.artifact as CharacterStageArtifact | undefined)?.settings || [];
 
@@ -599,7 +599,8 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
         onConfirm={onConfirm}
         showConfirm={showConfirm}
         reconfirm={state.reconfirm}
-        onRegenerate={onRegenerate}
+        onExecute={onExecute}
+        onRegenerateStage={onRegenerateStage}
         stageId="character_design"
         hasPendingItems={hasPendingItems}
         hasNextStageStarted={hasNextStageStarted}

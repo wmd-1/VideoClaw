@@ -31,6 +31,8 @@ from core.script_errors import (
     CastReparseNotReadyError,
     CastReparseStateError,
     InternalMetaWriteError,
+    PromptRewriteFailedItemsError,
+    PromptRewriteIncompleteError,
     ScriptActionNotSupportedError,
     ScriptFieldNotWritableError,
     ScriptLockedError,
@@ -866,6 +868,7 @@ async def continue_workflow(
 ):
     # 可选 body `{"stage": "..."}`：从哪个阶段点确认就只确认哪个阶段；无 body / 非 JSON 时保持旧行为
     stage = None
+    allow_failed_items = False
     if (request.headers.get("content-type") or "").startswith("application/json"):
         try:
             body = await request.json()
@@ -873,15 +876,25 @@ async def continue_workflow(
             body = None
         if isinstance(body, dict) and isinstance(body.get("stage"), str):
             stage = body["stage"].strip() or None
+        if isinstance(body, dict) and "allow_failed_items" in body:
+            if not isinstance(body["allow_failed_items"], bool):
+                raise HTTPException(400, detail="allow_failed_items 必须是布尔值")
+            allow_failed_items = body["allow_failed_items"]
     if not await run_in_threadpool(workflow_engine.get_status_snapshot, session_id):
         raise HTTPException(404, "Session not found")
     # 与其他写入端点同一错误口径：提交冲突不能以 500 泄给前端（否则无法区分“未确认”与“服务异常”）
     try:
-        return await workflow_engine.continue_workflow(session_id, stage)
+        return await workflow_engine.continue_workflow(session_id, stage, allow_failed_items)
     except CommitConflict as exc:
         raise HTTPException(409, detail=f"会话已被并发修改，请刷新后重试: {exc}") from exc
     except (ScriptLockedError, CastReparseNotReadyError) as exc:
         raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
+    except (PromptRewriteIncompleteError, PromptRewriteFailedItemsError) as exc:
+        raise HTTPException(409, detail={
+            "code": exc.code,
+            "message": str(exc),
+            "assessment": exc.assessment,
+        }) from exc
     except StoryboardIncompleteError as exc:
         raise HTTPException(409, detail={
             "code": exc.code,

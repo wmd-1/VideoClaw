@@ -234,11 +234,12 @@ function LoglineSummaryBar({ logline }: { logline: LoglineData }) {
   );
 }
 
-export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onRegenerate, onUpdateArtifact, onArtifactMutated, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, staleStoryboardEpisodes, staleFinalVideos, onRegenerateStoryboardEpisodes, scriptLocked = false, castReparse = null, castReparseReady = true, castSuggestions = [], castPollPaused = false }: StageViewProps) {
+export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, onExecute, onRegenerateStage, scriptSource, onUpdateArtifact, onArtifactMutated, showConfirm, isRunning, hasPendingItems, hasNextStageStarted, staleStoryboardEpisodes, staleFinalVideos, onRegenerateStoryboardEpisodes, scriptLocked = false, castReparse = null, castReparseReady = true, castSuggestions = [], castPollPaused = false }: StageViewProps) {
   const data = (state.artifact || {}) as ScriptData;
 
   const isLoglinePhase = data.phase === 'logline_selection' || data.phase === 'logline_confirm' || data.phase === 'mode_selection';
   const isImportMode = Boolean(data.meta?.source_format);
+  const isUploadMode = scriptSource === 'upload' || isImportMode;
   const pendingReview = data.pending_review;
   const reviewKey = pendingReview?.created_at || (pendingReview ? 'pending' : '');
   const reviewIssues = Array.isArray(pendingReview?.issues) ? pendingReview.issues : [];
@@ -1506,13 +1507,18 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
           onConfirm={onConfirm}
           showConfirm={showConfirm}
           reconfirm={state.reconfirm}
-          onRegenerate={onRegenerate}
+          onExecute={onExecute}
+          onRegenerateStage={onRegenerateStage}
+          allowRegenerate={!isUploadMode}
           stageId="script_generation"
-          hasPendingItems={hasPendingItems}
+          // 上传导入是整阶段原子完成；completed 不存在失败集补跑场景，失败只落在 error/stopped。
+          hasPendingItems={isUploadMode ? false : hasPendingItems}
           hasNextStageStarted={hasNextStageStarted}
           isRunning={isRunning}
           confirmDisabled={!castReparseReady}
           confirmDisabledReason={castReparseReady ? '' : '人物/场景正在更新或尚未就绪，请等待完成、重试或接受旧清单'}
+          executeDisabled={scriptLocked}
+          executeDisabledReason={scriptLocked ? '剧本已进入角色阶段，如需修改请新建会话' : ''}
           regenerateDisabled={scriptLocked}
           regenerateDisabledReason={scriptLocked ? '剧本已进入角色阶段，如需修改请新建会话' : ''}
         />

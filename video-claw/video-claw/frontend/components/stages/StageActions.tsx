@@ -5,17 +5,20 @@ import { CheckCircle, Edit3, Save, RefreshCw, Check, Loader2, Play } from 'lucid
 import type { StageStatus } from './types';
 
 // 需要"继续生成"的阶段（2、3、4、5）
-const STAGES_WITH_CONTINUE = ['character_design', 'storyboard', 'reference_generation', 'video_generation'];
+const STAGES_WITH_CONTINUE = ['character_design', 'storyboard', 'reference_generation', 'prompt_rewrite', 'video_generation'];
 // 需要检查后续阶段的阶段（1）
 const STAGES_WITH_NEXT_CHECK = ['script_generation'];
 
 interface StageActionsProps {
   status: StageStatus;
-  onConfirm: () => void;
+  onConfirm: (options?: { allowFailedItems?: boolean }) => void;
   onEdit?: () => void;
   onSave?: () => void;
   onSaveSelections?: () => Promise<void>;
-  onRegenerate?: () => void;
+  onExecute?: () => void;
+  onRegenerateStage?: () => void;
+  /** 仅控制阶段级重做按钮；开始/重试/恢复由 onExecute 独立控制。 */
+  allowRegenerate?: boolean;
   /** 阶段ID */
   stageId?: string;
   /** 是否有待生成的项（用于阶段2、3、4、5） */
@@ -32,8 +35,11 @@ interface StageActionsProps {
   isRunning: boolean;
   confirmDisabled?: boolean;
   confirmDisabledReason?: string;
+  executeDisabled?: boolean;
+  executeDisabledReason?: string;
   regenerateDisabled?: boolean;
   regenerateDisabledReason?: string;
+  confirmLabel?: string;
 }
 
 export default function StageActions({
@@ -42,7 +48,9 @@ export default function StageActions({
   onEdit,
   onSave,
   onSaveSelections,
-  onRegenerate,
+  onExecute,
+  onRegenerateStage,
+  allowRegenerate = true,
   stageId = '',
   hasPendingItems = true,
   hasNextStageStarted = false,
@@ -51,33 +59,27 @@ export default function StageActions({
   isRunning,
   confirmDisabled = false,
   confirmDisabledReason = '',
+  executeDisabled = false,
+  executeDisabledReason = '',
   regenerateDisabled = false,
   regenerateDisabledReason = '',
+  confirmLabel = '确认并继续',
 }: StageActionsProps) {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
 
   // 是否是"继续生成"阶段（2、3、4、5）
   const isContinueStage = STAGES_WITH_CONTINUE.includes(stageId);
   // 是否是"重新生成"阶段（1）
   const isRegenStage = STAGES_WITH_NEXT_CHECK.includes(stageId);
 
-  // 重新生成/继续生成按钮：在 != 'running' 状态下显示 (pending时也不会到这个组件)
-  const showRegen = !!onRegenerate && status !== 'running';
-  
-  // 按钮是否禁用逻辑
-  let isButtonDisabled = isRunning || regenerateDisabled;
-  if (!isRunning && stageId) {
-    // 除第 1/6 阶段外，completed 且「没有待生成/失败条目」时才禁用继续生成（避免误点重跑）；
-    // 存在失败或未生成条目时允许重跑——重新配置模型后的常规恢复路径
-    if (
-      stageId !== 'script_generation' &&
-      stageId !== 'post_production' &&
-      status === 'completed' &&
-      !hasPendingItems
-    ) {
-      isButtonDisabled = true;
-    }
-  }
+  // 执行/恢复只在尚未完成或仍有待处理项时出现；阶段级重做独立显示。
+  const showExecute = !!onExecute && status !== 'running' && (
+    status !== 'completed' || hasPendingItems
+  );
+  const showRegenerate = allowRegenerate && !!onRegenerateStage && status !== 'running' && status !== 'pending';
+  const isExecuteDisabled = isRunning || executeDisabled;
+  const isRegenerateDisabled = isRunning || regenerateDisabled || (isRegenStage && hasNextStageStarted);
 
   // 其余按钮在 waiting、running、completed、stopped 状态显示
   const showActions = status === 'waiting' || status === 'running' || status === 'completed' || status === 'stopped';
@@ -98,26 +100,37 @@ export default function StageActions({
     }
   }, [onSaveSelections, saveState]);
 
-  if (!showRegen && !showActions && !showSaveSelections) return null;
+  if (!showExecute && !showRegenerate && !showActions && !showSaveSelections) return null;
 
   return (
     <div className="border-t border-gray-200 bg-white px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
       {/* 左侧：重新生成/继续生成按钮（+ 输入已变更的提示） */}
       <div className="flex flex-wrap items-center gap-3">
-        {showRegen && reconfirm && (
-          <span className="text-xs text-amber-700" title="上游剧本或分镜已修改：确认=接受现有结果并继续，继续生成=按新输入只补缺失项">
+        {(showExecute || showRegenerate) && reconfirm && (
+          <span className="text-xs text-amber-700" title="上游输入已变更：确认=接受现有结果并继续；继续生成=补缺失项；重新生成=重做本阶段并清理下游">
             上游输入已变更，本阶段结果待重新确认
           </span>
         )}
-        {showRegen && (
+        {showExecute && (
           <button
-            onClick={onRegenerate}
-            disabled={isButtonDisabled}
+            onClick={onExecute}
+            disabled={isExecuteDisabled}
             className="flex items-center gap-2 px-4 py-2 bg-white border border-orange-300 text-orange-600 rounded-lg text-sm font-medium hover:bg-orange-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400"
-            title={isButtonDisabled ? (regenerateDisabledReason || (status === 'error' ? '重新尝试生成' : (isContinueStage && !hasPendingItems ? '所有项已生成完毕' : (isRegenStage && hasNextStageStarted ? '后续阶段已开始，无法重新生成' : '')))) : ''}
+            title={isExecuteDisabled ? executeDisabledReason : undefined}
           >
-            {isContinueStage ? <Play className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
-            {isContinueStage ? '继续生成' : '重新生成'}
+            <Play className="w-4 h-4" />
+            {status === 'error' ? '重试' : status === 'stopped' || isContinueStage ? '继续生成' : '开始生成'}
+          </button>
+        )}
+        {showRegenerate && (
+          <button
+            onClick={() => setShowRegenerateConfirm(true)}
+            disabled={isRegenerateDisabled}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-400"
+            title={isRegenerateDisabled ? (regenerateDisabledReason || (isRegenStage && hasNextStageStarted ? '后续阶段已开始，无法重新生成' : '')) : '重做本阶段并清理下游产物'}
+          >
+            <RefreshCw className="w-4 h-4" />
+            重新生成
           </button>
         )}
       </div>
@@ -165,16 +178,43 @@ export default function StageActions({
         
         {showConfirmBtn && (
           <button
-            onClick={onConfirm}
+            onClick={() => onConfirm()}
             disabled={isRunning || confirmDisabled}
             title={confirmDisabled ? confirmDisabledReason : (reconfirm ? '确认 = 接受本阶段现有结果并继续（不重新生成）；要按新输入重做请点「继续生成」' : undefined)}
             className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-gray-200 disabled:hover:text-gray-400"
           >
             <CheckCircle className="w-4 h-4" />
-            确认并继续
+            {confirmLabel}
           </button>
         )}
       </div>
+      {showRegenerateConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="w-[min(520px,calc(100vw-2rem))] rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-gray-800 mb-3">确认重做本阶段？</h3>
+            <p className="text-sm text-gray-600 leading-relaxed">
+              将清空本阶段及下游阶段的产物引用和执行记录；已生成的媒体文件会保留，但需要重新生成下游产物。
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowRegenerateConfirm(false)}
+                className="px-5 py-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl text-sm font-bold"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  setShowRegenerateConfirm(false);
+                  onRegenerateStage?.();
+                }}
+                className="px-6 py-2.5 bg-orange-600 text-white rounded-xl text-sm font-bold hover:bg-orange-700"
+              >
+                确认重做
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -43,9 +43,16 @@ export interface FlaggedItem {
 export interface StageViewProps {
   state: StageState;
   sessionId: string;
-  onConfirm: () => void;
+  onConfirm: (options?: { allowFailedItems?: boolean }) => void;
   onIntervene: (modifications: Record<string, unknown>) => void;
-  onRegenerate: () => void;
+  /** 开始、重试、停止恢复或补缺失项：不主动清空已有产物。 */
+  onExecute: () => void;
+  /** 完整产物的阶段级重做：由 WorkflowPanel 清理本阶段及下游。 */
+  onRegenerateStage: () => void;
+  /** 会话剧本来源；上传模式仅隐藏阶段级重做。 */
+  scriptSource?: 'idea' | 'upload';
+  /** 分镜当前是否为 reconfirm；H3 确认必须据此硬门控。 */
+  storyboardReconfirm?: boolean;
   onUpdateArtifact?: (patch: Record<string, unknown>) => void;
   /**
    * 写入成功后的服务端事实回写（openspec: stage-view-resync）：

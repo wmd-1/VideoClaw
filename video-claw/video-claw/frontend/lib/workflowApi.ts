@@ -740,6 +740,7 @@ export async function continueWorkflow(
   sessionId: string,
   // 从哪个阶段点确认就只确认哪个阶段（openspec: script-manual-edit-resync）；不传时后端仍用 current_stage
   stage?: string,
+  options?: { allowFailedItems?: boolean },
 ): Promise<{
   status: string;
   next_stage?: string;
@@ -751,8 +752,18 @@ export async function continueWorkflow(
 }> {
   const resp = await apiFetch(`/api/project/${sessionId}/continue`, {
     method: 'POST',
-    // 只在确实需要阶段时带 body：无 body 保持旧请求形状
-    ...(stage ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage }) } : {}),
+    // 只在确实需要阶段或显式放行失败条目时带 body：无选项保持旧请求形状
+    ...((stage || options?.allowFailedItems !== undefined)
+      ? {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(stage ? { stage } : {}),
+            ...(options?.allowFailedItems !== undefined
+              ? { allow_failed_items: options.allowFailedItems }
+              : {}),
+          }),
+        }
+      : {}),
   });
   // 4xx/5xx MUST NOT 被当成“已确认”（否则阶段会被本地误置 completed 并接着跑后续阶段）
   if (!resp.ok) await throwResponseError(resp, '确认阶段失败');
