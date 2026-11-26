@@ -280,11 +280,20 @@ class CharacterDesignerAgent(AgentInterface):
     def _generate_one(self, img_client, asset_id: str, name: str, desc: str,
                       asset_type: str, style: str, species: str, asset_kind: str,
                       t2i_model: str, vlm_model: str, sid: str,
-                      llm_model: str = "", max_iterations: int = 3) -> tuple:
+                      llm_model: str = "", max_iterations: int = 3,
+                      vlm_eval_enabled: Optional[bool] = None) -> tuple:
         """生成单个素材图并返回 (asset_id, path_or_None, eval_result)
 
-        评估-生成循环：如果 VLM 评估发现问题，最多重新生成 max_iterations 次
+        评估-生成循环：如果 VLM 评估发现问题，最多重新生成 max_iterations 次；
+        评分关闭时首次成功生成后直接采纳，不调用 VLM。
         """
+        if vlm_eval_enabled is None:
+            from config import settings
+
+            vlm_eval_enabled = bool(settings.IMAGE_QUALITY_VLM_EVAL_ENABLED)
+        else:
+            vlm_eval_enabled = bool(vlm_eval_enabled)
+        iteration_limit = max_iterations if vlm_eval_enabled else 1
         self._check_cancel()
 
         # 初始提示词
@@ -299,7 +308,7 @@ class CharacterDesignerAgent(AgentInterface):
         current_prompt = base_prompt
         last_error = None
 
-        for iteration in range(max_iterations):
+        for iteration in range(iteration_limit):
             self._check_cancel()
 
             save_path = self._next_version_path(sid, asset_type, asset_id)
@@ -324,6 +333,9 @@ class CharacterDesignerAgent(AgentInterface):
                     if os.path.exists(save_path):
                         os.remove(save_path)
                     os.rename(gen, save_path)
+
+                if not vlm_eval_enabled:
+                    return asset_id, save_path, {"evaluated": False, "eval_status": "disabled"}, rewrite_result
 
                 # VLM 评估
                 eval_result = self._evaluate_with_vlm(
@@ -384,7 +396,7 @@ class CharacterDesignerAgent(AgentInterface):
 
         # 收集本次生成过的本地版本（历史版本未物化，不参与 VLM 挑选）
         all_versions = [path for path in self._local_versions(sid, asset_type, asset_id) if os.path.isfile(path)]
-        if len(all_versions) > 1:
+        if vlm_eval_enabled and len(all_versions) > 1:
             # 有多个版本，调用 VLM 选择最好的
             best_path, best_eval = self._select_best_with_vlm(
                 all_versions, name, desc, asset_type, species, vlm_model
@@ -614,7 +626,8 @@ class CharacterDesignerAgent(AgentInterface):
         sid = input_data["session_id"]
         style = input_data.get("style", "anime")
         t2i_model = self._require_input(input_data, "image_t2i_model")
-        vlm_model = self._require_input(input_data, "vlm_model")
+        vlm_eval_enabled = bool(settings.IMAGE_QUALITY_VLM_EVAL_ENABLED)
+        vlm_model = self._require_input(input_data, "vlm_model") if vlm_eval_enabled else (input_data.get("vlm_model") or "")
         llm_model = input_data.get("llm_model") or self._session_meta(input_data).get("llm_model") or ""
         # 根据 enable_concurrency 决定并发数
         enable_concurrency = input_data.get("enable_concurrency", True)
@@ -762,7 +775,8 @@ class CharacterDesignerAgent(AgentInterface):
                             })
                             fut = executor.submit(contextvars.copy_context().run, 
                                 self._generate_one, img_client,
-                                aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model
+                                aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model,
+                                vlm_eval_enabled=vlm_eval_enabled,
                             )
                             futs[fut] = (atype, aid, name)
                         for fut in as_completed(futs):
@@ -900,6 +914,7 @@ class CharacterDesignerAgent(AgentInterface):
                     fut = executor.submit(contextvars.copy_context().run, 
                         self._generate_one, img_client,
                         aid, name, desc, atype, style, species, kind, t2i_model, vlm_model, sid, llm_model,
+                        vlm_eval_enabled=vlm_eval_enabled,
                     )
                     futs[fut] = (atype, aid, name)
 

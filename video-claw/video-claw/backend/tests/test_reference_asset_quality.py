@@ -50,6 +50,22 @@ def test_reference_payload_inherits_existing_evaluation(monkeypatch):
     }
 
 
+def test_reference_payload_prefers_disabled_evaluation_over_existing(monkeypatch):
+    agent = _agent(monkeypatch)
+    session_data = {"artifacts": {"reference_generation": {"scenes": [
+        {"id": "seg_01_01", "evaluation": {"evaluated": True, "eval_status": "ok", "score": 8}},
+    ]}}}
+    payload = agent._build_payload(
+        "sid", SEGMENTS, session_data, {"seg_01_01": "提示"},
+        selected_images={"seg_01_01": "v1.png"},
+        evaluations={"seg_01_01": {"evaluated": False, "eval_status": "disabled"}},
+    )
+    assert payload["payload"]["scenes"][0]["evaluation"] == {
+        "evaluated": False, "eval_status": "disabled",
+    }
+    assert payload["payload"]["scenes"][0]["status"] == "done"
+
+
 def test_reference_payload_prefers_this_run_evaluation(monkeypatch):
     agent = _agent(monkeypatch)
     session_data = {"artifacts": {"reference_generation": {"scenes": [

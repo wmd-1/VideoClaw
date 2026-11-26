@@ -111,6 +111,19 @@ def test_auto_skips_video_model_requirement_but_manual_keeps_it(monkeypatch):
     assert "video_model" in str(exc.value.detail)
 
 
+def test_vlm_required_only_when_image_quality_enabled(monkeypatch):
+    values = _values()
+    values.pop("vlm_model")
+    monkeypatch.setattr(settings, "IMAGE_QUALITY_VLM_EVAL_ENABLED", False)
+    _require_model_fields(values)
+
+    monkeypatch.setattr(settings, "IMAGE_QUALITY_VLM_EVAL_ENABLED", True)
+    with pytest.raises(HTTPException) as exc:
+        _require_model_fields(values)
+    assert exc.value.status_code == 400
+    assert "vlm_model" in str(exc.value.detail)
+
+
 def test_auto_preflight_never_uses_sentinel_model(monkeypatch, tmp_path):
     path = tmp_path / "video_profiles.yaml"
     write_pool_config(path, _pool())

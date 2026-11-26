@@ -180,6 +180,66 @@ def test_generate_one_stops_after_unavailable_evaluation(monkeypatch, tmp_path):
     assert eval_result["evaluated"] is False
 
 
+def test_generate_one_disabled_evaluation_skips_vlm_and_versions(monkeypatch, tmp_path):
+    agent = CharacterDesignerAgent()
+    target = tmp_path / "c1.png"
+    counter = {"gen": 0}
+
+    def fake_generate(*args, **kwargs):
+        counter["gen"] += 1
+        target.write_bytes(b"img")
+        return [str(target)], "prompt", None
+
+    def fail_vlm(*args, **kwargs):
+        raise AssertionError("评分关闭时不得调用 VLM")
+
+    monkeypatch.setattr(agent, "_next_version_path", lambda sid, atype, aid: str(target))
+    monkeypatch.setattr(agent, "_generate_image_with_doctor", fake_generate)
+    monkeypatch.setattr(agent, "_evaluate_with_vlm", fail_vlm)
+    monkeypatch.setattr(agent, "_select_best_with_vlm", fail_vlm)
+
+    _, path, eval_result, _ = agent._generate_one(
+        object(), "c1", "小陈", "描述", "characters", "anime", "", "", "t2i", "", "sid",
+        vlm_eval_enabled=False,
+    )
+
+    assert counter["gen"] == 1
+    assert path == str(target)
+    assert eval_result == {"evaluated": False, "eval_status": "disabled"}
+    assert "score" not in eval_result
+
+
+def test_generate_one_disabled_evaluation_keeps_doctor_retry(monkeypatch, tmp_path):
+    agent = CharacterDesignerAgent()
+    target = tmp_path / "c1.png"
+    calls = {"generate": 0}
+
+    class FakeImageClient:
+        def generate_image(self, **kwargs):
+            calls["generate"] += 1
+            if calls["generate"] == 1:
+                raise RuntimeError("prompt format error")
+            target.write_bytes(b"img")
+            return [str(target)]
+
+    monkeypatch.setattr(agent, "_next_version_path", lambda sid, atype, aid: str(target))
+    monkeypatch.setattr(
+        "core.agents.doctor_agent.DoctorAgent.maybe_rewrite_prompt",
+        lambda self, **kwargs: ("rewritten prompt", {"reason": "format"}, {"doctor": True}),
+    )
+    monkeypatch.setattr(agent, "_evaluate_with_vlm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不得调用 VLM")))
+
+    _, path, eval_result, rewrite_result = agent._generate_one(
+        FakeImageClient(), "c1", "小陈", "描述", "characters", "anime", "", "", "t2i", "", "sid",
+        llm_model="llm", vlm_eval_enabled=False,
+    )
+
+    assert calls["generate"] == 2, "关闭评分仍保留 Doctor 一次失败重试"
+    assert path == str(target)
+    assert eval_result["eval_status"] == "disabled"
+    assert rewrite_result == {"doctor": True}
+
+
 def test_select_best_reports_selection_without_fabricating_pass(monkeypatch, tmp_path):
     _patch_vlm(monkeypatch, lambda: '{"best_index": 0}')
     paths = []
@@ -286,6 +346,20 @@ def test_build_payload_inherits_existing_evaluation(monkeypatch):
     }
 
 
+def test_build_payload_prefers_disabled_evaluation_over_existing(monkeypatch):
+    agent = CharacterDesignerAgent()
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v2.png"])
+    payload = agent._build_payload(
+        "sid", {"c1": {"name": "n", "description": "d"}}, {},
+        evaluations={"characters": {"c1": {"evaluated": False, "eval_status": "disabled"}}, "settings": {}},
+        existing_evaluations={"characters": {"c1": {"evaluated": True, "eval_status": "ok", "score": 8}}, "settings": {}},
+    )
+    assert payload["payload"]["characters"][0]["evaluation"] == {
+        "evaluated": False, "eval_status": "disabled",
+    }
+    assert payload["payload"]["characters"][0]["status"] == "done"
+
+
 def test_build_payload_prefers_this_run_evaluation(monkeypatch):
     agent = CharacterDesignerAgent()
     monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
@@ -330,6 +404,38 @@ def test_process_empty_run_carries_existing_evaluation(monkeypatch):
     assert "issues" not in char["evaluation"]
     assert char["status"] == "done"
     assert char["selected"] == "v1.png"
+
+
+def test_process_allows_missing_vlm_when_scoring_disabled(monkeypatch):
+    from config import settings
+    import models.config_model as config_model
+    import models.image_client as image_client
+
+    class FakeImageClient:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(settings, "IMAGE_QUALITY_VLM_EVAL_ENABLED", False)
+    monkeypatch.setattr(image_client, "ImageClient", FakeImageClient)
+    monkeypatch.setattr(config_model, "get_max_concurrency", lambda model, enabled: 1)
+    agent = CharacterDesignerAgent()
+    existing = {
+        "characters": [{
+            "id": "c1", "name": "小陈", "description": "银行职员",
+            "selected": "v1.png", "versions": ["v1.png"], "status": "done",
+        }],
+        "settings": [],
+    }
+    monkeypatch.setattr(agent, "_list_versions", lambda sid, atype, aid: ["v1.png"])
+    monkeypatch.setattr(agent, "_report_progress", lambda *a, **k: None)
+    result = asyncio.run(agent.process({
+        "session_id": "s",
+        "characters": {"c1": {"name": "小陈", "description": "银行职员"}},
+        "settings": {},
+        "image_t2i_model": "m", "llm_model": "m",
+        "_session_artifacts": {"character_design": existing},
+    }))
+    assert result["payload"]["characters"][0]["status"] == "done"
 
 
 def test_asset_status_single_source():

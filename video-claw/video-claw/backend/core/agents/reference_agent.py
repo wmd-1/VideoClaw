@@ -309,12 +309,20 @@ class ReferenceGeneratorAgent(AgentInterface):
                       video_ratio: str = "16:9", resolution: str = "1080P", vlm_model: str = "qwen3.5-plus",
                       character_description: str = "", setting_description: str = "",
                       llm_model: str = "",
-                      max_versions: int = 3) -> tuple:
+                      max_versions: int = 3,
+                      vlm_eval_enabled: Optional[bool] = None) -> tuple:
         """生成单个片段参考图，返回 (segment_id, path_or_None, eval_result)
 
         最多生成 max_versions 个版本，如果所有版本都没有达到硬性合格标准，
-        使用 VLM 选择最好的一张作为最终参考图。
+        使用 VLM 选择最好的一张作为最终参考图；评分关闭时首次成功生成后直接采纳。
         """
+        if vlm_eval_enabled is None:
+            from config import settings
+
+            vlm_eval_enabled = bool(settings.IMAGE_QUALITY_VLM_EVAL_ENABLED)
+        else:
+            vlm_eval_enabled = bool(vlm_eval_enabled)
+        version_limit = max_versions if vlm_eval_enabled else 1
         segment_id = segment.get('segment_id', '')
 
         # 仅提取第一个镜头的描述作为当前 Plot
@@ -337,7 +345,7 @@ class ReferenceGeneratorAgent(AgentInterface):
         all_eval_results = []
         last_error = None
 
-        for version in range(max_versions):
+        for version in range(version_limit):
             self._check_cancel()
 
             style_prompt = self._get_style_prompt(style)
@@ -370,6 +378,12 @@ class ReferenceGeneratorAgent(AgentInterface):
                     if os.path.exists(save_path):
                         os.remove(save_path)
                     os.rename(gen, save_path)
+
+                if not vlm_eval_enabled:
+                    eval_result = {"evaluated": False, "eval_status": "disabled", "final_visual_prompt": current_visual_prompt}
+                    if rewrite_result:
+                        eval_result["rewrite_result"] = rewrite_result
+                    return segment_id, save_path, eval_result, rewrite_result
 
                 # VLM 评估
                 eval_result = self._evaluate_with_vlm(save_path, segment, plot, current_visual_prompt,
@@ -411,7 +425,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                     return segment_id, save_path, eval_result, rewrite_result
 
                 # 报告进度
-                if version < max_versions - 1:
+                if version < version_limit - 1:
                     current_visual_prompt = self._apply_eval_feedback_to_visual_prompt(current_visual_prompt, eval_result, version)
                     logger.info(f"[{segment_id}] 下一轮将使用VLM反馈优化首帧提示词")
                     self._report_progress("参考图", f"重新生成中 ({version + 2}/{max_versions}): {segment_id}", 0)
@@ -722,7 +736,8 @@ class ReferenceGeneratorAgent(AgentInterface):
         llm_model = self._require_input(input_data, "llm_model")
         t2i = self._require_input(input_data, "image_t2i_model")
         it2i = self._require_input(input_data, "image_it2i_model")
-        vlm_model = self._require_input(input_data, "vlm_model")
+        vlm_eval_enabled = bool(settings.IMAGE_QUALITY_VLM_EVAL_ENABLED)
+        vlm_model = self._require_input(input_data, "vlm_model") if vlm_eval_enabled else (input_data.get("vlm_model") or "")
         # 根据 enable_concurrency 决定并发数
         enable_concurrency = input_data.get("enable_concurrency", True)
         logger.info(f"[ReferenceAgent] enable_concurrency={enable_concurrency}")
@@ -876,6 +891,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                             style, it2i, t2i, video_ratio, resolution, vlm_model,
                             character_description=char_desc, setting_description=set_desc,
                             llm_model=llm_model,
+                            vlm_eval_enabled=vlm_eval_enabled,
                         )
                         final_prompt = ff_prompt
                         if isinstance(eval_result, dict):
@@ -1060,6 +1076,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                         style, it2i, t2i, video_ratio, resolution, vlm_model,
                         character_description=char_desc, setting_description=set_desc,
                         llm_model=llm_model,
+                        vlm_eval_enabled=vlm_eval_enabled,
                     )
                     final_prompt = ff_prompt
                     if isinstance(eval_result, dict):

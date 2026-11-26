@@ -409,12 +409,16 @@ def _preflight_auto_video_pool(stage: str, values: dict) -> None:
 
 
 def _require_model_fields(values: dict) -> None:
-    required = REQUIRED_MODEL_FIELDS
+    # 图片评分关闭时不需要 VLM；H3 grounding 无 VLM 时按既有契约降级 text_only。
+    required = tuple(
+        field for field in REQUIRED_MODEL_FIELDS
+        if field != "vlm_model" or settings.IMAGE_QUALITY_VLM_EVAL_ENABLED
+    )
     mode = str(values.get("video_generation_mode") or "first_frame")
     if mode == "reference":
         # reference 模式参考图阶段跳过（不生成分镜图），图生图模型非必需；
         # 文生图仍必需（角色/场景设计依赖）。本函数无阶段参数，故按会话模式放行。
-        required = tuple(field for field in REQUIRED_MODEL_FIELDS if field != "image_it2i_model")
+        required = tuple(field for field in required if field != "image_it2i_model")
     missing = [field for field in required if not values.get(field)]
     if not _is_auto_dispatch(values) and not _active_video_model(values):
         missing.append("video_model")
