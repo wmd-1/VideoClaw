@@ -1143,3 +1143,13 @@ def test_review_prompt_templates_reachable_in_both_languages():
         assert "{characters}" in template
         assert "{settings}" in template
         assert "replace" in template and "insert_after" in template and "delete" in template
+        assert "拆分过长台词" not in template
+        assert "Prefer a single replace with newlines for splitting long dialogue" not in template
+        if lang == "zh":
+            assert "移交分镜阶段" in template
+        else:
+            assert "storyboard stage" in template
+
+    design_template = load_prompt("storyboard", "segment_design", "zh")
+    assert "source_text" in design_template
+    assert "一个 item 可以对应一个或多个连续 shot" in design_template

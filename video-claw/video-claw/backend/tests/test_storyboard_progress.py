@@ -72,13 +72,13 @@ def _assert_monotonic(events: List[dict]) -> None:
     assert all(RUN_CAP >= p or p == 100 for p in percents), f"运行期不得越过 {RUN_CAP}：{percents}"
 
 
-def _episode_script(ep_count: int, lines_per_episode: int = 24) -> dict:
+def _episode_script(ep_count: int, lines_per_episode: int = 2) -> dict:
     episodes = []
     for number in range(1, ep_count + 1):
         rows = [f"场景 {number}-1：大厅，日，内"]
         for index in range(lines_per_episode):
-            rows.append(f"甲：第{number}集第{index}句台词，说明当前进展与下一步安排。")
-            rows.append("<action>乙走进大厅，看向甲并在一旁坐下。</action>")
+            rows.append("甲：继续。")
+            rows.append("<action>乙坐下。</action>")
         episodes.append({
             "episode_number": number,
             "act_title": f"第{number}集",
@@ -93,7 +93,7 @@ def _episode_script(ep_count: int, lines_per_episode: int = 24) -> dict:
     }
 
 
-def _input_data(ep_count: int, lines_per_episode: int = 24) -> dict:
+def _input_data(ep_count: int, lines_per_episode: int = 2) -> dict:
     script = _episode_script(ep_count, lines_per_episode)
     return {
         "session_id": f"probe-progress-{uuid.uuid4().hex[:12]}",
@@ -169,7 +169,7 @@ class FakeSteps:
 
 
 def _run_agent(monkeypatch, steps: FakeSteps, ep_count: int, *, heartbeat=0.02, throttle=0.0,
-               lines_per_episode: int = 24):
+               lines_per_episode: int = 2):
     monkeypatch.setattr(sb, HB_INTERVAL, heartbeat, raising=False)
     monkeypatch.setattr(sb, THROTTLE_INTERVAL, throttle, raising=False)
     steps.install(monkeypatch)

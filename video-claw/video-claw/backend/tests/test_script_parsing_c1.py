@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 
 import pytest
@@ -455,3 +456,176 @@ def test_segment_plan_rejects_plan_missing_a_unit(monkeypatch):
     planned_ids = [item["unit_id"] for plan in plans for item in plan["items"]]
     assert calls == 3, "规划共 3 次 attempt（首次 + 2 次重试）后才回退"
     assert planned_ids == [unit["unit_id"] for unit in units], "漏单元只能回退到全量覆盖"
+
+
+def test_long_dialogue_and_action_are_split_into_source_chunks():
+    long_dialogue = "甲：" + "我们需要仔细核对每一笔业务的凭证和流水，确认没有问题之后再继续办理。" * 8
+    long_action = "<action>" + "镜头缓慢跟随人物穿过长廊，在窗边停下并回头望向门口。" * 12 + "</action>"
+    script = "\n".join(["1-1 日 内 办公室", long_dialogue, long_action])
+    annotated, units = StoryboardAgent._annotate_episode_script(
+        script, characters=[{"name": "甲"}], settings=[{"name": "办公室"}],
+    )
+    by_source = {}
+    for unit in units:
+        by_source.setdefault(unit["source_unit_id"], []).append(unit)
+    assert len(by_source) == 2
+    assert all(len(group) > 1 for group in by_source.values())
+    for group in by_source.values():
+        assert [unit["part_index"] for unit in group] == list(range(1, len(group) + 1))
+        assert all(unit["part_count"] == len(group) for unit in group)
+        assert "".join(unit["text"] for unit in group) == group[0]["original_text"]
+        assert all(unit["duration"] <= StoryboardAgent.MAX_SEGMENT_DURATION for unit in group)
+        assert len({unit["unit_id"] for unit in group}) == len(group)
+        assert all(unit["unit_id"] in annotated for unit in group)
+
+
+def test_unpunctuated_long_text_has_no_empty_tail_chunk():
+    text = "甲" * 160
+    parts = StoryboardAgent._split_text_by_width(text, 60, 75)
+    assert len(parts) > 1
+    assert all(parts)
+    assert "".join(parts) == text
+
+
+def test_long_dialogue_with_colons_keeps_chunk_durations_bounded():
+    text = "甲：" + ("123456789012345678901234: " * 20).rstrip()
+    _, units = StoryboardAgent._annotate_episode_script(
+        "1-1 日 内 办公室\n" + text,
+        characters=[{"name": "甲"}], settings=[{"name": "办公室"}],
+    )
+    assert len(units) > 1
+    assert all(2 <= unit["duration"] <= 15 for unit in units)
+    assert "".join(unit["text"] for unit in units) == text
+
+
+def test_segment_plan_rejects_source_part_gaps():
+    units = [
+        {"unit_id": "U001", "source_unit_id": "SRC0001", "part_index": 1, "part_count": 3, "duration": 5, "scene_key": 0},
+        {"unit_id": "U002", "source_unit_id": "SRC0001", "part_index": 3, "part_count": 3, "duration": 5, "scene_key": 0},
+        {"unit_id": "U003", "source_unit_id": "SRC0001", "part_index": 2, "part_count": 3, "duration": 5, "scene_key": 0},
+    ]
+    with pytest.raises(ValueError, match="来源分片编号不连续"):
+        StoryboardAgent._validate_segment_plan(1, [{"unit_ids": ["U001", "U002", "U003"]}], units)
+
+
+def _design_item(text: str = "第一句。第二句。", duration: int = 6) -> dict:
+    return {
+        "unit_id": "U001", "source_unit_id": "SRC0001", "part_index": 1, "part_count": 1,
+        "text": text, "source_text": text, "original_text": text, "duration": duration,
+        "is_dialogue": True, "is_narration": False, "speaker": "甲", "tone": "",
+        "characters": ["甲"], "scene_key": 0, "is_entry": False,
+    }
+
+
+def _design_plan(item: dict) -> dict:
+    return {
+        "segment_number": 1, "location": "办公室", "characters": ["甲"],
+        "scene_time": "日", "scene_space": "内", "scene_context": "办公室",
+        "total_duration": item["duration"], "items": [item],
+    }
+
+
+def test_normalize_segment_design_supports_one_to_many_shots():
+    item = _design_item()
+    raw = {"shots": [
+        {"unit_id": "U001", "source_text": "第一句。", "shot_type": "中景", "content": "中景，甲说：第一句。"},
+        {"unit_id": "U001", "source_text": "第二句。", "shot_type": "近景", "content": "近景，甲说：第二句。"},
+    ]}
+    segment = StoryboardAgent._normalize_segment_design(1, _design_plan(item), raw)
+    assert len(segment["shots"]) == 2
+    assert "".join(shot["source_text"] for shot in segment["shots"]) == item["text"]
+    assert sum(shot["duration"] for shot in segment["shots"]) == item["duration"]
+    assert segment["total_duration"] == item["duration"]
+    assert all(shot["source_text"] in shot["content"] for shot in segment["shots"])
+    assert all(shot["source_unit_id"] == "SRC0001" for shot in segment["shots"])
+
+
+def test_normalize_segment_design_rejects_noncontiguous_unit_shots():
+    first, second = _design_item("第一句。"), _design_item("第二句。")
+    second["unit_id"] = "U002"
+    second["source_unit_id"] = "SRC0002"
+    plan = _design_plan(first)
+    plan["items"] = [first, second]
+    plan["total_duration"] = 12
+    raw = {"shots": [
+        {"unit_id": "U001", "source_text": "第一句。", "content": "第一句。"},
+        {"unit_id": "U002", "source_text": "第二句。", "content": "第二句。"},
+        {"unit_id": "U001", "source_text": "第一句。", "content": "第一句。"},
+    ]}
+    with pytest.raises(ValueError, match="不连续"):
+        StoryboardAgent._normalize_segment_design(1, plan, raw)
+
+
+def test_normalize_segment_design_merges_excess_shots_to_duration_budget():
+    text = "一。二。三。四。五。六。"
+    item = _design_item(text, duration=6)
+    raw = {"shots": [
+        {"unit_id": "U001", "source_text": part, "content": part}
+        for part in ("一。", "二。", "三。", "四。", "五。", "六。")
+    ]}
+    segment = StoryboardAgent._normalize_segment_design(1, _design_plan(item), raw)
+    assert len(segment["shots"]) <= 3
+    assert "".join(shot["source_text"] for shot in segment["shots"]) == text
+    assert sum(shot["duration"] for shot in segment["shots"]) == 6
+
+
+def test_fallback_design_splits_long_action_and_validates_source_coverage():
+    text = "人物缓慢走过长廊，停下、开门、进入房间并回头张望。" * 10
+    item = _design_item(text, duration=15)
+    item["is_dialogue"] = False
+    plan = _design_plan(item)
+    segment = StoryboardAgent._fallback_design_segment(1, plan)
+    assert len(segment["shots"]) > 1
+    assert "".join(shot["source_text"] for shot in segment["shots"]) == text
+    assert segment["total_duration"] == sum(shot["duration"] for shot in segment["shots"]) == 15
+    StoryboardAgent._validate_episode_source_coverage(1, [segment], [item])
+
+    broken = copy.deepcopy(segment)
+    broken["shots"][0]["content"] = " continuity rewrite "
+    with pytest.raises(ValueError, match="第 1 集：.*source_text"):
+        StoryboardAgent._validate_episode_source_coverage(1, [broken], [item])
+
+
+def test_segment_from_shots_rejects_duration_overflow():
+    with pytest.raises(ValueError, match="上限"):
+        StoryboardAgent._segment_from_shots(
+            1, 1, "办公室", [{"duration": 16, "content": "原文"}], ["甲"],
+        )
+    with pytest.raises(ValueError, match="总时长.*上限"):
+        StoryboardAgent._segment_from_shots(
+            1, 1, "办公室", [
+                {"duration": 8, "content": "第一段"},
+                {"duration": 8, "content": "第二段"},
+            ], ["甲"],
+        )
+
+
+def test_continuity_patch_rejected_rolls_back(monkeypatch, caplog):
+    agent = StoryboardAgent()
+    characters = [{"name": "甲"}]
+    settings = [{"name": "办公室"}]
+
+    async def fake_plan(ep_n, ep_t, annotated_script, units, characters, settings,
+                        llm_model, sid, planning_hint=""):
+        return [StoryboardAgent._segment_plan_from_units(ep_n, 1, units)]
+
+    async def fake_design(ep_n, ep_t, plan, style, llm_model, sid, planning_hint=""):
+        return StoryboardAgent._fallback_design_segment(ep_n, plan)
+
+    async def broken_continuity(ep_n, ep_t, segments, llm_model, sid, **kwargs):
+        broken = copy.deepcopy(segments)
+        broken[0]["shots"][0]["content"] = "continuity rewrite"
+        return broken
+
+    monkeypatch.setattr(agent, "_plan_episode_segments", fake_plan)
+    monkeypatch.setattr(agent, "_design_one_segment", fake_design)
+    monkeypatch.setattr(agent, "_fix_episode_staging_continuity", broken_continuity)
+
+    segments = asyncio.run(agent._design_episode_storyboard(
+        1, "第1集", "1-1 日 内 办公室\n甲：你好。",
+        characters, settings, "anime", "fake-model", "sid",
+    ))
+
+    assert "continuity rewrite" not in segments[0]["shots"][0]["content"]
+    assert segments[0]["shots"][0]["source_text"] in segments[0]["shots"][0]["content"]
+    assert "continuity result rejected" in caplog.text

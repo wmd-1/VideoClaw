@@ -97,6 +97,14 @@ def test_shared_whitelist_is_single_source():
     assert evaluation_payload({"issues": ["x"]}) is None
 
 
+def test_first_shot_content_uses_single_helper():
+    assert ReferenceGeneratorAgent._first_shot_content({
+        "shots": [{"content": "首镜头"}, {"content": "次镜头"}],
+    }) == "首镜头"
+    assert ReferenceGeneratorAgent._first_shot_content({"shots": []}) == ""
+    assert ReferenceGeneratorAgent._first_shot_content({}) == ""
+
+
 def test_reference_preview_and_payload_share_status_rule(monkeypatch):
     agent = _agent(monkeypatch)
     monkeypatch.setattr(agent, "_list_versions", lambda sid, segment_id: [])

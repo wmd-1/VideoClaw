@@ -48,6 +48,13 @@ class ReferenceGeneratorAgent(AgentInterface):
     def __init__(self):
         super().__init__(name="ReferenceGenerator")
 
+    @staticmethod
+    def _first_shot_content(segment: dict) -> str:
+        shots = segment.get("shots") if isinstance(segment, dict) else None
+        if not isinstance(shots, list) or not shots or not isinstance(shots[0], dict):
+            return ""
+        return str(shots[0].get("content") or "")
+
     # ─── 版本管理 ───
 
     _IMAGE_EXTS = ("jpg", "jpeg", "png", "webp", "bmp")
@@ -225,7 +232,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                 selected_path = versions[-1] if versions else ""
 
             # 获取该段下第一个镜头的 content 作为片段描述
-            plot = seg.get('shots', [])[0].get('content', '') if seg.get('shots') else ""
+            plot = ReferenceGeneratorAgent._first_shot_content(seg)
             ep_n = seg.get('episode_number', 1)
             seg_n = seg.get('segment_number', idx)
 
@@ -326,7 +333,7 @@ class ReferenceGeneratorAgent(AgentInterface):
         segment_id = segment.get('segment_id', '')
 
         # 仅提取第一个镜头的描述作为当前 Plot
-        plot = segment.get('shots', [])[0].get('content', '') if segment.get('shots') else ""
+        plot = ReferenceGeneratorAgent._first_shot_content(segment)
         current_visual_prompt = first_frame_prompt
 
         # 取消时直接跳过，不抛异常，以保留已生成的部分结果
@@ -664,7 +671,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                 selected_path = versions[-1] if versions else ""
 
             # 获取该段下第一个镜头的 content 作为片段描述
-            shots_summary = seg.get('shots', [])[0].get('content', '') if seg.get('shots') else ""
+            shots_summary = ReferenceGeneratorAgent._first_shot_content(seg)
             
             # 取提示词
             visual_prompt = prompts_map.get(segment_id) or existing_prompts.get(segment_id) or ""
@@ -849,8 +856,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                             }
                         })
                         seg = fresh_segment_map.get(segment_id, {})
-                        first_shot = seg.get('shots', [])[0] if seg.get('shots') else {}
-                        plot = first_shot.get('content', '')
+                        plot = ReferenceGeneratorAgent._first_shot_content(seg)
                         char_desc, set_desc = self._get_descriptions(seg, char_id_map, setting_id_map, character_json)
 
                         existing_vp = session_visual_prompts.get(segment_id)
@@ -1036,8 +1042,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                         }
                     })
 
-                    first_shot = seg.get('shots', [])[0] if seg.get('shots') else {}
-                    plot = first_shot.get('content', '')
+                    plot = ReferenceGeneratorAgent._first_shot_content(seg)
                     char_desc, set_desc = self._get_descriptions(seg, char_id_map, setting_id_map, character_json)
 
                     existing_vp = session_visual_prompts.get(segment_id)

@@ -11,9 +11,9 @@ While faithfully preserving the original document's facts and narrative order, p
 4. Flexible total duration: the total video duration does not have to match the original script; prioritize complete content, clear expression, and comfortable pacing, and adjust segment or overall duration as needed. Never sacrifice content quality or viewing experience to hit an original duration.
 
 [Review dimensions]
-1. Structure and splitting: whether scenes/paragraphs are clearly divided, whether long paragraphs should be split, and whether missing scene headings or time/place hints should be added.
+1. Structure and splitting: whether scenes/paragraphs are clearly divided, whether long paragraphs need scene/semantic restructuring, and whether missing scene headings or time/place hints should be added. Do not suggest line splitting solely because one sentence is long.
 2. Visual description: whether action, environment, and character appearance are specific and shootable; add or trim description without inventing key facts.
-3. Dialogue and voice-over: repetition, verbosity, unnatural spoken language, or excessive information density; rewrite or split as needed.
+3. Dialogue and voice-over: repetition, verbosity, unnatural spoken language, or excessive information density; rewrite genuine issues, but do not split lines solely because of length.
 4. Logic and consistency: contradictions in cause/effect, names, time, or place; consistency with the character/setting lists.
 5. Format: consistent character names, dialogue colons, parenthetical notes, and scene headings.
 6. Pacing: adjust wording where information is too dense or too sparse, without changing story facts.
@@ -23,19 +23,19 @@ While faithfully preserving the original document's facts and narrative order, p
 2. Every suggestion must locate exactly one episode and one line. line is the 1-based line number within that episode's content and must exist.
 3. action must be replace / insert_after / delete:
    - replace: replace that line with text; text is the complete revised line.
-   - insert_after: insert text after that line (multiple lines allowed, separated by \n), for adding visual description or splitting.
+   - insert_after: insert text after that line (multiple lines allowed, separated by \n), for adding visual description or restructuring paragraphs, not for splitting one dialogue line.
    - delete: delete that line (leave text empty).
-4. text must not include a line-number prefix or any explanation; it may contain \n when splitting dialogue or paragraphs.
+4. text must not include a line-number prefix or any explanation; it may contain \n for paragraph restructuring or visual description, not for pure single-sentence length splitting.
 5. At most one replace or delete per episode+line; insert_after may appear multiple times.
 6. List only issues that truly need edits, at most 30; return an empty array when there are none.
 7. Output one JSON object only, no Markdown, no explanation.
-8. Quality review edits script text only; do not output seconds or storyboards. Translate timing/rhythm problems into line-level text edits: split long dialogue, add action/visual description, remove redundant production notes, or add scene headings. Never delete plot or dialogue merely to compress duration.
-9. Preserve the original punctuation style (full-width/half-width), wording, and emphatic marks (ellipsis, dashes, quotes); split or add only when necessary, and never change punctuation merely to normalize it. Do not remove original ellipses or emphatic marks.
+8. Quality review edits script text only; do not output seconds or storyboards. Translate timing/rhythm problems into paragraph restructuring, added action/visual description, removal of redundant production notes, or scene headings. Leave single overlong sentences to the storyboard stage; never delete plot or dialogue merely to compress duration.
+9. Preserve the original punctuation style (full-width/half-width), wording, and emphatic marks (ellipsis, dashes, quotes); adjust only for structure or description needs, never solely for length, and never normalize punctuation or remove original ellipses/emphatic marks.
 10. Use delete only for obvious duplicate lines or formatting noise; never delete plot, dialogue, summary prose, or blank lines (do not report blank lines as issues).
 11. Do not modify or delete metadata/production markers such as the title, duration/tone, character setup, scene headings/slugs, subtitles, sound/effect/freeze cues, or synopsis headings; do not report blank lines as issues; never add production markers that are not in the original (such as [visual description], [scene:], subtitle:).
 12. Only add scene location/time or visual description that is supported by the existing text; every insert_after segment must have textual grounding in the original line, and must not add new character actions, key plot points, or speakers.
-13. When splitting dialogue, preserve the original speaker, tone parentheses (e.g. (gentle)), and punctuation style; new continuation lines must use the original speaker (full-width colon) and must not switch speakers.
-14. Prefer a single replace with newlines for splitting long dialogue, at most 3 segments; do not use multiple insert_after suggestions to split dialogue; insert_after is limited to 2 per line and only for grounded shot/environment/hold descriptions.
+13. Do not split dialogue at the script stage; the storyboard stage splits a single overlong sentence into multiple shots.
+14. insert_after is limited to 2 per line and only for grounded shot/environment/hold descriptions; do not use replace with newlines to split long dialogue.
 15. Do not add parenthetical tone states that are not in the original (e.g. (smile)); only keep existing tone parentheses. `<action>` continuation lines are allowed only when their content is grounded in the original text and must not be used to inject new actions.
 
 [Output format]

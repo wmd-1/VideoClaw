@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -211,9 +212,16 @@ class StoryboardAgent(AgentInterface):
 
     MIN_SHOT_DURATION = 2
     MIN_UNIT_DURATION = 2
-    MAX_UNIT_DURATION = 15
     MIN_SEGMENT_DURATION = 5
     MAX_SEGMENT_DURATION = 15
+    LONG_DIALOGUE_CHARS = 60
+    LONG_ACTION_CHARS = 120
+    DIALOGUE_CHUNK_TARGET_CHARS = 60
+    DIALOGUE_CHUNK_MAX_CHARS = 75
+    ACTION_CHUNK_TARGET_CHARS = 120
+    ACTION_CHUNK_MAX_CHARS = 400
+    SHOT_DIALOGUE_TARGET_CHARS = 30
+    SHOT_ACTION_TARGET_CHARS = 60
     OPENING_SHOT_TYPES = {"中景", "全景"}
 
     @staticmethod
@@ -448,7 +456,7 @@ class StoryboardAgent(AgentInterface):
             seconds = int(float(annotation.get("duration")))
         except (TypeError, ValueError, OverflowError):
             return None
-        seconds = max(cls.MIN_UNIT_DURATION, min(cls.MAX_UNIT_DURATION, seconds))
+        seconds = max(cls.MIN_UNIT_DURATION, seconds)
         # 台词/旁白必须保证足够表达时间，时长只可上调不可因建议被压短；
         # 旁白传入的 is_dialogue 为 False，必须显式按字数估算，否则下限会退化成 2 秒
         if str(annotation.get("type") or "") in ("dialogue", "narration"):
@@ -456,14 +464,75 @@ class StoryboardAgent(AgentInterface):
         return seconds
 
     @classmethod
-    def _duration_for_script_unit(cls, text: str, is_dialogue: bool) -> int:
+    def _duration_for_script_unit(
+        cls, text: str, is_dialogue: bool, *, speaker: Optional[str] = None
+    ) -> int:
         if not is_dialogue:
-            return 2
+            visible_text = re.sub(r"\s+", "", text)
+            return max(cls.MIN_UNIT_DURATION, 3 + len(visible_text) // 34)
         dialogue = cls._dialogue_parts(text)
-        dialogue_text = dialogue[2] if dialogue else text
+        if speaker is None:
+            dialogue_text = dialogue[2] if dialogue else text
+        else:
+            dialogue_text = dialogue[2] if dialogue and dialogue[0] == speaker else text
         visible_text = re.sub(r"\s+", "", dialogue_text)
         duration = (len(visible_text) + 4) // 5
-        return max(2, min(15, duration))
+        return max(cls.MIN_UNIT_DURATION, duration)
+
+    @staticmethod
+    def _visible_length(text: str) -> int:
+        return len(re.sub(r"\s+", "", text))
+
+    @classmethod
+    def _split_text_by_width(cls, text: str, target_chars: int, max_chars: int) -> List[str]:
+        """按可见字符宽度切分，优先句末/逗号/空白，硬切时仍逐字还原。"""
+        if cls._visible_length(text) <= target_chars:
+            return [text]
+        parts: List[str] = []
+        remaining = text
+        while cls._visible_length(remaining) > target_chars:
+            prefix = [0]
+            sentence_ends: List[int] = []
+            comma_ends: List[int] = []
+            space_ends: List[int] = []
+            for index, char in enumerate(remaining, 1):
+                prefix.append(prefix[-1] + (0 if char.isspace() else 1))
+                if prefix[-1] > max_chars:
+                    break
+                if char in "。！？!?；;\n":
+                    sentence_ends.append(index)
+                elif char in "，,、":
+                    comma_ends.append(index)
+                elif char.isspace():
+                    space_ends.append(index)
+            cut = None
+            for candidates in (sentence_ends, comma_ends, space_ends):
+                eligible = [index for index in candidates if prefix[index] <= target_chars]
+                if eligible:
+                    cut = eligible[-1]
+                    break
+            if cut is None:
+                cut = next((index for index, count in enumerate(prefix) if count >= max_chars), len(remaining))
+            cut = max(1, min(cut, len(remaining)))
+            parts.append(remaining[:cut])
+            remaining = remaining[cut:]
+            if not remaining:
+                break
+        if remaining:
+            parts.append(remaining)
+        assert "".join(parts) == text
+        assert all(parts), "非空原文不得产生空分片"
+        return parts
+
+    @classmethod
+    def _split_unit_text(cls, text: str, is_speech: bool) -> List[str]:
+        if is_speech:
+            return cls._split_text_by_width(
+                text, cls.DIALOGUE_CHUNK_TARGET_CHARS, cls.DIALOGUE_CHUNK_MAX_CHARS
+            )
+        return cls._split_text_by_width(
+            text, cls.ACTION_CHUNK_TARGET_CHARS, cls.ACTION_CHUNK_MAX_CHARS
+        )
 
     @classmethod
     def _is_entry_action(cls, text: str, character_names: List[str]) -> bool:
@@ -540,6 +609,85 @@ class StoryboardAgent(AgentInterface):
         scene_characters: List[str] = []
         scene_key = 0
 
+        def append_unit_chunks(
+            *, line: str, line_number: int, duration: int,
+            is_dialogue: bool, is_narration: bool, speaker: str, tone: str,
+            unit_characters: List[str], is_entry: bool,
+        ) -> None:
+            nonlocal pending_scene_duration
+            is_speech = is_dialogue or is_narration
+            fragments = cls._split_unit_text(line, is_speech)
+            part_count = len(fragments)
+            source_unit_id = f"SRC{line_number:04d}"
+            if part_count == 1:
+                chunk_durations = [duration]
+            else:
+                estimate_speaker = (speaker or None) if is_dialogue else ("" if is_narration else None)
+                estimates = [
+                    cls._duration_for_script_unit(fragment, is_speech, speaker=estimate_speaker)
+                    for fragment in fragments
+                ]
+                budget = min(
+                    max(int(duration or 0), sum(estimates)),
+                    part_count * cls.MAX_SEGMENT_DURATION,
+                )
+                budget = max(budget, part_count * cls.MIN_UNIT_DURATION)
+                remaining = budget - part_count * cls.MIN_UNIT_DURATION
+                weight_total = sum(estimates)
+                chunk_durations = [
+                    cls.MIN_UNIT_DURATION + int(remaining * value / weight_total)
+                    for value in estimates
+                ]
+                leftover = budget - sum(chunk_durations)
+                order = sorted(
+                    range(part_count),
+                    key=lambda index: (remaining * estimates[index] / weight_total) % 1,
+                    reverse=True,
+                )
+                for index in order:
+                    if leftover <= 0:
+                        break
+                    if chunk_durations[index] < cls.MAX_SEGMENT_DURATION:
+                        chunk_durations[index] += 1
+                        leftover -= 1
+                while leftover > 0:
+                    index = max(range(part_count), key=lambda i: cls.MAX_SEGMENT_DURATION - chunk_durations[i])
+                    add = min(leftover, cls.MAX_SEGMENT_DURATION - chunk_durations[index])
+                    chunk_durations[index] += add
+                    leftover -= add
+            for part_index, fragment in enumerate(fragments, 1):
+                chunk_duration = chunk_durations[part_index - 1]
+                if part_index == 1 and pending_scene_duration:
+                    chunk_duration = max(chunk_duration, pending_scene_duration)
+                    pending_scene_duration = 0
+                unit_id = f"U{len(units) + 1:03d}"
+                units.append({
+                    "unit_id": unit_id,
+                    "source_unit_id": source_unit_id,
+                    "part_index": part_index,
+                    "part_count": part_count,
+                    "original_text": line,
+                    "source_text": fragment,
+                    "line_number": line_number,
+                    "text": fragment,
+                    "duration": chunk_duration,
+                    "is_dialogue": is_dialogue,
+                    "is_narration": is_narration,
+                    "speaker": speaker,
+                    "tone": tone,
+                    "characters": unit_characters[:],
+                    "scene_characters": scene_characters[:],
+                    "scene_key": scene_key,
+                    "location": cls._resolve_location(
+                        line, current_location, setting_names, alias_map
+                    ),
+                    "scene_time": current_scene_time,
+                    "scene_space": current_scene_space,
+                    "scene_context": current_scene_context,
+                    "is_entry": is_entry and part_index == 1,
+                })
+                annotated_lines.append(f"[{chunk_duration}秒][{unit_id}] {fragment}")
+
         for line_number, raw_line in enumerate(raw_lines, 1):
             stripped = raw_line.strip()
             line = cls._clean_script_line(cls._strip_markup(stripped))
@@ -585,31 +733,11 @@ class StoryboardAgent(AgentInterface):
                 continue
             if annotation and annotation.get("type") == "placeholder":
                 duration = cls._annotation_duration(annotation) or 2
-                unit_id = f"U{len(units) + 1:03d}"
-                units.append(
-                    {
-                        "unit_id": unit_id,
-                        "line_number": line_number,
-                        "text": line,
-                        "duration": duration,
-                        "is_dialogue": False,
-                        "is_narration": False,
-                        "speaker": "",
-                        "tone": "",
-                        "characters": cls._match_characters(line, character_names),
-                        "scene_characters": scene_characters[:],
-                        "scene_key": scene_key,
-                        "location": cls._resolve_location(
-                            line, current_location, setting_names, alias_map
-                        ),
-                        "scene_time": current_scene_time,
-                        "scene_space": current_scene_space,
-                        "scene_context": current_scene_context,
-                        "is_entry": False,
-                    }
+                append_unit_chunks(
+                    line=line, line_number=line_number, duration=duration,
+                    is_dialogue=False, is_narration=False, speaker="", tone="",
+                    unit_characters=cls._match_characters(line, character_names), is_entry=False,
                 )
-                # 必须带时长与 U 编号，否则分段规划无法覆盖该单元
-                annotated_lines.append(f"[{duration}秒][{unit_id}] {line}")
                 continue
             if cls._is_metadata_line(line) or cls._is_end_marker(line):
                 annotated_lines.append(line)
@@ -660,7 +788,6 @@ class StoryboardAgent(AgentInterface):
                 annotated_lines.append(line)
                 continue
 
-            unit_id = f"U{len(units) + 1:03d}"
             is_dialogue = dialogue is not None
             duration = cls._annotation_duration(annotation, line, is_dialogue)
             if duration is None:
@@ -679,27 +806,12 @@ class StoryboardAgent(AgentInterface):
                 if speaker_matches:
                     unit_chars = list(dict.fromkeys(speaker_matches + unit_chars))
 
-            units.append({
-                "unit_id": unit_id,
-                "line_number": line_number,
-                "text": line,
-                "duration": duration,
-                "is_dialogue": is_dialogue,
-                "is_narration": is_narration,
-                "speaker": speaker,
-                "tone": tone,
-                "characters": unit_chars,
-                "scene_characters": scene_characters[:],
-                "scene_key": scene_key,
-                "location": cls._resolve_location(
-                    line, current_location, setting_names, alias_map
-                ),
-                "scene_time": current_scene_time,
-                "scene_space": current_scene_space,
-                "scene_context": current_scene_context,
-                "is_entry": cls._is_entry_action(line, character_names),
-            })
-            annotated_lines.append(f"[{duration}秒][{unit_id}] {line}")
+            append_unit_chunks(
+                line=line, line_number=line_number, duration=duration,
+                is_dialogue=is_dialogue, is_narration=is_narration,
+                speaker=speaker, tone=tone, unit_characters=unit_chars,
+                is_entry=cls._is_entry_action(line, character_names),
+            )
 
         return "\n".join(annotated_lines), units
 
@@ -742,6 +854,15 @@ class StoryboardAgent(AgentInterface):
     def _validate_segment_plan(cls, ep_n: int, raw_plan: List[dict], units: List[dict]) -> List[dict]:
         unit_by_id = {item["unit_id"]: item for item in units}
         source_ids = [item["unit_id"] for item in units]
+        source_groups: Dict[str, List[dict]] = {}
+        for item in units:
+            source_id = str(item.get("source_unit_id") or item["unit_id"])
+            source_groups.setdefault(source_id, []).append(item)
+        for source_id, group in source_groups.items():
+            expected = list(range(1, len(group) + 1))
+            actual = [int(item.get("part_index") or 0) for item in group]
+            if actual != expected or any(int(item.get("part_count") or 0) != len(group) for item in group):
+                raise ValueError(f"来源分片编号不连续: {source_id}, parts={actual}")
         flat_ids: List[str] = []
         plans: List[dict] = []
 
@@ -765,6 +886,9 @@ class StoryboardAgent(AgentInterface):
                 if item.get("is_entry") and idx != 0:
                     raise ValueError(f"{item['unit_id']} 是入场动作，必须作为片段开头")
 
+            for item in items:
+                if int(item.get("duration") or 0) > cls.MAX_SEGMENT_DURATION:
+                    raise ValueError(f"{item['unit_id']} 时长超出单片段上限 {cls.MAX_SEGMENT_DURATION}s")
             duration = sum(int(item.get("duration") or 0) for item in items)
             if duration > cls.MAX_SEGMENT_DURATION:
                 raise ValueError(f"片段时长 {duration}s 超出上限 {cls.MAX_SEGMENT_DURATION}s")
@@ -776,6 +900,17 @@ class StoryboardAgent(AgentInterface):
             missing = [unit_id for unit_id in source_ids if unit_id not in flat_ids]
             extra = [unit_id for unit_id in flat_ids if unit_id not in source_ids]
             raise ValueError(f"片段规划动作/台词缺漏或乱序，missing={missing}, extra={extra}")
+        flat_items = [unit_by_id[unit_id] for unit_id in flat_ids]
+        for source_id, group in source_groups.items():
+            positions = [
+                index for index, item in enumerate(flat_items)
+                if (item.get("source_unit_id") or item["unit_id"]) == source_id
+            ]
+            if positions != list(range(positions[0], positions[0] + len(group))):
+                raise ValueError(f"来源分片被其他 unit 交叉插队: {source_id}")
+            actual_parts = [int(flat_items[index].get("part_index") or 0) for index in positions]
+            if actual_parts != list(range(1, len(group) + 1)):
+                raise ValueError(f"来源分片顺序错误: {source_id}, parts={actual_parts}")
         return plans
 
     @classmethod
@@ -808,8 +943,17 @@ class StoryboardAgent(AgentInterface):
         return [
             {
                 "unit_id": item["unit_id"],
+                "source_unit_id": item.get("source_unit_id", item["unit_id"]),
+                "part_index": item.get("part_index", 1),
+                "part_count": item.get("part_count", 1),
                 "duration": item["duration"],
                 "text": item["text"],
+                "source_text": item.get("source_text", item["text"]),
+                "original_text": item.get("original_text", item["text"]),
+                "speaker": item.get("speaker", ""),
+                "tone": item.get("tone", ""),
+                "is_dialogue": item.get("is_dialogue", False),
+                "is_narration": item.get("is_narration", False),
                 "characters": item.get("characters", []),
                 "is_entry": item.get("is_entry", False),
                 "scene_context": item.get("scene_context", ""),
@@ -1038,12 +1182,36 @@ class StoryboardAgent(AgentInterface):
             return "中景"
         return shot_type
 
+    @staticmethod
+    def _coalesce_shot_fragments(fragments: List[dict], max_count: int) -> List[dict]:
+        merged = [dict(fragment) for fragment in fragments]
+        while len(merged) > max_count:
+            pair_index = min(
+                range(len(merged) - 1),
+                key=lambda index: (
+                    StoryboardAgent._visible_length(merged[index]["source_text"])
+                    + StoryboardAgent._visible_length(merged[index + 1]["source_text"])
+                ),
+            )
+            left, right = merged[pair_index], merged[pair_index + 1]
+            merged_source = left["source_text"] + right["source_text"]
+            merged[pair_index:pair_index + 2] = [{
+                "source_text": merged_source,
+                "content": f"{left['content']} {right['content']} 原文：{merged_source}",
+                "shot_type": left.get("shot_type", "中景"),
+            }]
+        return merged
+
     @classmethod
-    def _shot_durations_for_plan(cls, plan: dict) -> List[int]:
-        durations = [int(item.get("duration") or cls.MIN_SHOT_DURATION) for item in plan.get("items", [])]
-        total = sum(durations)
-        if durations and total < cls.MIN_SEGMENT_DURATION:
-            durations[-1] += cls.MIN_SEGMENT_DURATION - total
+    def _allocate_item_shot_durations(cls, item: dict, fragments: List[dict]) -> List[int]:
+        budget = max(cls.MIN_SHOT_DURATION, int(item.get("duration") or cls.MIN_SHOT_DURATION))
+        fragments = cls._coalesce_shot_fragments(fragments, max(1, budget // cls.MIN_SHOT_DURATION))
+        count = len(fragments)
+        remaining = budget - count * cls.MIN_SHOT_DURATION
+        weights = [max(1, cls._visible_length(fragment["source_text"])) for fragment in fragments]
+        weight_total = sum(weights)
+        durations = [cls.MIN_SHOT_DURATION + int(remaining * weight / weight_total) for weight in weights]
+        durations[-1] += budget - sum(durations)
         return durations
 
     @classmethod
@@ -1057,35 +1225,69 @@ class StoryboardAgent(AgentInterface):
         raw_shots = raw_design.get("shots") if isinstance(raw_design, dict) else None
         if not isinstance(raw_shots, list) or not raw_shots:
             raise ValueError("片段设计缺少 shots")
+        if any(not isinstance(shot, dict) for shot in raw_shots):
+            raise ValueError("片段设计包含非对象 shot")
 
-        by_id = {
-            shot.get("unit_id"): shot
-            for shot in raw_shots
-            if isinstance(shot, dict) and isinstance(shot.get("unit_id"), str)
-        }
-        if by_id:
-            missing = [item["unit_id"] for item in items if item["unit_id"] not in by_id]
-            extra = [unit_id for unit_id in by_id if unit_id not in {item["unit_id"] for item in items}]
-            if missing or extra:
-                raise ValueError(f"片段设计 unit_id 不匹配，missing={missing}, extra={extra}")
-            ordered_raw = [by_id[item["unit_id"]] for item in items]
+        expected_ids = [item["unit_id"] for item in items]
+        has_unit_ids = [isinstance(shot.get("unit_id"), str) and bool(shot.get("unit_id")) for shot in raw_shots]
+        if any(has_unit_ids) and not all(has_unit_ids):
+            raise ValueError("片段设计 unit_id 部分缺失")
+
+        grouped: List[tuple] = []
+        positional_legacy = not all(has_unit_ids)
+        if all(has_unit_ids):
+            seen = set()
+            current_id = None
+            for raw_shot in raw_shots:
+                unit_id = raw_shot["unit_id"]
+                if unit_id not in expected_ids:
+                    raise ValueError(f"片段设计包含未知 unit_id: {unit_id}")
+                if unit_id != current_id:
+                    if unit_id in seen:
+                        raise ValueError(f"同一 item 的 shots 不连续: {unit_id}")
+                    seen.add(unit_id)
+                    current_id = unit_id
+                    grouped.append((unit_id, []))
+                grouped[-1][1].append(raw_shot)
+            if [unit_id for unit_id, _ in grouped] != expected_ids:
+                raise ValueError("片段设计 unit_id 缺失或乱序")
         else:
             if len(raw_shots) != len(items):
                 raise ValueError("片段设计 shots 数量与 items 不一致")
-            ordered_raw = raw_shots
+            grouped = [(item["unit_id"], [raw_shot]) for item, raw_shot in zip(items, raw_shots)]
 
-        durations = cls._shot_durations_for_plan(plan)
         shots: List[dict] = []
         characters = plan.get("characters", [])
-        for idx, (item, raw_shot) in enumerate(zip(items, ordered_raw)):
-            shot_type = cls._normalize_shot_type(raw_shot.get("shot_type"), first=(idx == 0))
-            content = str(raw_shot.get("content") or "").strip()
-            shots.append({
-                "shot_number": idx + 1,
-                "shot_type": shot_type,
-                "duration": durations[idx],
-                "content": content,
-            })
+        for item, (_, raw_group) in zip(items, grouped):
+            fragments: List[dict] = []
+            for raw_shot in raw_group:
+                source_text = str(raw_shot.get("source_text") or ("" if not positional_legacy else item.get("source_text", item["text"])))
+                content = str(raw_shot.get("content") or "").strip()
+                if not source_text.strip():
+                    raise ValueError(f"{item['unit_id']} 的 shot 缺少 source_text")
+                if not content or source_text not in content:
+                    raise ValueError(f"{item['unit_id']} 的 content 未包含 source_text")
+                fragments.append({
+                    "source_text": source_text,
+                    "content": content,
+                    "shot_type": cls._normalize_shot_type(raw_shot.get("shot_type")),
+                })
+            if "".join(fragment["source_text"] for fragment in fragments) != item.get("source_text", item["text"]):
+                raise ValueError(f"{item['unit_id']} 的 source_text 拼接与原文不一致")
+            durations = cls._allocate_item_shot_durations(item, fragments)
+            fragments = cls._coalesce_shot_fragments(fragments, len(durations))
+            for fragment, duration in zip(fragments, durations):
+                shots.append({
+                    "shot_number": len(shots) + 1,
+                    "unit_id": item["unit_id"],
+                    "source_unit_id": item.get("source_unit_id", item["unit_id"]),
+                    "part_index": item.get("part_index", 1),
+                    "part_count": item.get("part_count", 1),
+                    "source_text": fragment["source_text"],
+                    "shot_type": cls._normalize_shot_type(fragment.get("shot_type"), first=(len(shots) == 0)),
+                    "duration": duration,
+                    "content": fragment["content"],
+                })
 
         return cls._segment_from_shots(
             ep_n,
@@ -1101,26 +1303,43 @@ class StoryboardAgent(AgentInterface):
     @classmethod
     def _fallback_design_segment(cls, ep_n: int, plan: dict) -> dict:
         characters = plan.get("characters", [])
-        durations = cls._shot_durations_for_plan(plan)
         shots: List[dict] = []
-        for idx, item in enumerate(plan.get("items", [])):
-            is_dialogue = bool(item.get("is_dialogue"))
-            speaker = item.get("speaker") or "角色"
-            shot_type = "中景" if idx == 0 or is_dialogue else "全景"
-            if idx == 0:
-                prefix = cls._opening_camera_prefix(shot_type, characters)
-                content = f"{prefix}人物朝向彼此或镜头侧前方。{item['text']}"
-            elif is_dialogue:
-                content = f"{shot_type}，平视略侧机位拍摄{speaker}，人物面向对话对象。{item['text']}"
-            else:
-                subject = "、".join(item.get("characters") or characters) or "场景主体"
-                content = f"{shot_type}，平视跟拍{subject}，人物沿动作方向移动。{item['text']}"
-            shots.append({
-                "shot_number": idx + 1,
-                "shot_type": shot_type,
-                "duration": durations[idx],
-                "content": content,
-            })
+        for item in plan.get("items", []):
+            is_speech = bool(item.get("is_dialogue") or item.get("is_narration"))
+            target = cls.SHOT_DIALOGUE_TARGET_CHARS if is_speech else cls.SHOT_ACTION_TARGET_CHARS
+            max_chars = cls.DIALOGUE_CHUNK_MAX_CHARS if is_speech else cls.ACTION_CHUNK_MAX_CHARS
+            source_fragments = cls._split_text_by_width(item.get("source_text", item["text"]), target, max_chars)
+            fragments: List[dict] = []
+            for source_text in source_fragments:
+                global_index = len(shots) + len(fragments)
+                shot_type = "中景" if global_index == 0 or is_speech else "全景"
+                if global_index == 0:
+                    prefix = cls._opening_camera_prefix(shot_type, characters)
+                    content = f"{prefix}人物朝向彼此或镜头侧前方。{source_text}"
+                else:
+                    content = cls._make_shot_content(
+                        shot_type=shot_type,
+                        line=source_text,
+                        characters=item.get("characters") or characters,
+                        is_dialogue=bool(item.get("is_dialogue")),
+                        speaker=item.get("speaker") or "角色",
+                        tone=item.get("tone") or "",
+                    )
+                fragments.append({"source_text": source_text, "content": content, "shot_type": shot_type})
+            durations = cls._allocate_item_shot_durations(item, fragments)
+            fragments = cls._coalesce_shot_fragments(fragments, len(durations))
+            for fragment, duration in zip(fragments, durations):
+                shots.append({
+                    "shot_number": len(shots) + 1,
+                    "unit_id": item["unit_id"],
+                    "source_unit_id": item.get("source_unit_id", item["unit_id"]),
+                    "part_index": item.get("part_index", 1),
+                    "part_count": item.get("part_count", 1),
+                    "source_text": fragment["source_text"],
+                    "shot_type": cls._normalize_shot_type(fragment.get("shot_type"), first=(len(shots) == 0)),
+                    "duration": duration,
+                    "content": fragment["content"],
+                })
         return cls._segment_from_shots(
             ep_n,
             int(plan.get("segment_number") or 1),
@@ -1499,6 +1718,8 @@ class StoryboardAgent(AgentInterface):
                 progress_note(f"第 {ep_n} 集分镜已设计完 {len(designed)}/{len(plans)} 个片段")
         designed.sort(key=lambda item: (item[0], item[1]))
         segments = [item[2] for item in designed]
+        self._validate_episode_source_coverage(ep_n, segments, units)
+        pre_continuity = copy.deepcopy(segments)
         logger.info("[Storyboard] Episode %s checking staging continuity", ep_n)
         if progress is not None:
             # 连续性检查从 0 起算等待时长（上一阶段的计时到此作废）
@@ -1508,6 +1729,12 @@ class StoryboardAgent(AgentInterface):
         segments = await self._fix_episode_staging_continuity(
             ep_n, ep_t, segments, llm_model, sid, progress=progress, heartbeat=_heartbeat
         )
+        try:
+            self._validate_episode_source_coverage(ep_n, segments, units)
+        except ValueError as exc:
+            logger.warning("[Storyboard] Episode %s continuity result rejected: %s", ep_n, exc)
+            segments = pre_continuity
+            self._validate_episode_source_coverage(ep_n, segments, units)
         return segments
 
     @classmethod
@@ -1545,7 +1772,9 @@ class StoryboardAgent(AgentInterface):
         if shots and total < cls.MIN_SEGMENT_DURATION:
             shots[-1]["duration"] += cls.MIN_SEGMENT_DURATION - total
             total = cls.MIN_SEGMENT_DURATION
-        return min(total, cls.MAX_SEGMENT_DURATION)
+        if total > cls.MAX_SEGMENT_DURATION:
+            raise ValueError(f"片段总时长 {total}s 超出上限 {cls.MAX_SEGMENT_DURATION}s")
+        return total
 
     @classmethod
     def _make_shot_content(
@@ -1560,7 +1789,11 @@ class StoryboardAgent(AgentInterface):
     ) -> str:
         if is_dialogue:
             tone_text = tone or "自然、贴合当下情绪"
-            return f"{shot_type}，镜头对准{speaker or '角色'}，呈现动作与表情变化。{speaker}说：“{line}”。音色：{tone_text}。"
+            speaker_name = speaker or "角色"
+            dialogue_line = line
+            if not re.match(rf"^{re.escape(speaker_name)}\s*[:：]", line):
+                dialogue_line = f"{speaker_name}：{line}"
+            return f"{shot_type}，镜头对准{speaker_name}，呈现动作与表情变化。{dialogue_line}。音色：{tone_text}。"
         subject = "、".join(characters) if characters else "场景主体"
         return f"{shot_type}，镜头呈现{subject}。{line}"
 
@@ -1578,12 +1811,16 @@ class StoryboardAgent(AgentInterface):
     ) -> dict:
         for idx, shot in enumerate(shots, 1):
             shot["shot_number"] = idx
-            shot["duration"] = min(
-                cls.MAX_SEGMENT_DURATION,
-                max(cls.MIN_SHOT_DURATION, int(shot.get("duration") or cls.MIN_SHOT_DURATION)),
-            )
+            duration = int(shot.get("duration") or cls.MIN_SHOT_DURATION)
+            if duration > cls.MAX_SEGMENT_DURATION:
+                raise ValueError(f"单个镜头时长 {duration}s 超出上限 {cls.MAX_SEGMENT_DURATION}s")
+            shot["duration"] = max(cls.MIN_SHOT_DURATION, duration)
         cls._normalize_first_shot_type(shots)
         total_duration = cls._ensure_segment_duration(shots)
+        for shot in shots:
+            source_text = str(shot.get("source_text") or "")
+            if source_text and source_text not in str(shot.get("content") or ""):
+                raise ValueError(f"镜头 {shot.get('shot_number')} content 未包含 source_text")
         segment = {
             "segment_id": f"seg_{ep_n:02d}_{segment_number:02d}",
             "segment_number": segment_number,
@@ -1600,6 +1837,41 @@ class StoryboardAgent(AgentInterface):
         if scene_context:
             segment["scene_context"] = scene_context
         return segment
+
+    @classmethod
+    def _validate_episode_source_coverage(cls, ep_n: int, segments: List[dict], units: List[dict]) -> None:
+        prefix = f"第 {ep_n} 集："
+        expected: Dict[str, dict] = {}
+        for unit in units:
+            source_id = str(unit.get("source_unit_id") or unit["unit_id"])
+            expected[source_id] = {
+                "original_text": unit.get("original_text", unit["text"]),
+                "part_count": int(unit.get("part_count") or 1),
+            }
+        actual: Dict[str, List[dict]] = {}
+        for segment in segments:
+            total = sum(int(shot.get("duration") or 0) for shot in segment.get("shots", []))
+            if total != int(segment.get("total_duration") or 0):
+                raise ValueError(prefix + "片段 total_duration 与 shot.duration 之和不一致")
+            for shot in segment.get("shots", []):
+                source_text = str(shot.get("source_text") or "")
+                if not source_text or source_text not in str(shot.get("content") or ""):
+                    raise ValueError(prefix + "连续性后处理破坏原文 source_text")
+                source_id = str(shot.get("source_unit_id") or shot.get("unit_id") or "")
+                if not source_id:
+                    raise ValueError(prefix + "镜头缺少 source_unit_id")
+                actual.setdefault(source_id, []).append(shot)
+        for source_id, source in expected.items():
+            shots = actual.get(source_id) or []
+            if "".join(str(shot.get("source_text") or "") for shot in shots) != source["original_text"]:
+                raise ValueError(prefix + f"原文覆盖不完整或顺序错误: {source_id}")
+            parts: List[int] = []
+            for shot in shots:
+                part_index = int(shot.get("part_index") or 0)
+                if not parts or parts[-1] != part_index:
+                    parts.append(part_index)
+            if parts != list(range(1, source["part_count"] + 1)):
+                raise ValueError(prefix + f"来源分片顺序错误: {source_id}, parts={parts}")
 
     @classmethod
     def _estimate_segment_count(
