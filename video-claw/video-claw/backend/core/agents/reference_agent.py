@@ -441,7 +441,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                     break
 
         # 所有版本都没有达到硬性标准，使用 VLM 选择最好的
-        if all_versions:
+        if vlm_eval_enabled and all_versions:
             logger.warning(f"[{segment_id}] 所有版本都未达到硬性合格标准，使用VLM选择最佳...")
             best_path, best_eval = self._select_best_with_vlm(
                 all_versions, segment, plot, current_visual_prompt,
